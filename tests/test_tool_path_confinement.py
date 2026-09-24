@@ -57,6 +57,25 @@ def test_non_sensitive_path():
     assert not _is_sensitive_path("/home/user/projects/file.py")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows accepts both path separators")
+@pytest.mark.parametrize("suffix", [".ssh/config", ".gnupg/keys", "id_rsa", ".env"])
+def test_sensitive_windows_separators(tmp_path, suffix):
+    from src.tool_execution import _is_sensitive_path, _resolve_tool_path_in_workspace
+
+    path = str(tmp_path / suffix)
+    for candidate in (path, path.replace("\\", "/"), str(tmp_path) + "/" + suffix):
+        assert _is_sensitive_path(candidate)
+        with pytest.raises(ValueError, match="sensitive"):
+            _resolve_tool_path_in_workspace(str(tmp_path), candidate)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Backslashes are separators on Windows")
+def test_posix_backslash_is_filename_character():
+    from src.tool_execution import _is_sensitive_path
+
+    assert not _is_sensitive_path("/tmp/notes\\.ssh\\config")
+
+
 def test_sensitive_case_insensitive():
     """On case-insensitive filesystems (Windows, default macOS) a case-variant
     name resolves to the same protected file, so the deny-list must match

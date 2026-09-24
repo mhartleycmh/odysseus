@@ -18,6 +18,9 @@ Security fixes are handled on the default branch until formal releases are cut.
 - Disable open signup unless you intentionally want new accounts.
 - Keep demo/test users non-admin, and remove them entirely on serious deployments.
 - Give admin accounts strong passwords and enable 2FA where possible.
+- If the initial generated password is unavailable, use
+  `scripts\reset_admin_password.py` locally. It prompts without echoing the
+  password and preserves the existing users and privileges.
 - Leave high-risk agent tools restricted to admins: shell, Python, file read/write, email send/read, MCP, app API, task/skill/memory management, settings, tokens, and model serving.
 - Rotate API keys, webhook secrets, and Odysseus API tokens if they appear in logs, screenshots, demos, or shared chats.
 - Treat shell, model-serving, MCP, email, calendar, and vault features as privileged admin functionality.

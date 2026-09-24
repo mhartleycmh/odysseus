@@ -25,6 +25,16 @@ from routes.prefs_routes import _load_for_user, _save_for_user
 logger = logging.getLogger(__name__)
 
 
+def _validated_workspace(raw, owner, task_type):
+    from src.task_workspace import validate_task_workspace
+    try:
+        return validate_task_workspace(raw, owner, task_type)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 def _maybe_cascade_calendar_event(task) -> None:
     """Delete the linked calendar event when a cookbook_serve task is
     removed. Two lookup strategies:
@@ -157,6 +167,7 @@ class TaskCreate(BaseModel):
     then_task_id: Optional[str] = None            # chain: run this task after success
     notifications_enabled: Optional[bool] = None  # None lets action-specific defaults apply
     character_id: Optional[str] = None             # built-in persona id (PERSONAS) — biases output voice
+    workspace: Optional[str] = None                # vetted filesystem workspace for agent tools
 
 
 class TaskUpdate(BaseModel):
@@ -178,6 +189,7 @@ class TaskUpdate(BaseModel):
     then_task_id: Optional[str] = None
     notifications_enabled: Optional[bool] = None
     character_id: Optional[str] = None
+    workspace: Optional[str] = None
 
 
 def _display_task_name(t: ScheduledTask) -> str:
@@ -213,6 +225,7 @@ def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> di
         "character_id": getattr(t, "character_id", None),
         "model": t.model,
         "endpoint_url": t.endpoint_url,
+        "workspace": getattr(t, "workspace", None),
         "run_count": t.run_count or 0,
         "then_task_id": t.then_task_id,
         "notifications_enabled": bool(getattr(t, "notifications_enabled", True)),
@@ -475,6 +488,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             raise HTTPException(400, "Event name is required for event-triggered tasks")
         if req.trigger_type == "event" and not req.trigger_count:
             raise HTTPException(400, "Trigger count is required for event-triggered tasks")
+        workspace = _validated_workspace(req.workspace, user, req.task_type)
 
         # Auto-generate name
         name = req.name
@@ -550,6 +564,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 webhook_token=webhook_token,
                 notifications_enabled=notifications_enabled,
                 character_id=(req.character_id or None),
+                workspace=workspace,
             )
             db.add(task)
             db.commit()
@@ -677,6 +692,11 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             next_task_type = req.task_type if req.task_type is not None else task.task_type
             next_action = req.action if req.action is not None else task.action
             _require_admin_for_task_action(user, next_task_type, next_action)
+            next_workspace = (
+                req.workspace if req.workspace is not None
+                else getattr(task, "workspace", None)
+            )
+            workspace = _validated_workspace(next_workspace, user, next_task_type)
 
             if req.name is not None:
                 task.name = req.name
@@ -708,6 +728,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             if req.character_id is not None:
                 # Empty string clears the persona; non-empty stores the id.
                 task.character_id = req.character_id or None
+            if req.workspace is not None:
+                task.workspace = workspace
             if req.cron_expression is not None:
                 if req.cron_expression:
                     try:

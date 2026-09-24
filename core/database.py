@@ -752,6 +752,7 @@ class ScheduledTask(TimestampMixin, Base):
     session_id     = Column(String, ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True)
     model          = Column(String, nullable=True)
     endpoint_url   = Column(String, nullable=True)
+    workspace      = Column(String, nullable=True)          # vetted filesystem workspace for agent tools
     run_count      = Column(Integer, default=0)
 
     cron_expression = Column(String, nullable=True)           # cron string e.g. "*/5 * * * *"
@@ -1590,6 +1591,7 @@ def _migrate_add_task_automation_columns():
         "trigger_event": "VARCHAR",
         "trigger_count": "INTEGER",
         "trigger_counter": "INTEGER DEFAULT 0",
+        "workspace": "VARCHAR",
     }
     try:
         with engine.connect() as conn:
@@ -1626,6 +1628,7 @@ def _migrate_add_task_automation_columns():
                         session_id VARCHAR,
                         model VARCHAR,
                         endpoint_url VARCHAR,
+                        workspace VARCHAR,
                         run_count INTEGER,
                         created_at DATETIME NOT NULL,
                         updated_at DATETIME NOT NULL,
@@ -1642,7 +1645,7 @@ def _migrate_add_task_automation_columns():
                     SELECT id, owner, name, prompt, schedule, scheduled_time,
                            scheduled_day, scheduled_date, next_run, last_run,
                            status, output_target, session_id, model, endpoint_url,
-                           run_count, created_at, updated_at,
+                           workspace, run_count, created_at, updated_at,
                            task_type, action, trigger_type, trigger_event,
                            trigger_count, trigger_counter
                     FROM _old_scheduled_tasks

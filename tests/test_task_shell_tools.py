@@ -112,9 +112,10 @@ async def test_scheduled_task_honors_global_disabled_tools(monkeypatch):
 
     async def _capture(endpoint_url, model, task, session_id, *,
                        system_prompt=None, disabled_tools=None, relevant_tools=None,
-                       datetime_context_msg=None):
+                       datetime_context_msg=None, workspace=None):
         captured["disabled_tools"] = disabled_tools
         captured["relevant_tools"] = relevant_tools
+        captured["workspace"] = workspace
         return "done"
 
     scheduler = TaskScheduler(session_manager=None)
@@ -151,3 +152,31 @@ async def test_scheduled_task_honors_global_disabled_tools(monkeypatch):
     assert "read_file" not in offered
     assert "edit_file" in offered   # shell default NOT globally disabled
     assert "web_fetch" in offered   # RAG-selected tool preserved
+
+
+async def test_scheduled_task_forwards_vetted_workspace_to_agent_loop(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("src.tool_security.owner_is_admin_or_single_user", lambda owner: True)
+
+    async def _fake_stream(**kwargs):
+        captured.update(kwargs)
+        yield 'data: {"delta": "done"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr("src.agent_loop.stream_agent_loop", _fake_stream)
+    scheduler = TaskScheduler(session_manager=None)
+    task = SimpleNamespace(
+        workspace=str(tmp_path),
+        prompt="inspect the workspace",
+        owner="admin",
+        name="Workspace task",
+        max_steps=1,
+    )
+
+    result = await scheduler._run_agent_loop(
+        "http://endpoint", "model", task, "session-1"
+    )
+
+    assert result == "done"
+    assert captured["workspace"] == str(tmp_path.resolve())
+    assert captured["workload"] == "background"

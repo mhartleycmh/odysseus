@@ -24,6 +24,7 @@ import multiprocessing
 import os
 import queue
 import shutil
+import tempfile
 import time
 from contextlib import contextmanager, nullcontext
 
@@ -124,13 +125,13 @@ def test_native_file_tools_hide_control_plane_hardlink_alias(tmp_path, monkeypat
         importlib.import_module("src.tool_execution")._resolve_tool_path(str(alias))
 
     ls_result = asyncio.run(LsTool().execute(
-        f'{{"path": "{workspace}"}}', {}
+        json.dumps({"path": str(workspace)}), {}
     ))
     glob_result = asyncio.run(GlobTool().execute(
-        f'{{"pattern": "**/*", "path": "{workspace}"}}', {}
+        json.dumps({"pattern": "**/*", "path": str(workspace)}), {}
     ))
     grep_result = asyncio.run(GrepTool().execute(
-        f'{{"pattern": "LIVE_ADMIN_SESSION", "path": "{workspace}"}}', {}
+        json.dumps({"pattern": "LIVE_ADMIN_SESSION", "path": str(workspace)}), {}
     ))
     assert "notes.txt" not in ls_result["output"]
     assert "notes.txt" not in glob_result["output"]
@@ -308,8 +309,9 @@ def test_runbook_is_covered_by_the_personal_docs_carve_out():
 
 
 def test_allows_tmp():
-    """Unchanged: /tmp is still a root and holds no application state."""
-    assert _resolve_tool_path("/tmp/scratch.txt") == os.path.realpath("/tmp/scratch.txt")
+    """The platform's temporary directory remains an allowed root."""
+    target = os.path.join(tempfile.gettempdir(), "scratch.txt")
+    assert _resolve_tool_path(target) == os.path.realpath(target)
 
 
 def test_subprocess_cwd_is_the_agent_workspace():
@@ -472,10 +474,10 @@ def test_recursive_glob_and_grep_hide_state_from_extra_root(tmp_path, monkeypatc
     monkeypatch.setattr("src.settings.get_setting", lambda *_a, **_k: [str(tmp_path)])
 
     glob_result = asyncio.run(GlobTool().execute(
-        f'{{"pattern": "**/*", "path": "{tmp_path}"}}', {}
+        json.dumps({"pattern": "**/*", "path": str(tmp_path)}), {}
     ))
     grep_result = asyncio.run(GrepTool().execute(
-        f'{{"pattern": "TOKEN", "path": "{tmp_path}"}}', {}
+        json.dumps({"pattern": "TOKEN", "path": str(tmp_path)}), {}
     ))
 
     assert "public.txt" in glob_result["output"]
@@ -603,7 +605,7 @@ def test_ls_hides_protected_entries_when_root_contains_data(
     else:
         monkeypatch.setattr("src.settings.get_setting", lambda *_a, **_k: [str(tmp_path)])
         context = nullcontext()
-        content = f'{{"path": "{tmp_path}"}}'
+        content = json.dumps({"path": str(tmp_path)})
 
     with context:
         result = asyncio.run(LsTool().execute(content, {}))

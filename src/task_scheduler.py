@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Dict, Tuple
 
 from core.auth import RESERVED_USERNAMES
 from src.owner_identity import REQUEST_SENTINEL_OWNERS
+from src.task_workspace import TaskWorkspaceError, validate_task_workspace
 from src.task_action_policy import (
     is_admin_only_task_action,
     owner_has_admin_task_privileges,
@@ -919,6 +920,10 @@ class TaskScheduler:
 
                 foreground_monitor = asyncio.create_task(_cancel_if_foreground_active())
             try:
+                validate_task_workspace(
+                    getattr(task, "workspace", None), task.owner,
+                    task_type, persisted=True,
+                )
                 if task_type == "action":
                     result, success = await self._execute_action(task, run_id=run_id)
                     run.status = "success" if success else "error"
@@ -1511,6 +1516,10 @@ class TaskScheduler:
         """Execute an LLM task with full tool access via the agent loop."""
         from core.database import Session as DbSession, ChatMessage, CrewMember
 
+        validate_task_workspace(
+            getattr(task, "workspace", None), task.owner, persisted=True,
+        )
+
         # If this task is wired to a CrewMember (personal assistant, custom
         # crew), prefer the crew member's persona/model/endpoint as overrides.
         crew = None
@@ -1565,7 +1574,7 @@ class TaskScheduler:
         # For assistant check-ins: call each tool directly and post results
         # as separate messages. More reliable than hoping the model calls tools.
         is_checkin = crew and crew.is_default_assistant and "check-in" in (task.name or "").lower()
-        if is_checkin:
+        if is_checkin and not getattr(task, "workspace", None):
             return await self._execute_checkin(task, crew, db, session_id, endpoint_url, model)
 
         # Build system prompt: crew member persona overrides the default.
@@ -1648,6 +1657,8 @@ class TaskScheduler:
                 relevant_tools=relevant_tools,
                 datetime_context_msg=_dt_msg,
             )
+        except (TaskWorkspaceError, PermissionError):
+            raise
         except Exception as e:
             logger.warning(f"Agent loop failed for task '{task.name}', falling back to simple call: {e}")
             from src.task_endpoint import task_llm_call_async
@@ -1866,6 +1877,9 @@ class TaskScheduler:
 
         system_content = system_prompt or "You are a helpful assistant executing a scheduled task. Use available tools to complete the task thoroughly."
         user_content = override_user_message or task.prompt
+        task_workspace = validate_task_workspace(
+            getattr(task, "workspace", None), task.owner, persisted=True,
+        )
         # Build the message list. The datetime context message (user-role) is
         # inserted immediately before the task prompt so the system prefix stays
         # byte-identical and cacheable across runs (see issue #2927).
@@ -1926,6 +1940,7 @@ class TaskScheduler:
             disabled_tools=disabled_tools,
             relevant_tools=relevant_tools,
             fallbacks=_task_fallbacks,
+            workspace=task_workspace,
             workload="background",
         ):
             if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):

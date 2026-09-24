@@ -17,6 +17,7 @@ import pathlib
 import re
 import stat
 import sys
+import tempfile
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
@@ -115,6 +116,12 @@ def _is_sensitive_path(resolved: str) -> bool:
     the lowercase form, so a case-sensitive check would let it slip past the
     deny-list in every file tool that relies on it.
     """
+    # Windows accepts both separators, including mixed paths. Keep backslashes
+    # as ordinary filename characters on POSIX, where they are not separators.
+    if os.name == "nt":
+        resolved = resolved.replace("/", os.sep).replace("\\", os.sep)
+    elif os.altsep:
+        resolved = resolved.replace(os.altsep, os.sep)
     parts = [p.casefold() for p in resolved.split(os.sep)]
     filename = parts[-1] if parts else ""
 
@@ -316,14 +323,11 @@ def _tool_path_roots() -> list[str]:
     # The rest of DATA_DIR is denied by _is_app_state_path.
     roots.extend(_agent_readable_data_subdirs())
 
-    # /tmp (and its macOS realpath /private/tmp).
-    roots.append("/tmp")
-    try:
-        private_tmp = os.path.realpath("/tmp")
-        if private_tmp != "/tmp":
-            roots.append(private_tmp)
-    except OSError:
-        pass
+    # Windows uses a per-user temporary directory, not a drive-root /tmp.
+    if os.name == "nt":
+        roots.append(tempfile.gettempdir())
+    else:
+        roots.append("/tmp")
 
     # $TMPDIR — per-user temp root on macOS (e.g. /var/folders/.../T/).
     tmpdir = os.environ.get("TMPDIR")
