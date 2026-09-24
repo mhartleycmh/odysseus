@@ -727,6 +727,24 @@ class CrewMember(TimestampMixin, Base):
                            backref=backref("crew_member", uselist=False))
 
 
+class CMHAgent(TimestampMixin, Base):
+    """CMH control-panel agent definition; execution remains in scheduled tasks."""
+    __tablename__ = "cmh_agents"
+
+    id = Column(String, primary_key=True)
+    owner = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    project_id = Column(String, nullable=True, index=True)
+    role = Column(String, nullable=False)
+    instructions = Column(Text, nullable=False)
+    instructions_version = Column(Integer, nullable=False, default=1)
+    model = Column(String, nullable=True)
+    allowed_tools = Column(Text, nullable=False, default="[]")
+    workspace = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="paused")
+    task_id = Column(String, nullable=True, index=True)
+
+
 class ScheduledTask(TimestampMixin, Base):
     """A recurring or one-off task — LLM-powered or direct action, time or event triggered."""
     __tablename__ = "scheduled_tasks"
@@ -753,6 +771,7 @@ class ScheduledTask(TimestampMixin, Base):
     model          = Column(String, nullable=True)
     endpoint_url   = Column(String, nullable=True)
     workspace      = Column(String, nullable=True)          # vetted filesystem workspace for agent tools
+    allowed_tools  = Column(Text, nullable=True)            # JSON allowlist; NULL preserves legacy policy
     run_count      = Column(Integer, default=0)
 
     cron_expression = Column(String, nullable=True)           # cron string e.g. "*/5 * * * *"
@@ -1592,6 +1611,7 @@ def _migrate_add_task_automation_columns():
         "trigger_count": "INTEGER",
         "trigger_counter": "INTEGER DEFAULT 0",
         "workspace": "VARCHAR",
+        "allowed_tools": "TEXT",
     }
     try:
         with engine.connect() as conn:
@@ -1629,6 +1649,7 @@ def _migrate_add_task_automation_columns():
                         model VARCHAR,
                         endpoint_url VARCHAR,
                         workspace VARCHAR,
+                        allowed_tools TEXT,
                         run_count INTEGER,
                         created_at DATETIME NOT NULL,
                         updated_at DATETIME NOT NULL,
@@ -1645,7 +1666,7 @@ def _migrate_add_task_automation_columns():
                     SELECT id, owner, name, prompt, schedule, scheduled_time,
                            scheduled_day, scheduled_date, next_run, last_run,
                            status, output_target, session_id, model, endpoint_url,
-                           workspace, run_count, created_at, updated_at,
+                           workspace, allowed_tools, run_count, created_at, updated_at,
                            task_type, action, trigger_type, trigger_event,
                            trigger_count, trigger_counter
                     FROM _old_scheduled_tasks
@@ -2068,6 +2089,11 @@ def init_db():
     """
     _migrate_model_endpoints()
     Base.metadata.create_all(bind=engine)
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as conn:
+            agent_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(cmh_agents)"))}
+            if agent_columns and "task_id" not in agent_columns:
+                conn.execute(text("ALTER TABLE cmh_agents ADD COLUMN task_id VARCHAR"))
     # Lock the DB file (and any SQLite sidecars) to 0o600 — it holds bearer-token
     # + bcrypt hashes and encrypted provider keys. POSIX only; safe_chmod no-ops
     # on Windows (ACL-restricted profile dir) and the path helper returns None for

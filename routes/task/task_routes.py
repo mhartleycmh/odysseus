@@ -168,6 +168,7 @@ class TaskCreate(BaseModel):
     notifications_enabled: Optional[bool] = None  # None lets action-specific defaults apply
     character_id: Optional[str] = None             # built-in persona id (PERSONAS) — biases output voice
     workspace: Optional[str] = None                # vetted filesystem workspace for agent tools
+    allowed_tools: Optional[list[str]] = None
 
 
 class TaskUpdate(BaseModel):
@@ -190,6 +191,7 @@ class TaskUpdate(BaseModel):
     notifications_enabled: Optional[bool] = None
     character_id: Optional[str] = None
     workspace: Optional[str] = None
+    allowed_tools: Optional[list[str]] = None
 
 
 def _display_task_name(t: ScheduledTask) -> str:
@@ -226,6 +228,7 @@ def _task_to_dict(t: ScheduledTask, include_last_run_result: bool = False) -> di
         "model": t.model,
         "endpoint_url": t.endpoint_url,
         "workspace": getattr(t, "workspace", None),
+        "allowed_tools": json.loads(t.allowed_tools) if getattr(t, "allowed_tools", None) is not None else None,
         "run_count": t.run_count or 0,
         "then_task_id": t.then_task_id,
         "notifications_enabled": bool(getattr(t, "notifications_enabled", True)),
@@ -489,6 +492,13 @@ def setup_task_routes(task_scheduler) -> APIRouter:
         if req.trigger_type == "event" and not req.trigger_count:
             raise HTTPException(400, "Trigger count is required for event-triggered tasks")
         workspace = _validated_workspace(req.workspace, user, req.task_type)
+        from src.task_workspace import validate_task_tools
+        try:
+            allowed_tools = validate_task_tools(req.allowed_tools, user, req.task_type)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
         # Auto-generate name
         name = req.name
@@ -565,6 +575,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 notifications_enabled=notifications_enabled,
                 character_id=(req.character_id or None),
                 workspace=workspace,
+                allowed_tools=json.dumps(sorted(allowed_tools)) if allowed_tools is not None else None,
             )
             db.add(task)
             db.commit()
@@ -697,6 +708,20 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 else getattr(task, "workspace", None)
             )
             workspace = _validated_workspace(next_workspace, user, next_task_type)
+            from src.task_workspace import validate_task_tools
+            next_tools = (
+                req.allowed_tools if req.allowed_tools is not None
+                else getattr(task, "allowed_tools", None)
+            )
+            try:
+                allowed_tools = validate_task_tools(
+                    next_tools, user, next_task_type,
+                    persisted=req.allowed_tools is None and next_tools is not None,
+                )
+            except PermissionError as exc:
+                raise HTTPException(403, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
 
             if req.name is not None:
                 task.name = req.name
@@ -730,6 +755,8 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 task.character_id = req.character_id or None
             if req.workspace is not None:
                 task.workspace = workspace
+            if req.allowed_tools is not None:
+                task.allowed_tools = json.dumps(sorted(allowed_tools))
             if req.cron_expression is not None:
                 if req.cron_expression:
                     try:

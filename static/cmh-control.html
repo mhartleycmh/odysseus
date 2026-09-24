@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proyectos y agentes · Odysseus</title>
+<link rel="stylesheet" href="/static/cmh-control.css"></head>
+<body><header><a href="/">← Odysseus</a><h1>Proyectos y agentes</h1><span>CMH · local</span></header>
+<main><section class="panel"><div class="heading"><h2>Proyectos</h2><input id="search" type="search" placeholder="Buscar proyecto" aria-label="Buscar proyecto"></div><div id="projects" class="list"></div></section>
+<section class="panel"><div class="heading"><h2>Ficha</h2><span id="project-status"></span></div><div id="project-detail" class="detail">Selecciona un proyecto.</div></section>
+<section class="panel"><div class="heading"><h2>Agentes</h2><button id="new-agent" type="button">Crear agente</button></div><div id="agents" class="list"></div></section>
+<section class="panel"><h2 id="form-title">Nuevo agente</h2><form id="agent-form"><label>Nombre<input name="name" required maxlength="120"></label><label>Proyecto<select name="project_id" id="agent-project"><option value="">Sin asignar</option></select></label><label>Rol<input name="role" required maxlength="120"></label><label>Modelo<input name="model" placeholder="Identificador del modelo"></label><label>ID de tarea LLM existente<input name="task_id" placeholder="Opcional; vincula ejecuciones recientes"></label><label>Carpeta autorizada<input name="workspace" placeholder="Ruta absoluta existente"></label><label>Herramientas permitidas<input name="allowed_tools" placeholder="read_file, ls, grep, glob"></label><label>Instrucciones<textarea name="instructions" required rows="7"></textarea></label><div class="actions"><button type="submit">Guardar</button><button id="pause-agent" type="button" disabled>Pausar</button><button id="resume-agent" type="button" disabled>Activar</button></div></form><p id="message" role="status"></p></section></main>
+<script src="/static/cmh-control.js" defer></script></body></html>

@@ -60,9 +60,13 @@ including owner privileges. A missing or redirected directory stops the run
 without a fallback model call. Workspace-bound assistant check-ins use the
 ordinary agent loop rather than collecting integration data directly.
 
-This confines native file tools; it does not sandbox shell, Python, MCP, or
-other external tools. The pilot still needs an enforced tool allowlist and
-separate verification of its no-overwrite rule before it can run as specified.
+Scheduled LLM tasks may now carry an `allowed_tools` list. When present, every
+native tool outside the list and all MCP tools are disabled for that run. The
+pilot is configured with only `glob`, `grep`, `ls`, and `read_file`, so it has
+no file-writing, shell, Python, email, or external-tool capability through
+the agent loop. Restricted tasks fail rather than falling back to an untraced
+LLM call. This is an application-level policy, not an operating-system sandbox;
+the synthetic live run and blocked-escape evidence are still required.
 
 Validation: 134 tests passed and 10 were skipped across task workspace/API,
 tool availability, session delivery, cancellation, owner scope, and path
@@ -70,7 +74,7 @@ confinement. No live model calls or server restart were performed.
 Two additional migration checks passed for existing nullable schemas and
 legacy table rebuilds, including repeat execution without data loss.
 
-The `cmh-researcher` task must remain paused until a dry run is performed with
-synthetic input and its run ID, effective workspace, tool calls, output, and
-blocked escape attempts are recorded. Do not widen access to financial or
-production folders based on the prompt alone.
+The `cmh-researcher` task remains paused until a dry run records its run ID,
+effective workspace, tool calls, output, and blocked escape attempts. See
+`ESTADO_AGENTIC_OS.md` for the current checkpoint. Do not widen access to
+financial or production folders based on the prompt alone.

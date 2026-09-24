@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, Dict, Tuple
 
 from core.auth import RESERVED_USERNAMES
 from src.owner_identity import REQUEST_SENTINEL_OWNERS
-from src.task_workspace import TaskWorkspaceError, validate_task_workspace
+from src.task_workspace import TaskWorkspaceError, validate_task_workspace, validate_task_tools
 from src.task_action_policy import (
     is_admin_only_task_action,
     owner_has_admin_task_privileges,
@@ -924,6 +924,10 @@ class TaskScheduler:
                     getattr(task, "workspace", None), task.owner,
                     task_type, persisted=True,
                 )
+                validate_task_tools(
+                    getattr(task, "allowed_tools", None), task.owner,
+                    task_type, persisted=True,
+                )
                 if task_type == "action":
                     result, success = await self._execute_action(task, run_id=run_id)
                     run.status = "success" if success else "error"
@@ -1519,6 +1523,9 @@ class TaskScheduler:
         validate_task_workspace(
             getattr(task, "workspace", None), task.owner, persisted=True,
         )
+        validate_task_tools(
+            getattr(task, "allowed_tools", None), task.owner, persisted=True,
+        )
 
         # If this task is wired to a CrewMember (personal assistant, custom
         # crew), prefer the crew member's persona/model/endpoint as overrides.
@@ -1660,6 +1667,8 @@ class TaskScheduler:
         except (TaskWorkspaceError, PermissionError):
             raise
         except Exception as e:
+            if getattr(task, "allowed_tools", None) is not None:
+                raise RuntimeError("Restricted task agent loop failed; no untraced fallback") from e
             logger.warning(f"Agent loop failed for task '{task.name}', falling back to simple call: {e}")
             from src.task_endpoint import task_llm_call_async
             messages: list = [{"role": "system", "content": system_prompt}]
@@ -1880,6 +1889,20 @@ class TaskScheduler:
         task_workspace = validate_task_workspace(
             getattr(task, "workspace", None), task.owner, persisted=True,
         )
+        allowed_tools = validate_task_tools(
+            getattr(task, "allowed_tools", None), task.owner, persisted=True,
+        )
+        tool_policy = None
+        if allowed_tools is not None:
+            from src.tool_policy import ToolPolicy, known_tool_names
+            blocked = known_tool_names() - allowed_tools
+            tool_policy = ToolPolicy(
+                disabled_tools=frozenset(blocked),
+                hidden_tools=frozenset(blocked),
+                disable_mcp=True,
+            )
+            disabled_tools = set(disabled_tools or ()) | blocked
+            relevant_tools = set(allowed_tools)
         # Build the message list. The datetime context message (user-role) is
         # inserted immediately before the task prompt so the system prefix stays
         # byte-identical and cacheable across runs (see issue #2927).
@@ -1921,7 +1944,7 @@ class TaskScheduler:
             from src.interactive_gate import wait_for_interactive_quiet
             await wait_for_interactive_quiet(f"agent task {task.name}")
             from src.task_endpoint import resolve_task_candidates
-            _task_fallbacks = resolve_task_candidates(
+            _task_fallbacks = [] if allowed_tools is not None else resolve_task_candidates(
                 fallback_url=endpoint_url,
                 fallback_model=model,
                 fallback_headers=headers,
@@ -1941,8 +1964,14 @@ class TaskScheduler:
             relevant_tools=relevant_tools,
             fallbacks=_task_fallbacks,
             workspace=task_workspace,
+            tool_policy=tool_policy,
             workload="background",
         ):
+            if allowed_tools is not None and (
+                event_str.startswith("event: error")
+                or (event_str.startswith("data: ") and '"error"' in event_str)
+            ):
+                raise RuntimeError("Restricted task model stream failed")
             if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
                 try:
                     data = json.loads(event_str[6:])
@@ -1998,6 +2027,8 @@ class TaskScheduler:
         # Grace summarization — if the model exhausted rounds on tool calls
         # without producing a final text response, do one last LLM call
         # asking it to summarize what it did. Guarantees output.
+        if allowed_tools is not None and not full_text.strip():
+            raise RuntimeError("Restricted task produced no final model output")
         if not full_text.strip():
             try:
                 from src.task_endpoint import task_llm_call_async

@@ -65,6 +65,29 @@ async def test_workspace_create_update_clear_and_owner_gate(api, tmp_path):
     assert result["workspace"] is None
 
 
+async def test_task_tool_allowlist_persists_and_rejects_invalid_input(api, tmp_path):
+    endpoint, factory = api
+    create = endpoint("POST", "/api/tasks")
+    update = endpoint("PUT", "/api/tasks/{task_id}")
+    result = await create(request(), task_routes.TaskCreate(
+        name="Read-only pilot", prompt="Inspect", trigger_type="webhook",
+        workspace=str(tmp_path), allowed_tools=["ls", "read_file", "grep", "glob"],
+    ))
+    assert set(result["allowed_tools"]) == {"ls", "read_file", "grep", "glob"}
+    with factory() as db:
+        assert db.get(cdb.ScheduledTask, result["id"]).allowed_tools is not None
+    with pytest.raises(HTTPException) as exc:
+        await update(request(), result["id"], task_routes.TaskUpdate(
+            allowed_tools=["read_file", "unknown_external_tool"],
+        ))
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        await update(request(), result["id"], task_routes.TaskUpdate(task_type="research"))
+    assert exc.value.status_code == 400
+    result = await update(request(), result["id"], task_routes.TaskUpdate(allowed_tools=[]))
+    assert result["allowed_tools"] == []
+
+
 @pytest.mark.parametrize("owner,kind,invalid,status", [
     ("other", "llm", False, 403),
     ("admin", "research", False, 400),
@@ -111,6 +134,46 @@ async def test_workspace_error_during_execution_does_not_fall_back(monkeypatch, 
     model.assert_not_awaited()
 
 
+async def test_pilot_policy_blocks_write_shell_email_and_mcp(monkeypatch, tmp_path, admin):
+    captured = {}
+
+    async def fake_stream(**kwargs):
+        captured.update(kwargs)
+        yield 'data: {"delta": "done"}\n\n'
+        yield 'data: [DONE]\n\n'
+
+    monkeypatch.setattr("src.agent_loop.stream_agent_loop", fake_stream)
+    scheduler = TaskScheduler(session_manager=None)
+    pilot = task(tmp_path)
+    pilot.allowed_tools = '["glob", "grep", "ls", "read_file"]'
+    result = await scheduler._run_agent_loop(
+        "http://endpoint", "model", pilot, "session",
+    )
+    assert result == "done"
+    policy = captured["tool_policy"]
+    assert policy.disable_mcp
+    assert not policy.blocks("read_file")
+    for name in ("write_file", "edit_file", "bash", "python", "send_email", "app_api"):
+        assert policy.blocks(name)
+        assert name in captured["disabled_tools"]
+    assert captured["relevant_tools"] == {"glob", "grep", "ls", "read_file"}
+
+
+async def test_pilot_reports_stream_failure_instead_of_success(monkeypatch, tmp_path, admin):
+    async def fake_stream(**kwargs):
+        yield 'event: error\ndata: {"error":"Cannot reach model","status":503}\n\n'
+
+    fallback = AsyncMock()
+    monkeypatch.setattr("src.agent_loop.stream_agent_loop", fake_stream)
+    monkeypatch.setattr("src.task_endpoint.task_llm_call_async", fallback)
+    scheduler = TaskScheduler(session_manager=None)
+    pilot = task(tmp_path)
+    pilot.allowed_tools = '["glob", "grep", "ls", "read_file"]'
+    with pytest.raises(RuntimeError, match="model stream failed"):
+        await scheduler._run_agent_loop("http://endpoint", "model", pilot, "session")
+    fallback.assert_not_awaited()
+
+
 def test_runtime_rechecks_owner_privileges(tmp_path, admin):
     with pytest.raises(PermissionError):
         validate_task_workspace(str(tmp_path), "other", persisted=True)
@@ -149,7 +212,7 @@ def test_workspace_migration_preserves_existing_rows_and_is_repeatable(monkeypat
         cdb._migrate_add_task_automation_columns()
         cdb._migrate_add_task_automation_columns()
         with engine.connect() as conn:
-            row = conn.execute(text("SELECT id, prompt, workspace FROM scheduled_tasks")).one()
-            assert tuple(row) == ("old", "Keep me", None)
+            row = conn.execute(text("SELECT id, prompt, workspace, allowed_tools FROM scheduled_tasks")).one()
+            assert tuple(row) == ("old", "Keep me", None, None)
     finally:
         engine.dispose()

@@ -807,6 +807,9 @@ app.include_router(setup_cookbook_routes())
 from routes.workspace_routes import setup_workspace_routes
 app.include_router(setup_workspace_routes())
 
+from routes.cmh_control_routes import setup_cmh_control_routes
+app.include_router(setup_cmh_control_routes())
+
 # Hardware model fitting (cookbook "What Fits?" tab)
 from routes.hwfit_routes import setup_hwfit_routes
 app.include_router(setup_hwfit_routes())
@@ -932,6 +935,10 @@ async def serve_gallery(request: Request):
 @app.get("/tasks")
 async def serve_tasks(request: Request):
     return await serve_index(request)
+
+@app.get("/cmh")
+async def serve_cmh_control(request: Request):
+    return serve_html_with_nonce(request, abs_join(BASE_DIR, "static/cmh-control.html"))
 
 @app.get("/library")
 async def serve_library(request: Request):
