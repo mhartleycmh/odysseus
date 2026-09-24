@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote, urlparse
-from sqlalchemy import DDL, event, create_engine, Column, String, Text, Boolean, DateTime, Integer, ForeignKey, JSON, Index, func, inspect, text
+from sqlalchemy import DDL, event, create_engine, Column, String, Text, Boolean, DateTime, Integer, ForeignKey, JSON, Index, UniqueConstraint, func, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.ext.declarative import declarative_base, declared_attr
@@ -743,6 +743,84 @@ class CMHAgent(TimestampMixin, Base):
     workspace = Column(String, nullable=True)
     status = Column(String, nullable=False, default="paused")
     task_id = Column(String, nullable=True, index=True)
+
+
+class CMHWorkflowDefinition(TimestampMixin, Base):
+    __tablename__ = "cmh_workflow_definitions"
+    id = Column(String, primary_key=True)
+    owner = Column(String, nullable=False, index=True)
+    project_id = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    steps = Column(Text, nullable=False)  # validated DAG JSON
+
+
+class CMHWorkflowRun(TimestampMixin, Base):
+    __tablename__ = "cmh_workflow_runs"
+    id = Column(String, primary_key=True)
+    owner = Column(String, nullable=False, index=True)
+    definition_id = Column(String, nullable=False, index=True)
+    project_id = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="paused")
+    initial_input = Column(Text, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class CMHWorkflowStep(Base):
+    __tablename__ = "cmh_workflow_steps"
+    __table_args__ = (UniqueConstraint("run_id", "step_key", name="uq_cmh_workflow_step_key"),)
+    id = Column(String, primary_key=True)
+    run_id = Column(String, nullable=False, index=True)
+    step_key = Column(String, nullable=False)
+    agent_id = Column(String, nullable=False)
+    config = Column(Text, nullable=False)  # agent/model/tool/workspace snapshot
+    dependencies = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+
+
+class CMHWorkflowArtifact(Base):
+    __tablename__ = "cmh_workflow_artifacts"
+    # One artifact per step and run: a resumed run can never store a duplicate.
+    __table_args__ = (UniqueConstraint("run_id", "step_key", name="uq_cmh_workflow_artifact_step"),)
+    id = Column(String, primary_key=True)
+    run_id = Column(String, nullable=False, index=True)
+    step_key = Column(String, nullable=False)
+    agent_id = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    instructions_version = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow_naive)
+
+
+class CMHWorkflowEvent(Base):
+    __tablename__ = "cmh_workflow_events"
+    # AUTOINCREMENT: SQLite must never reuse a seq, or a Last-Event-ID cursor could skip events.
+    __table_args__ = (Index("ix_cmh_workflow_events_run_seq", "run_id", "seq"),
+                      {"sqlite_autoincrement": True})
+    seq = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, nullable=False, index=True)
+    step_key = Column(String, nullable=True)
+    kind = Column(String, nullable=False)
+    payload = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=utcnow_naive)
+
+
+class CMHMemoryProposal(TimestampMixin, Base):
+    __tablename__ = "cmh_memory_proposals"
+    id = Column(String, primary_key=True)
+    owner = Column(String, nullable=False, index=True)
+    target_path = Column(String, nullable=False)
+    base_hash = Column(String, nullable=False)
+    proposed_content = Column(Text, nullable=False)
+    diff = Column(Text, nullable=False)
+    applied_hash = Column(String, nullable=True)
+    backup_path = Column(String, nullable=True)
+    mirror_status = Column(String, nullable=True)  # canon mirror outcome of the last write
+    status = Column(String, nullable=False, default="pending")
 
 
 class ScheduledTask(TimestampMixin, Base):

@@ -24,6 +24,7 @@ def api(monkeypatch, tmp_path):
     index.write_text("| Project | [Ficha](<../Project/00_Proyecto.md>) | Activo |\n", encoding="utf-8")
     monkeypatch.setattr(control, "CMH_ROOT", root)
     monkeypatch.setattr(control, "INDEX_PATH", index)
+    monkeypatch.setattr(control, "MANAGED_PROJECTS", root / "Managed")
     monkeypatch.setattr(control, "owner_is_admin_or_single_user", lambda owner: owner == "admin")
     monkeypatch.setattr("src.tool_security.owner_is_admin_or_single_user", lambda owner: owner == "admin")
     engine = create_engine("sqlite:///:memory:")
@@ -98,3 +99,42 @@ def test_project_shows_only_explicitly_linked_task_runs(api):
     with pytest.raises(HTTPException) as exc:
         endpoint("PUT", "/api/cmh/agents/{agent_id}")(request(), agent["id"], body)
     assert exc.value.status_code == 400
+
+
+def test_new_project_creates_own_card_without_changing_index(api):
+    endpoint, root, _, _ = api
+    index = root / "_control" / "INDICE.md"
+    before = index.read_bytes()
+    project = endpoint("POST", "/api/cmh/projects")(request(), control.ProjectInput(name="Nuevo Proyecto"))
+    assert project["id"] == "nuevo-proyecto"
+    assert control.Path(project["card_path"]).read_text(encoding="utf-8").startswith("# Nuevo Proyecto")
+    assert len(endpoint("GET", "/api/cmh/projects")(request())["projects"]) == 2
+    assert index.read_bytes() == before
+
+
+def test_agent_workspace_cannot_reach_protected_areas(api):
+    endpoint, root, _, _ = api
+    create = endpoint("POST", "/api/cmh/agents")
+    inside = root / "Modelo Financiero Nuevo" / "trabajo"
+    holder = root / "Project" / "entregas"
+    (holder / "lote" / "Fuentes").mkdir(parents=True)
+    inside.mkdir(parents=True)
+    for workspace in (inside, root, holder):
+        body = control.AgentInput(name="R", role="Reader", instructions="Read", project_id="project",
+                                  workspace=str(workspace), allowed_tools=["read_file"])
+        with pytest.raises(HTTPException) as exc:
+            create(request(), body)
+        assert exc.value.status_code == 400 and "protected area" in exc.value.detail
+    clean = root / "Project" / "limpio"
+    clean.mkdir()
+    assert control.protected_area(clean) is None
+
+
+def test_empty_or_bom_managed_cards_do_not_break_the_catalog(api):
+    endpoint, root, _, _ = api
+    for slug, data in (("vacio", b""), ("con-bom", "﻿# Con BOM\n".encode("utf-8")),
+                       ("cp1252", "# Producción\n".encode("cp1252"))):
+        (root / "Managed" / slug).mkdir(parents=True)
+        (root / "Managed" / slug / "00_Proyecto.md").write_bytes(data)
+    names = {p["id"]: p["name"] for p in endpoint("GET", "/api/cmh/projects")(request())["projects"]}
+    assert names["vacio"] == "vacio" and names["con-bom"] == "Con BOM" and names["cp1252"] == "cp1252"

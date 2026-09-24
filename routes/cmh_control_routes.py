@@ -1,5 +1,6 @@
 """Local CMH project catalog and versioned agent registry."""
 
+import os
 import re
 import unicodedata
 import uuid
@@ -17,7 +18,44 @@ from src.tool_security import owner_is_admin_or_single_user
 
 CMH_ROOT = Path(__file__).resolve().parents[2].parent
 INDEX_PATH = CMH_ROOT / "_control" / "INDICE.md"
+MANAGED_PROJECTS = CMH_ROOT / "CMH_Claude" / "Proyectos"
 _ROW = re.compile(r"^\|\s*([^|]+?)\s*\|\s*\[Ficha[^]]*\]\(<([^>]+)>\)\s*\|\s*([^|]+?)\s*\|$")
+# Financial, production and canon folders stay outside every agent workspace
+# (integrations/cmh/README.md), as does any fuentes/ folder, which is read-only.
+FINANCIAL_AREAS = ("Base Matriz Nueva", "Modelo Financiero Nuevo", "Dashboard Financiero", "Producción")
+PROTECTED_AREAS = FINANCIAL_AREAS + ("CMH_Canon", "CMH_Claude/CMH_Canon")
+_FUENTES_SCAN_DEPTH = 3
+
+
+def in_financial_area(path) -> bool:
+    target = Path(path).resolve()
+    return any(target.is_relative_to((CMH_ROOT / name).resolve()) for name in FINANCIAL_AREAS)
+
+
+def protected_area(path) -> Optional[str]:
+    """Name the protected area a workspace lies in or contains, or None."""
+    target = Path(path).resolve()
+    if any(part.casefold() == "fuentes" for part in target.parts):
+        return "fuentes"
+    for name in PROTECTED_AREAS:
+        area = (CMH_ROOT / name).resolve()
+        if target.is_relative_to(area) or area.is_relative_to(target):
+            return name
+    base_depth = len(target.parts)
+    for current, dirs, _files in os.walk(target):
+        if any(d.casefold() == "fuentes" for d in dirs):
+            return "fuentes"
+        if len(Path(current).parts) - base_depth >= _FUENTES_SCAN_DEPTH:
+            dirs.clear()
+    return None
+
+
+def _card_title(card: Path) -> str:
+    try:
+        lines = card.read_text(encoding="utf-8-sig").splitlines()
+    except UnicodeDecodeError:
+        return ""  # a non-UTF-8 card must not take the whole catalog down
+    return lines[0].removeprefix("# ").strip() if lines else ""
 
 
 def _slug(value: str) -> str:
@@ -50,6 +88,15 @@ def catalog() -> list[dict]:
             "card_modified": card.stat().st_mtime,
             "source": str(INDEX_PATH),
         })
+    if MANAGED_PROJECTS.is_dir():
+        for card in sorted(MANAGED_PROJECTS.glob("*/00_Proyecto.md")):
+            project_root = card.parent.resolve()
+            if not project_root.is_relative_to(MANAGED_PROJECTS.resolve()):
+                continue
+            projects.append({"id": project_root.name, "name": _card_title(card) or project_root.name,
+                             "status": "Nuevo", "card_path": str(card.resolve()),
+                             "root_path": str(project_root), "card_modified": card.stat().st_mtime,
+                             "source": str(card)})
     return projects
 
 
@@ -93,6 +140,10 @@ class AgentInput(BaseModel):
     task_id: Optional[str] = None
 
 
+class ProjectInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
 def _validated_input(body: AgentInput, owner: str):
     if not body.name.strip() or not body.role.strip() or not body.instructions.strip():
         raise HTTPException(400, "Name, role and instructions cannot be blank")
@@ -103,6 +154,9 @@ def _validated_input(body: AgentInput, owner: str):
         tools = validate_task_tools(body.allowed_tools, owner)
     except (ValueError, PermissionError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    area = protected_area(workspace) if workspace else None
+    if area:
+        raise HTTPException(400, f"Workspace lies in or contains the protected area {area}")
     return workspace, tools
 
 
@@ -143,6 +197,26 @@ def setup_cmh_control_routes() -> APIRouter:
                 ]
                 project["recent_runs"] = _recent_runs(db, linked)
             return {"projects": result}
+
+    @router.post("/projects", status_code=201)
+    def create_project(request: Request, body: ProjectInput):
+        owner = _owner(request)
+        _admin(owner)
+        name = body.name.strip()
+        slug = _slug(name)
+        if not slug:
+            raise HTTPException(400, "Project name needs letters or numbers")
+        if slug in {project["id"] for project in catalog()}:
+            raise HTTPException(409, "Project ID already exists")
+        MANAGED_PROJECTS.mkdir(parents=True, exist_ok=True)
+        folder = MANAGED_PROJECTS / slug
+        try:
+            folder.mkdir(exist_ok=False)
+            with (folder / "00_Proyecto.md").open("x", encoding="utf-8") as stream:
+                stream.write(f"# {name}\n\nEstado: nuevo\n\n## Objetivo\n\nPendiente de definir.\n")
+        except FileExistsError as exc:
+            raise HTTPException(409, "Project folder already exists") from exc
+        return next(project for project in catalog() if project["id"] == slug)
 
     @router.get("/projects/{project_id}")
     def project(request: Request, project_id: str):

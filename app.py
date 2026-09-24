@@ -809,6 +809,10 @@ app.include_router(setup_workspace_routes())
 
 from routes.cmh_control_routes import setup_cmh_control_routes
 app.include_router(setup_cmh_control_routes())
+from routes.cmh_workflow_routes import setup_cmh_workflow_routes
+app.include_router(setup_cmh_workflow_routes())
+from routes.cmh_memory_routes import setup_cmh_memory_routes
+app.include_router(setup_cmh_memory_routes())
 
 # Hardware model fitting (cookbook "What Fits?" tab)
 from routes.hwfit_routes import setup_hwfit_routes
@@ -1040,6 +1044,12 @@ app.router.lifespan_context = _lifespan
 async def _startup_event():
     global upload_cleanup_task
     logger.info("Application starting up...")
+    try:
+        from src.cmh_workflows import reconcile_interrupted_runs
+        reconcile_interrupted_runs()
+    except Exception:
+        # CMH workflows are optional: a failure here must not stop Odysseus.
+        logger.exception("Could not reconcile interrupted CMH workflow runs")
     webhook_manager.set_loop(asyncio.get_running_loop())
     # Wipe any leftover incognito sessions from previous process — they're
     # ephemeral by design and must not survive a restart.

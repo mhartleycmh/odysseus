@@ -3353,7 +3353,10 @@ def _empty_response_fallback(
     if round_reasoning.strip():
         return round_reasoning, None
     _error_msg = "The model returned an empty response. Please try again or switch to a different model."
-    return _error_msg, f'data: {json.dumps({"delta": _error_msg})}\n\n'
+    # "synthetic" marks text Odysseus wrote itself, so restricted callers can
+    # tell it from model output: "failure" replaces a missing answer, "note"
+    # decorates a real one.
+    return _error_msg, f'data: {json.dumps({"delta": _error_msg, "synthetic": "failure"})}\n\n'
 
 
 PLAN_MODE_DIRECTIVE = (
@@ -3447,6 +3450,7 @@ async def stream_agent_loop(
     delegated_credential: bool = False,
     exact_approval: Optional[ExactToolApproval] = None,
     _is_teacher_run: bool = False,
+    allow_escalation: bool = True,
     history_session=None,
     defer_context_shaping: bool = False,
 ) -> AsyncGenerator[str, None]:
@@ -3560,7 +3564,7 @@ async def stream_agent_loop(
             "No active workspace is set. Use `/workspace pick` or "
             "`/workspace set /absolute/path`, then rerun the request."
         )
-        yield f"data: {json.dumps({'delta': msg})}\n\n"
+        yield f"data: {json.dumps({'delta': msg, 'synthetic': 'failure'})}\n\n"
         metrics = {
             "model": model,
             "requested_model": model,
@@ -5216,7 +5220,7 @@ async def stream_agent_loop(
                     elif data.get("error"):
                         err_msg = data.get("error", "unknown")
                         logger.error(f"Agent round {round_num}: stream error: {err_msg}")
-                        yield f'data: {json.dumps({"delta": chr(10) + chr(10) + "*[Stream error: " + str(err_msg) + "]*"})}\n\n'
+                        yield f'data: {json.dumps({"delta": chr(10) + chr(10) + "*[Stream error: " + str(err_msg) + "]*", "synthetic": "failure"})}\n\n'
                 except json.JSONDecodeError:
                     if round_num == 1:
                         yield chunk
@@ -5374,14 +5378,14 @@ async def stream_agent_loop(
                 except Exception as _e:
                     logger.warning(f"[agent] grace synthesis failed: {_e}")
                 if _synth:
-                    yield f'data: {json.dumps({"delta": _synth})}\n\n'
+                    yield f'data: {json.dumps({"delta": _synth, "synthetic": "failure"})}\n\n'
                     round_response += _synth
                     full_response += _synth
                 else:
                     _fb = ("I gathered some search results but couldn't pull a clean "
                            "answer together. Want me to try a more specific question, "
                            "or summarize what I did find?")
-                    yield f'data: {json.dumps({"delta": _fb})}\n\n'
+                    yield f'data: {json.dumps({"delta": _fb, "synthetic": "failure"})}\n\n'
                     round_response += _fb
                     full_response += _fb
 
@@ -5456,7 +5460,7 @@ async def stream_agent_loop(
                     _verifier_rounds += 1
                     logger.info(f"[agent] verifier flagged {len(_vfail)} issue(s) on round {round_num}: {_vfail}")
                     _note = "\n\n_Double-checked the work and found something to fix._\n\n"
-                    yield f'data: {json.dumps({"delta": _note})}\n\n'
+                    yield f'data: {json.dumps({"delta": _note, "synthetic": "note"})}\n\n'
                     full_response += _note
                     messages.append({
                         "role": "system",
@@ -6264,14 +6268,14 @@ async def stream_agent_loop(
         if _doc_stream_create_completed:
             if not full_response.strip():
                 full_response = "Done."
-                yield 'data: ' + json.dumps({"delta": "Done."}) + '\n\n'
+                yield 'data: ' + json.dumps({"delta": "Done.", "synthetic": "note"}) + '\n\n'
             logger.info("[agent] odysseus doc stream-create completed after one create_document")
             break
 
         if _ody_doc_tool_completed:
             if not full_response.strip() or full_response.strip().startswith("```"):
                 full_response = "Done."
-                yield 'data: ' + json.dumps({"delta": "Done."}) + '\n\n'
+                yield 'data: ' + json.dumps({"delta": "Done.", "synthetic": "note"}) + '\n\n'
             logger.info("[agent] odysseus doc tool completed after one textual tool block")
             break
 
@@ -6426,7 +6430,7 @@ async def stream_agent_loop(
     # gets a turn (with its own tool calls forwarded to the user) and
     # a skill is saved ONLY if the teacher actually succeeds. Skipped
     # when we ARE the teacher to avoid recursion.
-    if not _is_teacher_run and not guide_only and not _awaiting_user:
+    if allow_escalation and not _is_teacher_run and not guide_only and not _awaiting_user:
         try:
             from src.teacher_escalation import run_teacher_inline
             async for evt in run_teacher_inline(

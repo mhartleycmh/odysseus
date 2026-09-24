@@ -1880,7 +1880,9 @@ class TaskScheduler:
                               disabled_tools: set | None = None,
                               relevant_tools: set | None = None,
                               override_user_message: str | None = None,
-                              datetime_context_msg: dict | None = None) -> str:
+                              datetime_context_msg: dict | None = None,
+                              foreground_controlled: bool = False,
+                              event_sink=None) -> str:
         """Run the full agent loop with tool access, collecting the final text."""
         from src.agent_loop import stream_agent_loop
 
@@ -1933,6 +1935,7 @@ class TaskScheduler:
         full_text = ""
         tool_results = []
         approval_pause = None
+        tool_started = {}
 
         # Honor per-task max_steps (defense against runaway agent loops).
         # Falls back to 20 if not set — the historical default.
@@ -1942,7 +1945,8 @@ class TaskScheduler:
         # `(no output)`.
         try:
             from src.interactive_gate import wait_for_interactive_quiet
-            await wait_for_interactive_quiet(f"agent task {task.name}")
+            if not foreground_controlled:
+                await wait_for_interactive_quiet(f"agent task {task.name}")
             from src.task_endpoint import resolve_task_candidates
             _task_fallbacks = [] if allowed_tools is not None else resolve_task_candidates(
                 fallback_url=endpoint_url,
@@ -1966,7 +1970,33 @@ class TaskScheduler:
             workspace=task_workspace,
             tool_policy=tool_policy,
             workload="background",
+            # A restricted run must be answered by its own model only.
+            allow_escalation=allowed_tools is None,
         ):
+            if event_sink and "data: " in event_str:
+                try:
+                    import time
+                    observed = json.loads(event_str.split("data: ", 1)[1].split("\n", 1)[0])
+                    kind = observed.get("type")
+                    if kind == "tool_start":
+                        name = observed.get("tool") or "unknown"
+                        tool_started.setdefault(name, []).append(time.monotonic())
+                        event_sink("tool_started", tool=name)
+                    elif kind == "tool_output":
+                        name = observed.get("tool") or "unknown"
+                        pending_starts = tool_started.get(name) or []
+                        started = pending_starts.pop(0) if pending_starts else None
+                        event_sink("tool_finished", tool=name,
+                                   error=observed.get("exit_code") not in (None, 0),
+                                   duration_seconds=round(time.monotonic()-started, 3) if started else None)
+                    elif kind == "metrics":
+                        raw_metrics = observed.get("data") or {}
+                        safe_metrics = {k: raw_metrics[k] for k in ("model", "input_tokens", "output_tokens",
+                                                                    "total_tokens", "response_time", "usage_source")
+                                        if isinstance(raw_metrics, dict) and k in raw_metrics}
+                        event_sink("model_metrics", metrics=safe_metrics)
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    pass
             if allowed_tools is not None and (
                 event_str.startswith("event: error")
                 or (event_str.startswith("data: ") and '"error"' in event_str)
@@ -1975,6 +2005,18 @@ class TaskScheduler:
             if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
                 try:
                     data = json.loads(event_str[6:])
+                    if allowed_tools is not None:
+                        # Keep only the model's own answer: a placeholder
+                        # Odysseus wrote, a round cap or another model taking
+                        # over must fail the run, never become its output.
+                        if (data.get("synthetic") == "failure"
+                                or data.get("type") in ("rounds_exhausted", "teacher_takeover")):
+                            raise RuntimeError(
+                                "Restricted task ended without its own answer "
+                                f"({data.get('type') or 'synthetic output'})"
+                            )
+                        if data.get("synthetic"):
+                            continue
                     # Capture text from all event types, not just delta
                     if "delta" in data:
                         if data.get("thinking"):
@@ -2017,6 +2059,8 @@ class TaskScheduler:
                     pass
 
         if approval_pause is not None:
+            if allowed_tools is not None:
+                raise RuntimeError(f"Restricted task stopped for approval of {approval_pause['tool']}")
             return (
                 "Scheduled task paused safely: "
                 f"{approval_pause['tool']} requested an exact action after "
@@ -2027,8 +2071,13 @@ class TaskScheduler:
         # Grace summarization — if the model exhausted rounds on tool calls
         # without producing a final text response, do one last LLM call
         # asking it to summarize what it did. Guarantees output.
-        if allowed_tools is not None and not full_text.strip():
-            raise RuntimeError("Restricted task produced no final model output")
+        if allowed_tools is not None:
+            # Inline <think> blocks are reasoning, not deliverable: a reviewer
+            # reading this artifact must never inherit the author's reasoning.
+            from src.text_helpers import strip_think
+            full_text = strip_think(full_text, prompt_echo=False)
+            if not full_text:
+                raise RuntimeError("Restricted task produced no final model output")
         if not full_text.strip():
             try:
                 from src.task_endpoint import task_llm_call_async

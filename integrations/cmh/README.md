@@ -74,6 +74,27 @@ confinement. No live model calls or server restart were performed.
 Two additional migration checks passed for existing nullable schemas and
 legacy table rebuilds, including repeat execution without data loss.
 
+### Workflows and memory proposals (2026-09-24, not yet run against a provider)
+
+`/cmh` builds the CMH chain investigador → constructor → verificador →
+revisor → documentador as a persistent DAG. Each step snapshots its agent,
+model, endpoint, instructions version, workspace and read-only tools, and
+stores exactly one artifact; the reviewer receives the builder's and the
+verifier's artifacts, never reasoning, and must be a different agent from the
+builder. Runs survive restarts and stop/resume without repeating a finished
+step; events are replayable over SSE with `Last-Event-ID`.
+
+A restricted step fails instead of storing text Odysseus wrote itself (empty
+response, stream error, forced synthesis, round cap, escalation to another
+model). No agent workspace may lie in or contain `Base Matriz Nueva/`,
+`Modelo Financiero Nuevo/`, `Dashboard Financiero/`, `Producción/`,
+`CMH_Canon/` (master or mirror) or any `fuentes/` folder.
+
+Memory proposals edit the canon master and project cards outside financial
+and production folders only after a diff preview and explicit approval, with a
+backup, an atomic write and restore. The canon mirror in
+`CMH_Claude/CMH_Canon/` follows only when it held exactly the replaced bytes.
+
 The `cmh-researcher` task remains paused until a dry run records its run ID,
 effective workspace, tool calls, output, and blocked escape attempts. See
 `ESTADO_AGENTIC_OS.md` for the current checkpoint. Do not widen access to
