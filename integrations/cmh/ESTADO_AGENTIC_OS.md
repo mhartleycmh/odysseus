@@ -43,9 +43,9 @@ Incidencia del piloto: el run `c35872d5-9cce-4a93-ad27-ce2b8acbcc5c` terminó `a
 
 Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anthropic.com:443` respondió. La ejecución sintética aislada con el código corregido produjo el run `f620a2b3-89c1-4faf-85f6-0fb8e4ab6088`, estado `error`: Anthropic devolvió `401 invalid x-api-key` para el endpoint configurado. No se produjo respuesta ni llamada a herramienta. Se devolvió la tarea a `paused` con `next_run=NULL`; el agente del registro también sigue pausado. La clave debe corregirse desde Settings → Model Endpoints → Anthropic, sin escribirla en archivos del proyecto ni en este registro. Se pidió al usuario actualizarla; mientras tanto continuar solo con trabajo local independiente.
 
-## Punto limpio 3: flujos, eventos y propuestas de memoria (2026-09-24, sin commit)
+## Punto limpio 3: flujos, eventos y propuestas de memoria (2026-09-24)
 
-- Estado Git: rama `dev`, base `5b844b4f`, **cambios sin commit** (pendiente de autorización del usuario). Archivos nuevos: `src/cmh_workflows.py`, `routes/cmh_workflow_routes.py`, `routes/cmh_memory_routes.py` y 4 módulos de prueba `tests/test_cmh_*`; modificados `app.py`, `core/database.py`, `src/agent_loop.py`, `src/task_scheduler.py`, `routes/cmh_control_routes.py`, `static/cmh-control.*`.
+- Estado Git: rama `dev`, commit `10f477b3` (autorizado por el usuario; sin push). Archivos nuevos: `src/cmh_workflows.py`, `routes/cmh_workflow_routes.py`, `routes/cmh_memory_routes.py` y 4 módulos de prueba `tests/test_cmh_*`; modificados `app.py`, `core/database.py`, `src/agent_loop.py`, `src/task_scheduler.py`, `routes/cmh_control_routes.py`, `static/cmh-control.*`.
 - Flujos: DAG de hasta 20 pasos; la vista `/cmh` arma la cadena investigador → constructor → verificador → revisor → documentador. El revisor recibe los artefactos del constructor y del verificador; el documentador, los del constructor y del revisor. Verificador y revisor deben usar un agente distinto del constructor (`independent_of`, validado en el servidor). Cada paso congela agente, modelo, endpoint, versión de instrucciones, carpeta y herramientas de solo lectura, y guarda un único artefacto (clave única ejecución + paso); máximo 2 pasos en paralelo; aprobación humana antes del revisor. Detener sirve también para salir de una espera de aprobación. Al arrancar, toda ejecución `running`/`pending` y todo paso `running` pasan a `interrupted` y se pueden reanudar sin repetir pasos terminados.
 - Eventos: tabla `cmh_workflow_events` con `seq` AUTOINCREMENT; `/api/cmh/runs/{id}/events` se reanuda con `Last-Event-ID` o `?after=`, sin pausas al reproducir un historial y con keep-alive. Registran herramienta, duración, `exit_code` y tokens; no guardan prompts ni contenido de herramientas.
 - Ejecución restringida: el paso falla si la salida la escribió Odysseus y no el modelo (respuesta vacía, error de stream, síntesis forzada, disculpa enlatada), si llega al tope de rondas, si escala a otro modelo o si pide aprobación. `src/agent_loop.py` marca esos textos con `synthetic` y admite `allow_escalation=False`. Los bloques `<think>` se eliminan del artefacto. Una dependencia de más de 40 000 caracteres se corta con marcador `[TRUNCADO: …]` y evento `step_input_truncated`.
@@ -63,8 +63,20 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 - Corrección de medición: esta sesión afirmó primero que los archivos del canon eran CRLF. Contando bytes, 0 de 14 archivos editables usan CRLF (0 de 3 332 líneas). La preservación de CRLF queda como defensa.
 - Pendientes: el control de `fuentes/` no se repite en cada llamada de herramienta; E/S SQLite síncrona en el event loop; corte de pasos por la compuerta de modelos locales; falla del commit de BD después de escribir el archivo; la narración intermedia se conserva en los artefactos (a propósito: quedarse solo con la última ronda podría perder un entregable).
 
+## Modelos locales (Ollama, 2026-09-24)
+
+- Instalados 5 modelos (25 GB): `qwen3:8b`, `mistral`, `deepseek-r1:7b`, `phi4`, `gemma3:4b`. Ollama responde en `127.0.0.1:11434`; Odysseus ya tiene habilitado el endpoint `http://127.0.0.1:11434/v1`. Hay además dos endpoints Anthropic duplicados.
+- Equipo: 31,5 GB de RAM, Intel Core Ultra 7 255U, gráficos integrados (2 GB); inferencia en CPU.
+- Prueba sintética directa a Ollama (una llamada `read_file` + un texto de 80 palabras, `num_ctx` 4096, temperatura 0):
+  - `qwen3:8b`: llamada correcta, 2,7 tok/s, carga 31 s.
+  - `mistral`: llamada correcta, 2,5 tok/s, carga 34 s.
+  - `deepseek-r1:7b`: escribió la llamada como texto, sin `tool_calls` (no apto para pasos con herramientas).
+  - `phi4` y `gemma3` no declaran soporte de herramientas; no se probaron.
+- Implicancia: un paso de unas 800 palabras tarda del orden de 5 minutos; sirve para el piloto sintético, no para entregables reales. No se probó aún a través del bucle de agentes de Odysseus ni con la compuerta de modelos locales (`workload="background"`).
+
 ## Próxima acción exacta
 
-1. Con autorización del usuario, commit local de este punto limpio (sin push).
-2. Copia de seguridad de `data/app.db` y reinicio del servidor para crear las tablas nuevas; verificar `/cmh` en Edge.
-3. Cuando la clave de Anthropic esté corregida en Settings → Model Endpoints: repetir el caso sintético del piloto (herramienta por herramienta y escapes bloqueados) y luego un flujo sintético de cinco pasos con dos proveedores (verificar también OpenAI). Registrar los IDs de ejecución. El piloto sigue pausado hasta aprobarlo.
+1. Copia de seguridad de `data/app.db` y reinicio del servidor (el que corre usa el código anterior a `10f477b3`); verificar `/cmh` en Edge.
+2. Piloto sintético con `qwen3:8b` por el endpoint local: repetir el caso de `input/piloto_sintetico.txt`, registrar herramienta por herramienta y escapes bloqueados. No depende de la clave de Anthropic.
+3. Flujo sintético de cinco pasos con dos modelos locales (`qwen3:8b` y `mistral`, con el constructor y el revisor en agentes distintos). Registrar los IDs. El piloto sigue pausado hasta aprobarlo.
+4. Cuando se corrija la clave de Anthropic (y se depure el endpoint duplicado), repetir con un proveedor en la nube.
