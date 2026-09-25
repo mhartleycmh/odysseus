@@ -234,10 +234,12 @@ def setup_cmh_workflow_routes() -> APIRouter:
                     rows = db.query(CMHWorkflowEvent).filter(
                         CMHWorkflowEvent.run_id == run_id,
                         CMHWorkflowEvent.seq > cursor).order_by(CMHWorkflowEvent.seq).limit(100).all()
-                    payloads = [(r.seq, r.kind, r.step_key, r.payload) for r in rows]
-                for seq, kind, key, payload in payloads:
+                    payloads = [(r.seq, r.kind, r.step_key, r.payload, r.created_at) for r in rows]
+                for seq, kind, key, payload, created_at in payloads:
                     cursor = seq
-                    yield f"id: {seq}\nevent: {kind}\ndata: {json.dumps({'step_key': key, 'payload': json.loads(payload)})}\n\n"
+                    # "at" (naive UTC in the database) lets a replayed stream rebuild real timings.
+                    at = created_at.isoformat() + "Z" if created_at else None
+                    yield f"id: {seq}\nevent: {kind}\ndata: {json.dumps({'step_key': key, 'payload': json.loads(payload), 'at': at})}\n\n"
                 if len(payloads) == 100:
                     continue  # still replaying a backlog: no pause between pages
                 idle = 0 if payloads else idle + 1

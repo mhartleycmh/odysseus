@@ -1,0 +1,6 @@
+{
+  "name": "cmh-agentic-os-ui",
+  "private": true,
+  "type": "module",
+  "description": "Agentic OS CMH web interface. No dependencies and no build step; see integrations/cmh/docs."
+}

@@ -1,0 +1,66 @@
+{
+  "_comment": "Response shapes of the real /api/cmh endpoints. tests/test_cmh_os_routes.py asserts the real handlers return exactly these keys; the JS live-source unit tests and the e2e fake API are built from these samples. Values are synthetic.",
+  "projects": {"projects": [{"id": "ecosistema-de-agentes", "name": "Ecosistema de agentes", "status": "Activo", "card_path": "C:/vault/CMH_Claude/00_Proyecto.md", "root_path": "C:/vault/CMH_Claude", "card_modified": 1758700000.0, "source": "C:/vault/_control/INDICE.md", "agents": [{"id": "a1", "name": "Investigador", "status": "active"}], "recent_runs": []}]},
+  "agents": {"agents": [
+    {"id": "a1", "name": "Investigador", "project_id": "ecosistema-de-agentes", "role": "Investigación", "instructions": "Lee solo archivos sintéticos.", "instructions_version": 2, "model": "claude-sonnet-4-5", "allowed_tools": ["glob", "grep", "ls", "read_file"], "workspace": "C:/vault/odysseus/data/agent_workspace/cmh-researcher", "status": "active", "task_id": "task-a"},
+    {"id": "a2", "name": "Revisor", "project_id": "ecosistema-de-agentes", "role": "Revisión", "instructions": "Revisa sin ver el razonamiento del constructor.", "instructions_version": 1, "model": "claude-sonnet-4-5", "allowed_tools": ["read_file"], "workspace": "C:/vault/odysseus/data/agent_workspace/cmh-reviewer", "status": "active", "task_id": "task-b"}
+  ]},
+  "workflows": {"workflows": [{"id": "wf-1", "name": "CMH: investigación a documentación", "project_id": "ecosistema-de-agentes", "version": 1, "steps": [
+    {"key": "investigador", "agent_id": "a1", "depends_on": [], "independent_of": [], "requires_approval": false},
+    {"key": "revisor", "agent_id": "a2", "depends_on": ["investigador"], "independent_of": ["investigador"], "requires_approval": true}
+  ]}]},
+  "runs": {"runs": [
+    {"id": "run-1", "definition_id": "wf-1", "project_id": "ecosistema-de-agentes", "status": "waiting_approval", "created_at": "2026-09-24T15:00:00"},
+    {"id": "run-0", "definition_id": "wf-1", "project_id": "ecosistema-de-agentes", "status": "completed", "created_at": "2026-09-24T10:00:00"}
+  ]},
+  "run_detail": {
+    "run-1": {"id": "run-1", "status": "waiting_approval", "project_id": "ecosistema-de-agentes",
+      "steps": [
+        {"key": "investigador", "status": "completed", "agent_id": "a1", "model": "claude-sonnet-4-5", "dependencies": [], "error": null},
+        {"key": "revisor", "status": "waiting_approval", "agent_id": "a2", "model": "claude-sonnet-4-5", "dependencies": ["investigador"], "error": null}
+      ],
+      "artifacts": [{"id": "art-1", "step_key": "investigador", "model": "claude-sonnet-4-5", "content": "Nota de investigación sintética con evidencia."}]},
+    "run-0": {"id": "run-0", "status": "completed", "project_id": "ecosistema-de-agentes",
+      "steps": [
+        {"key": "investigador", "status": "completed", "agent_id": "a1", "model": "claude-sonnet-4-5", "dependencies": [], "error": null},
+        {"key": "revisor", "status": "completed", "agent_id": "a2", "model": "claude-sonnet-4-5", "dependencies": ["investigador"], "error": null}
+      ],
+      "artifacts": [
+        {"id": "art-0a", "step_key": "investigador", "model": "claude-sonnet-4-5", "content": "Nota sintética."},
+        {"id": "art-0b", "step_key": "revisor", "model": "claude-sonnet-4-5", "content": "APROBADO (sintético)."}
+      ]}
+  },
+  "events": {
+    "run-1": [
+      {"seq": 1, "kind": "run_created", "data": {"step_key": null, "payload": {"definition_id": "wf-1"}, "at": "2026-09-24T15:00:00Z"}},
+      {"seq": 2, "kind": "run_started", "data": {"step_key": null, "payload": {}, "at": "2026-09-24T15:00:01Z"}},
+      {"seq": 3, "kind": "step_started", "data": {"step_key": "investigador", "payload": {"agent_id": "a1", "model": "claude-sonnet-4-5"}, "at": "2026-09-24T15:00:02Z"}},
+      {"seq": 4, "kind": "tool_started", "data": {"step_key": "investigador", "payload": {"agent_id": "a1", "model": "claude-sonnet-4-5", "tool": "ls"}, "at": "2026-09-24T15:00:04Z"}},
+      {"seq": 5, "kind": "tool_finished", "data": {"step_key": "investigador", "payload": {"agent_id": "a1", "model": "claude-sonnet-4-5", "tool": "ls", "error": false, "duration_seconds": 0.4}, "at": "2026-09-24T15:00:05Z"}},
+      {"seq": 6, "kind": "model_metrics", "data": {"step_key": "investigador", "payload": {"agent_id": "a1", "model": "claude-sonnet-4-5", "metrics": {"model": "claude-sonnet-4-5", "input_tokens": 4714, "output_tokens": 681, "total_tokens": 5395, "response_time": 6.2}}, "at": "2026-09-24T15:00:12Z"}},
+      {"seq": 7, "kind": "step_completed", "data": {"step_key": "investigador", "payload": {"artifact_id": "art-1", "duration_seconds": 23.7}, "at": "2026-09-24T15:00:26Z"}},
+      {"seq": 8, "kind": "step_approval_requested", "data": {"step_key": "revisor", "payload": {}, "at": "2026-09-24T15:00:27Z"}}
+    ]
+  },
+  "memories": {"memories": [
+    {"path": "C:/vault/CMH_Canon/05_decisiones_historicas.md", "name": "05_decisiones_historicas.md", "modified": 1758700000.0, "source": "Canon CMH"},
+    {"path": "C:/vault/CMH_Claude/00_Proyecto_Ecosistema_Agentes.md", "name": "00_Proyecto_Ecosistema_Agentes.md", "modified": 1758600000.0, "source": "Ficha de proyecto"}
+  ]},
+  "memory_content": {"path": "C:/vault/CMH_Canon/05_decisiones_historicas.md", "content": "# Decisiones históricas (sintético)\n", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "memory_proposals": {"proposals": [
+    {"id": "prop-1", "path": "C:/vault/CMH_Canon/06_pendientes_abiertos.md", "status": "pending", "mirror": null, "created_at": "2026-09-24T14:00:00"},
+    {"id": "prop-0", "path": "C:/vault/CMH_Canon/05_decisiones_historicas.md", "status": "approved", "mirror": "synchronized", "created_at": "2026-09-23T14:00:00"}
+  ]},
+  "memory_proposal_detail": {"id": "prop-1", "path": "C:/vault/CMH_Canon/06_pendientes_abiertos.md", "status": "pending", "diff": "--- a\n+++ proposed\n@@ -1 +1,2 @@\n # Pendientes\n+| Nuevo pendiente sintético |\n", "base_hash": "abc", "applied_hash": null, "mirror": null},
+  "model_endpoints": [
+    {"id": "ep-1", "name": "Anthropic", "base_url": "https://api.anthropic.com/v1", "has_key": true, "api_key_fingerprint": "3f2a9c1d", "is_enabled": true, "models": ["claude-sonnet-4-5"], "status": "online", "supports_tools": true, "category": "cloud"},
+    {"id": "ep-2", "name": "Ollama local", "base_url": "http://localhost:11434/v1", "has_key": false, "api_key_fingerprint": "", "is_enabled": true, "models": ["qwen3:8b", "mistral"], "status": "online", "supports_tools": true, "category": "local"}
+  ],
+  "mcp_servers": [
+    {"id": "srv-1", "name": "Servidor sintético", "transport": "stdio", "command": "node", "args": ["server.js"], "env": {"API_TOKEN": "valor-secreto-que-no-debe-mostrarse", "BASE_URL": "http://localhost"}, "url": null, "is_enabled": true, "status": "connected", "tool_count": 2, "disabled_tool_count": 0, "enabled_tool_count": 2, "error": null, "auth_url": null, "has_oauth": false, "needs_oauth": false}
+  ],
+  "mcp_tools": [
+    {"server_id": "srv-1", "server_name": "Servidor sintético", "name": "consultar", "qualified_name": "mcp__srv-1__consultar", "description": "Consulta sintética", "input_schema": {}, "is_disabled": false}
+  ],
+  "os_config": {"ui_enabled": true, "default_mode": "auto"}
+}

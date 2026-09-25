@@ -813,6 +813,8 @@ from routes.cmh_workflow_routes import setup_cmh_workflow_routes
 app.include_router(setup_cmh_workflow_routes())
 from routes.cmh_memory_routes import setup_cmh_memory_routes
 app.include_router(setup_cmh_memory_routes())
+from routes.cmh_os_routes import setup_cmh_os_routes, ui_enabled as cmh_os_ui_enabled
+app.include_router(setup_cmh_os_routes())
 
 # Hardware model fitting (cookbook "What Fits?" tab)
 from routes.hwfit_routes import setup_hwfit_routes
@@ -943,6 +945,12 @@ async def serve_tasks(request: Request):
 @app.get("/cmh")
 async def serve_cmh_control(request: Request):
     return serve_html_with_nonce(request, abs_join(BASE_DIR, "static/cmh-control.html"))
+
+@app.get("/cmh/os")
+async def serve_cmh_os(request: Request):
+    if not cmh_os_ui_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    return serve_html_with_nonce(request, abs_join(BASE_DIR, "static/cmh-os/index.html"))
 
 @app.get("/library")
 async def serve_library(request: Request):

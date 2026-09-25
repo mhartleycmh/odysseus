@@ -1,0 +1,148 @@
+/* Design tokens — Agentic OS CMH.
+   Brand values come from the CMH corporate identity (azul horizonte, azul
+   profundo, azul medio, oro horizonte, oro texto, grises). Semantic tokens map
+   them per theme. Text tokens marked "AA" are darker variants of a brand
+   status color so small text meets 4.5:1 (tests/cmh_os/unit/contrast.test.mjs). */
+:root {
+  --cmh-azul: #002D46;
+  --cmh-azul-profundo: #001B2B;
+  --cmh-azul-medio: #17607F;
+  --cmh-azul-claro: #7FA6BA;
+  --cmh-oro: #B19A3B;
+  --cmh-oro-texto: #8A7623;
+  --cmh-oro-claro: #D9C87A;
+  --cmh-gris-900: #1F2933;
+  --cmh-gris-600: #5A6672;
+  --cmh-gris-400: #98A4AE;
+  --cmh-gris-200: #E3E7EB;
+  --cmh-gris-100: #F4F6F8;
+  --cmh-blanco: #FFFFFF;
+
+  --bg: #F4F6F8;
+  --surface: #FFFFFF;
+  --surface-2: #F4F6F8;
+  --surface-sunken: #EDF1F4;
+  --border: #E3E7EB;
+  --border-strong: #C9D1D8;
+  --text: #1F2933;
+  --text-muted: #5A6672;
+  --text-strong: #002D46;
+  --text-on-brand: #FFFFFF;
+  --accent: #B19A3B;
+  --accent-text: #8A7623;
+  --link: #17607F;
+  --focus: #17607F;
+  --live: #17607F;
+  --live-bg: #E6F0F5;
+
+  --ok: #2E7D4F;
+  --ok-text: #256841; /* AA */
+  --ok-bg: #E8F2EC;
+  --warn: #9A5C00;
+  --warn-text: #9A5C00;
+  --warn-bg: #FBF1E3;
+  --risk: #B3261E;
+  --risk-text: #B3261E;
+  --risk-bg: #FBEAE8;
+  --idle: #6B7681;
+  --idle-text: #5A6672; /* AA */
+  --idle-bg: #F4F6F8;
+
+  --header-bg: #001B2B;
+  --header-text: #FFFFFF;
+  --header-muted: #A9B8C3;
+  --nav-bg: #002D46;
+  --nav-text: #D6E0E7;
+  --nav-active-bg: #0E4461;
+  --nav-active-text: #FFFFFF;
+
+  /* The orchestration canvas is a control-room surface in both themes. */
+  --canvas-bg: #001B2B;
+  --canvas-grid: #0B3148;
+  --canvas-node: #062638;
+  --canvas-node-border: #1D4A63;
+  --canvas-text: #E8EEF2;
+  --canvas-muted: #A9B8C3;
+  --canvas-edge: #3D6A82;
+  --canvas-live: #7FA6BA;
+  --canvas-accent: #D9C87A;
+  --canvas-ok: #6CC795;
+  --canvas-warn: #F0B35A;
+  --canvas-risk: #F28B82;
+
+  --series-1: #002D46;
+  --series-2: #B19A3B;
+  --series-3: #17607F;
+  --series-4: #8A7623;
+  --series-5: #7FA6BA;
+  --series-6: #5A6672;
+
+  --font: 'Aptos', 'Segoe UI', system-ui, -apple-system, Arial, sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, monospace;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 28px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --radius: 4px;
+  --radius-lg: 8px;
+  --shadow-1: 0 1px 2px rgba(0, 45, 70, 0.08);
+  --shadow-2: 0 8px 24px rgba(0, 27, 43, 0.16);
+  --overlay: rgba(0, 27, 43, 0.55);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --bg: #001B2B;
+  --surface: #062638;
+  --surface-2: #0B3148;
+  --surface-sunken: #04202F;
+  --border: #1D4A63;
+  --border-strong: #2C5E79;
+  --text: #E8EEF2;
+  --text-muted: #A9B8C3;
+  --text-strong: #FFFFFF;
+  --accent: #B19A3B;
+  --accent-text: #D9C87A;
+  --link: #9CC3D6;
+  --focus: #9CC3D6;
+  --live: #9CC3D6;
+  --live-bg: #0E3A52;
+
+  --ok: #6CC795;
+  --ok-text: #7ED3A4;
+  --ok-bg: #123A2A;
+  --warn: #F0B35A;
+  --warn-text: #F3BE6F;
+  --warn-bg: #3A2A10;
+  --risk: #F28B82;
+  --risk-text: #F5A09A;
+  --risk-bg: #3D1714;
+  --idle: #A9B8C3;
+  --idle-text: #B7C4CD;
+  --idle-bg: #15303F;
+
+  --header-bg: #00131F;
+  --nav-bg: #002237;
+  --nav-active-bg: #0E4461;
+
+  --series-1: #7FA6BA;
+  --series-2: #D9C87A;
+  --series-3: #9CC3D6;
+  --series-4: #B19A3B;
+  --series-5: #4A8CA8;
+  --series-6: #A9B8C3;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --overlay: rgba(0, 10, 18, 0.7);
+  color-scheme: dark;
+}

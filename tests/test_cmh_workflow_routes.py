@@ -173,6 +173,9 @@ async def test_event_stream_resumes_after_last_event_id(factory):
     assert f"id: {seqs[0]}\n" not in replay
     assert f"id: {seqs[1]}\nevent: run_started\n" in replay
     assert f"id: {seqs[2]}\nevent: run_completed\n" in replay
+    # Each event carries its stored UTC time so a replay can rebuild real timings.
+    data = [json.loads(line[6:]) for line in replay.splitlines() if line.startswith("data: ")]
+    assert all(item["at"].endswith("Z") for item in data)
     response = await stream(fake_request(), "r", after=seqs[1], last_event_id=None)
     assert "event: run_started" not in "".join([chunk async for chunk in response.body_iterator])
     with pytest.raises(control.HTTPException) as exc:

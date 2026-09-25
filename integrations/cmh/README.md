@@ -99,3 +99,13 @@ The `cmh-researcher` task remains paused until a dry run records its run ID,
 effective workspace, tool calls, output, and blocked escape attempts. See
 `ESTADO_AGENTIC_OS.md` for the current checkpoint. Do not widen access to
 financial or production folders based on the prompt alone.
+
+## Agentic OS web interface (`/cmh/os`)
+
+A second, fuller view lives at `/cmh/os` (`static/cmh-os/`): overview,
+orchestration graph driven by run events, executions, human approvals, memory,
+tools and MCP, observability, evaluations, security and settings, plus a
+coordinator chat. It reads the same admin APIs as `/cmh` and adds no write
+path of its own; without an admin session it shows labelled demo data. The
+original `/cmh` view is unchanged. How to run and verify it:
+`integrations/cmh/docs/README.md`.

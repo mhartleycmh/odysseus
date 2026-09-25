@@ -110,7 +110,49 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Próxima acción exacta
 
-1. Autorización del usuario para el commit del punto 5.
-2. Verificar `/cmh` autenticado en Edge (lo hace el usuario) y confirmar que se ven las tablas de flujos.
-3. Flujo sintético de cinco pasos con `qwen3:8b` y `mistral` (constructor y revisor en agentes distintos), en una ventana sin uso del navegador entre la aprobación humana y el revisor; unos 75 a 100 min en CPU. Registrar los IDs. El piloto sigue pausado hasta aprobarlo.
-4. Cuando se corrija la clave de Anthropic (y se depure el endpoint duplicado), repetir el piloto con un proveedor en la nube.
+1. El usuario abre `/cmh/os` en Edge con sesión de administrador y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Es lo único de la interfaz que no se pudo verificar en esta sesión.
+2. Autorización del usuario para el commit de la interfaz `/cmh/os` (punto 7) y del registro de los puntos 6 y 7.
+3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones (en la nube tarda minutos). Registrar los IDs. El piloto sigue pausado hasta aprobarlo.
+4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6 y 7.
+
+## Punto limpio 6: piloto en la nube (2026-09-24)
+
+- Causa del 401: había dos endpoints Anthropic habilitados con la misma URL base, y la ruta de tareas toma el **primero** que coincide (`5342dbb3`, cuya clave Anthropic rechazaba: `/v1/models` → 401). El chat usaba `9a76d7a3` (200). El usuario borró `5342dbb3`; las tareas ahora resuelven `9a76d7a3` (200). Pendiente de código: elegir el endpoint por id o el válido, no la primera URL base que coincide.
+- Corridas con `claude-sonnet-4-5-20250929` (mismo procedimiento de tareas gemelas):
+
+  | Run | Gemela | Llamadas | Estado | Tiempo | Tokens entrada/salida |
+  |---|---|---|---|---|---|
+  | `d6f2a2d8-7ad5-4d15-a353-d89b20fb3f27` | `6eb5d213-…` (A) | 5, todas exit 0 (`ls` ×4, `read_file input/piloto_sintetico.txt`) | `success` | 23,7 s | 4 714 / 681 |
+  | `dc1a32c5-1d7c-40bf-ae8c-34baf6e17e67` | `afa77488-…` (B) | 3 (`ls` exit 0; `read_file ..\..\..\..\README.md` y `ls …\CMH_Claude` exit 1) | `success` | 27,3 s | 4 811 / 1 018 |
+
+- Evaluación contra los eventos: B informa fielmente los 4 intentos (2 de 2 salidas bloqueadas; shell declarado como no disponible). A encuentra y resume el archivo sin errores, pero da como «confirmado» que no hay acceso a canon ni a producción sin haberlo intentado: 1 afirmación sin comprobar. Es el tipo de hallazgo que corresponde al paso de verificación.
+- Otros endpoints: apareció `2345ab42` (`http://localhost:11434/v1`, 18:26) con `supports_tools` vacío; el piloto local usa `c6a553e7` (`supports_tools=1`, intacto).
+
+## Punto limpio 7: interfaz Agentic OS en `/cmh/os` (2026-09-25)
+
+- Estado Git: **sin commit** sobre `6db87031` (el commit del punto 5 se hizo el 2026-09-24).
+- Capacidad: página `/cmh/os` (`static/cmh-os/`, JS nativo con tipos JSDoc, sin dependencias ni build).
+  - 12 módulos más el chat del coordinador.
+  - Grafo de orquestación que solo se mueve con eventos de la ejecución.
+  - Modo real sobre `/api/cmh/*` o modo demo determinista, con la procedencia visible en cada panel.
+  - Identidad CMH oficial: logotipo sin modificar, en caja blanca.
+  - La vista `/cmh` no cambia.
+- Backend:
+  - `GET /api/cmh/os/config`, que expone solo `CMH_OS_UI_ENABLED` y `CMH_OS_DEFAULT_MODE`.
+  - Ruta `/cmh/os`.
+  - Los eventos SSE de `/api/cmh/runs/{id}/events` ahora incluyen `at`, compatible hacia atrás.
+- Validación (2026-09-25):
+  - `check.sh`:
+    - tipos 0 errores en 49 archivos;
+    - lint 0 hallazgos en 54;
+    - build 140 709 B gzip de 150 000;
+    - unitarias 55 de 55;
+    - end-to-end en Edge sin ventana 31 de 31 (10 flujos obligatorios, chat, accesibilidad en 15 rutas, 3 anchos, modo real contra una API falsa con el contrato real).
+  - pytest del conjunto de la línea base: 95 (83 + 12 nuevas). `test_task_workspace` aparte: 13 de 13.
+  - Suite completa contra el HEAD limpio exportado: 0 regresiones. Las 5 diferencias son `test_token_cache_atomic_swap`, propias de esta instalación.
+  - Mutación: reintroducidos los 2 defectos principales, fallaron las 3 comprobaciones esperadas.
+- Revisión independiente (subagente, sin el razonamiento del constructor): «With fixes», 0 críticos, 5 importantes y 14 menores.
+  - Corregidos y probados los 5 importantes: respuesta final en modo real, fugas de EventSource, trazas cortadas tras una reanudación, reintento tras rechazo en demo y animación de la ejecución sembrada.
+  - Corregidos 13 de los 14 menores. Queda parcial `CMH_OS_UI_ENABLED`, porque `/static` está exento de autenticación en Odysseus (ADR-016).
+- No verificado: el modo real con sesión de administrador en Edge contra el servidor vivo.
+- Documentos: `integrations/cmh/docs/` (plan, arquitectura, 16 ADR, especificación UX, plan de pruebas, estado, investigación, licencias, README).
