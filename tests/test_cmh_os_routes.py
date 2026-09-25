@@ -101,6 +101,143 @@ def test_page_route_serves_the_app_and_honours_the_flag(tmp_path):
     assert _serve_page(tmp_path / "off", "false")["status"] == 404
 
 
+# --- the assets follow the page's gate, not the /static exemption ----------
+
+@pytest.mark.parametrize(("path", "expected"), [
+    ("/static/cmh-os", True),
+    ("/static/cmh-os/", True),
+    ("/static/cmh-os/index.html", True),
+    ("/static/cmh-os/js/main.js", True),
+    ("/static/CMH-OS/index.html", True),          # NTFS serves the same folder
+    ("/static/cmh-os\\js\\main.js", True),        # StaticFiles normpath on Windows
+    ("/static/cmh-osx/index.html", False),
+    ("/static/cmh-control.html", False),
+    ("/static/js/app.js", False),
+    ("/cmh/os", False),
+    ("", False),
+])
+def test_is_os_asset_path_covers_both_spellings(path, expected):
+    assert os_routes.is_os_asset_path(path) is expected
+
+
+def _probe_static(tmp_path, enabled, paths, auth="true"):
+    """Ask the real app, through its whole middleware stack, for each path."""
+    env = os.environ.copy()
+    env.update({
+        "AUTH_ENABLED": auth, "CHROMADB_CONNECT_TIMEOUT": "0.01", "CHROMADB_HOST": "127.0.0.1", "CHROMADB_PORT": "9",
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'app.db'}", "LOCALHOST_BYPASS": "false", "ODYSSEUS_DATA_DIR": str(tmp_path),
+        "ODYSSEUS_DISABLE_MCP": "1", "OPENAI_API_KEY": "", "PYTHONPATH": str(ROOT), "PYTHON_DOTENV_DISABLED": "1",
+        "CMH_OS_UI_ENABLED": enabled,
+    })
+    probe = textwrap.dedent(f"""
+        import asyncio, json
+        import httpx
+        import app as app_module
+        paths = {paths!r}
+
+        async def main():
+            transport = httpx.ASGITransport(app=app_module.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                out = {{}}
+                for path in paths:
+                    response = await client.get(path)
+                    out[path] = response.status_code
+                return out
+        print(json.dumps(asyncio.run(main())))
+    """)
+    result = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr[-2000:]
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def test_os_assets_need_a_session_while_the_rest_of_static_stays_public(tmp_path):
+    seen = _probe_static(tmp_path / "on", "true", [
+        "/static/cmh-os/index.html", "/static/cmh-os/js/main.js", "/static/cmh-control.html"])
+    # No session: the page's own assets are gated exactly like /cmh/os …
+    assert seen["/static/cmh-os/index.html"] in (302, 401), seen
+    assert seen["/static/cmh-os/js/main.js"] in (302, 401), seen
+    # … while the shared /static exemption is untouched.
+    assert seen["/static/cmh-control.html"] == 200, seen
+
+
+def _probe_raw(tmp_path, paths):
+    """Feed the raw path straight into the ASGI app.
+
+    httpx and browsers collapse `.` and `..` before sending, so a normal client
+    cannot express these spellings — a raw HTTP client can, and StaticFiles
+    collapses them again before opening the file. The probe has to bypass the
+    client to measure what the server really does.
+    """
+    env = os.environ.copy()
+    env.update({
+        "AUTH_ENABLED": "true", "CHROMADB_CONNECT_TIMEOUT": "0.01", "CHROMADB_HOST": "127.0.0.1", "CHROMADB_PORT": "9",
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'app.db'}", "LOCALHOST_BYPASS": "false", "ODYSSEUS_DATA_DIR": str(tmp_path),
+        "ODYSSEUS_DISABLE_MCP": "1", "OPENAI_API_KEY": "", "PYTHONPATH": str(ROOT), "PYTHON_DOTENV_DISABLED": "1",
+        "CMH_OS_UI_ENABLED": "true",
+    })
+    probe = textwrap.dedent(f"""
+        import asyncio, json
+        import app as app_module
+        paths = {paths!r}
+
+        async def call(path):
+            scope = {{"type": "http", "asgi": {{"version": "3.0"}}, "http_version": "1.1", "method": "GET",
+                     "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "",
+                     "query_string": b"", "headers": [(b"host", b"t")], "client": ("1.2.3.4", 1234),
+                     "server": ("t", 80)}}
+            seen = {{"status": 0, "len": 0}}
+            async def receive():
+                return {{"type": "http.request", "body": b"", "more_body": False}}
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    seen["status"] = message["status"]
+                elif message["type"] == "http.response.body":
+                    seen["len"] += len(message.get("body") or b"")
+            await app_module.app(scope, receive, send)
+            return seen
+
+        async def main():
+            return {{p: await call(p) for p in paths}}
+        print("RESULT " + json.dumps(asyncio.run(main())))
+    """)
+    result = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr[-2000:]
+    line = next(l for l in result.stdout.splitlines() if l.startswith("RESULT "))
+    return json.loads(line[len("RESULT "):])
+
+
+def test_no_unnormalized_spelling_serves_the_os_assets_without_a_session(tmp_path):
+    """The regression this guards: /static/./cmh-os/index.html answered 200
+    with 848 bytes and no session while the guard matched the literal path."""
+    page = "/static/cmh-os/index.html"
+    seen = _probe_raw(tmp_path, [
+        page,
+        "/static/./cmh-os/index.html",
+        "//static//cmh-os//index.html",
+        "/static/foo/../cmh-os/index.html",
+        "/static/CMH-OS/index.html",
+        "/static/cmh-control.html",
+    ])
+    served = {path: answer for path, answer in seen.items()
+              if path != "/static/cmh-control.html" and answer["status"] == 200}
+    assert served == {}, f"these spellings served the page with no session: {served}"
+    # The shared static exemption is still intact, so the gate is not a blanket 302.
+    assert seen["/static/cmh-control.html"]["status"] == 200, seen
+
+
+def test_the_flag_also_turns_off_the_assets(tmp_path):
+    assets = ["/static/cmh-os/index.html", "/static/cmh-control.html"]
+    # With auth on, the session gate answers first; either way nothing is served.
+    gated = _probe_static(tmp_path / "off", "false", assets)
+    assert gated["/static/cmh-os/index.html"] in (302, 401, 404), gated
+    # With auth off the flag is the only gate left, so the 404 is the flag's
+    # doing — and the rest of /static still serves, so it is not breakage.
+    off = _probe_static(tmp_path / "off-noauth", "false", assets, auth="false")
+    assert off == {"/static/cmh-os/index.html": 404, "/static/cmh-control.html": 200}, off
+    on = _probe_static(tmp_path / "on-noauth", "true", assets, auth="false")
+    assert on == {"/static/cmh-os/index.html": 200, "/static/cmh-control.html": 200}, on
+
+
 # --- static integrity ------------------------------------------------------
 
 def test_index_references_existing_assets_and_no_inline_script():

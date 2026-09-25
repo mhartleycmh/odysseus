@@ -275,6 +275,11 @@ if AUTH_ENABLED:
         "/login",
     }
     AUTH_EXEMPT_PREFIXES = ["/static"]
+    # …except the Agentic OS page's own assets. They sit under /static only
+    # because the page ships raw ES modules with no build step; they are the
+    # /cmh/os page, not a shared asset, so they follow that route's gate
+    # (ADR-016). Without this carve-out an anonymous visitor could still pull
+    # /static/cmh-os/index.html and land in demo mode with the flag off.
     # Dynamic paths whose own handler proves identity via a path-embedded
     # secret instead of the session/bearer auth. The route handler at
     # routes/task_routes.py validates the per-task `webhook_token` itself
@@ -288,7 +293,11 @@ if AUTH_ENABLED:
         _re.compile(r"^/api/tasks/[^/]+/webhook/[^/]+/?$"),
     ]
 
+    from routes.cmh_os_routes import is_os_asset_path as _is_os_asset
+
     def _is_auth_exempt(path: str) -> bool:
+        if _is_os_asset(path):
+            return False
         if path in AUTH_EXEMPT_EXACT:
             return True
         if any(path_is_route_or_child(path, p) for p in AUTH_EXEMPT_PREFIXES):
@@ -501,6 +510,13 @@ class _RevalidatingStatic(StaticFiles):
     return a cheap 304 (ETag/Last-Modified are preserved)."""
 
     async def get_response(self, path, scope):
+        # The kill switch has to reach the assets too, not just the /cmh/os
+        # route: the page is raw ES modules served from here, so leaving them
+        # readable would keep a disabled UI one URL away (ADR-016). `path` is
+        # relative to the mount and normpath'd, so rebuild the route first.
+        from routes.cmh_os_routes import is_os_asset_path, ui_enabled as _cmh_os_enabled
+        if is_os_asset_path("/static/" + str(path)) and not _cmh_os_enabled():
+            raise HTTPException(status_code=404, detail="Not found")
         resp = await super().get_response(path, scope)
         if path.endswith((".js", ".css", ".html")):
             resp.headers["Cache-Control"] = "no-cache"

@@ -34,8 +34,8 @@ export default {
   tone: { ok: 'En orden', warn: 'Seguimiento', risk: 'Riesgo', idle: 'Sin actividad', live: 'En curso' },
   status: {
     agent: { active: 'Activo', paused: 'Pausado', running: 'Trabajando', error: 'Con error' },
-    execution: { pending: 'Pendiente', running: 'En curso', waiting_approval: 'Esperando aprobación', completed: 'Completada', error: 'Con error', interrupted: 'Detenida', paused: 'Pausada' },
-    step: { pending: 'No iniciado', running: 'En curso', waiting_approval: 'Esperando aprobación', completed: 'Completado', error: 'Con error', interrupted: 'Interrumpido' },
+    execution: { pending: 'Pendiente', running: 'En curso', waiting_approval: 'Esperando aprobación', completed: 'Completada', error: 'Con error', interrupted: 'Detenida', paused: 'Pausada', rejected: 'Rechazada' },
+    step: { pending: 'No iniciado', running: 'En curso', waiting_approval: 'Esperando aprobación', completed: 'Completado', error: 'Con error', interrupted: 'Interrumpido', rejected: 'Rechazado' },
     mcp: { connected: 'Conectado', disconnected: 'Desconectado', error: 'Con error', needs_auth: 'Requiere autorización' },
   },
   risk: { alto: 'Riesgo alto', medio: 'Riesgo medio', bajo: 'Riesgo bajo' },
@@ -162,7 +162,7 @@ export default {
     truncated: 'entrada truncada: {included} de {total} caracteres',
     kind: {
       run_created: 'Ejecución creada', run_started: 'Ejecución en marcha', step_started: 'Paso iniciado', step_completed: 'Paso completado', step_error: 'Paso con error',
-      step_interrupted: 'Paso interrumpido', step_approval_requested: 'Aprobación solicitada', step_approved: 'Paso aprobado', run_completed: 'Ejecución completada',
+      step_interrupted: 'Paso interrumpido', step_approval_requested: 'Aprobación solicitada', step_approved: 'Paso aprobado', step_rejected: 'Paso rechazado', run_rejected: 'Ejecución rechazada', run_completed: 'Ejecución completada',
       run_error: 'Ejecución con error', run_interrupted: 'Ejecución detenida', run_stop_requested: 'Detención solicitada', run_resume_requested: 'Reanudación solicitada',
       step_input_truncated: 'Entrada truncada', tool_started: 'Herramienta iniciada', tool_finished: 'Herramienta terminada', model_metrics: 'Métricas del modelo',
     },

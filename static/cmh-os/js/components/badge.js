@@ -33,7 +33,7 @@ export function toneForRun(status) {
     case 'completed': return 'ok';
     case 'running': return 'live';
     case 'waiting_approval': case 'interrupted': case 'paused': return 'warn';
-    case 'error': return 'risk';
+    case 'error': case 'rejected': return 'risk';
     default: return 'idle';
   }
 }

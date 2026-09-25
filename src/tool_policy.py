@@ -146,6 +146,11 @@ class ToolPolicy:
     mode: str = "normal"
     block_all_tool_calls: bool = False
     disable_mcp: bool = False
+    #: Qualified ``mcp__server__tool`` spellings that an explicit allowlist
+    #: permits, so the MCP clamp never contradicts it. Native tools that are
+    #: MCP-backed (the 15 email tools) alias to such a name, and blocking the
+    #: alias silently vetoed a tool the prompt still offered.
+    allowed_mcp_names: frozenset[str] = frozenset()
 
     def all_disabled_names(self) -> Set[str]:
         return set(self.disabled_tools) | set(self.hidden_tools)
@@ -153,11 +158,23 @@ class ToolPolicy:
     def blocks(self, tool_name: Optional[str]) -> bool:
         if not tool_name:
             return False
+        # `disable_mcp` has to hold at EXECUTION time, not only while the
+        # schemas are assembled. agent_loop drops its own manager when the
+        # flag is set, but tool_execution fetches the process-wide manager
+        # itself, and a denylist built from known_tool_names() can never list
+        # a qualified `mcp__server__tool` name — so without this a restricted
+        # task that guessed one would still reach a connected MCP server.
+        if (self.disable_mcp and tool_name.startswith("mcp__")
+                and tool_name not in self.allowed_mcp_names):
+            return True
         return self.block_all_tool_calls or tool_name in self.disabled_tools or tool_name in self.hidden_tools
 
     def reason_for(self, tool_name: Optional[str]) -> str:
         if tool_name and tool_name in self.reasons:
             return self.reasons[tool_name]
+        if (self.disable_mcp and tool_name and tool_name.startswith("mcp__")
+                and tool_name not in self.allowed_mcp_names):
+            return "MCP tools are disabled for this turn."
         if self.block_all_tool_calls and self.mode == "guide_only":
             return "Tool use is disabled for this guide-only turn."
         return "Tool use is disabled for this turn."

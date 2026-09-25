@@ -64,7 +64,7 @@
 .graph-legend li { display: inline-flex; gap: 5px; align-items: center; }
 .legend-running span { color: var(--canvas-live); }
 .legend-completed span { color: var(--canvas-ok); }
-.legend-error span { color: var(--canvas-risk); }
+.legend-error span, .legend-rejected span { color: var(--canvas-risk); }
 .legend-waiting_approval span { color: var(--canvas-warn); }
 :root[data-motion='reduced'] .graph-edge[data-state='active'], :root[data-motion='reduced'] .graph-orbit-dot, :root[data-motion='reduced'] .graph-node-halo { animation: none !important; }
 

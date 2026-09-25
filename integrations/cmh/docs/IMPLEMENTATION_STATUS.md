@@ -83,16 +83,86 @@ reprodujo cada importante con sondas propias.
 ## 5. Deuda técnica
 
 - **No verificado contra un Odysseus real con sesión de administrador.** El modo real se probó con la API falsa, que tiene el mismo contrato de claves y está comprobada por pytest contra los manejadores reales. Hace falta abrir `/cmh/os` en Edge con sesión.
-- `/static/cmh-os/*` es público porque Odysseus exime `/static` de autenticación (ADR-016). No expone datos.
+- ~~`/static/cmh-os/*` es público~~ **Cerrado el 2026-09-25** (ADR-016): la carpeta de la página sale de la exención de `/static` y devuelve 404 con la bandera apagada. El resto de `/static` no cambia.
 - El presupuesto de build está al 94 % (140,7 de 150 KB gzip). La próxima vista grande obliga a dividir `es.js` por módulo o a cargar vistas bajo demanda.
 - Demo: en las ejecuciones creadas en vivo, las duraciones de herramientas (tiempo simulado) pueden superar la del paso (tiempo real) en la cascada.
 - Límites de iteraciones, tiempo y presupuesto, y prioridad: solo se aplican en demo. El backend usa `max_steps=12` por paso y no guarda la prioridad.
-- El rechazo de paso en modo real detiene la ejecución; no hay rechazo nativo. Las justificaciones viven en la auditoría local del navegador.
+- ~~El rechazo de paso en modo real detiene la ejecución~~ **Cerrado el 2026-09-25** (ADR-017): `POST /runs/{id}/steps/{key}/reject` exige justificación, deja la ejecución en `rejected` de forma terminal y guarda la decisión en `cmh_workflow_steps.decision`.
 - Evaluaciones, roles y sesiones: sin backend; se sirven desde la demo con la etiqueta «Demo · sin backend».
 - ESLint no está disponible sin npm; lo sustituyen `lint.mjs` y TypeScript estricto.
 
 ## 6. Siguiente bloque
 
-1. El usuario abre `/cmh/os` en Edge con sesión de administrador y revisa el modo real con agentes y ejecuciones verdaderos.
+1. El usuario abre `/cmh/os` en Edge con sesión de administrador y revisa el modo real con agentes y ejecuciones verdaderos. **Es lo único que no puede comprobarse sin esa sesión.**
 2. Hecho: commit `bba01a65`.
-3. Backend: endpoint de rechazo de paso y persistencia de justificaciones; límites por ejecución; `static/cmh-os` fuera de la exención de autenticación.
+3. Hecho el 2026-09-25: rechazo de paso con justificación persistida (ADR-017) y `static/cmh-os` fuera de la exención de autenticación (ADR-016).
+4. Pendiente de backend: límites de iteraciones, tiempo y presupuesto por ejecución, y prioridad —hoy solo se aplican en demo; el backend usa `max_steps=12` por paso y no guarda la prioridad.
+
+## 7. Punto 8 — cierre de pendientes de backend (2026-09-25)
+
+| Capacidad | Estado | Evidencia |
+|---|---|---|
+| `/static/cmh-os/*` fuera de la exención de `/static` y apagado por la bandera (ADR-016) | COMPLETED | `test_cmh_os_routes.py` colecta 26, de las cuales 15 son nuevas |
+| Selección determinista de endpoint cuando varias filas comparten URL base | COMPLETED | `test_endpoint_selection_by_url.py`, 13 de 13 |
+| `disable_mcp` efectivo al ejecutar, sin contradecir la allowlist (ADR-018) | COMPLETED | `test_cmh_restricted_tool_surface.py`, 15 de 15 |
+| Rechazo nativo de paso con justificación persistida (ADR-017) | COMPLETED | `test_cmh_workflow_routes.py` 13, `test_cmh_workflows.py` 11 |
+| Migración de la columna `decision` sobre una base con el esquema anterior | COMPLETED | `test_cmh_workflow_step_decision_migration.py`, 2 de 2 |
+
+### Conteos reproducibles
+
+Los conjuntos se nombran archivo a archivo para que cualquiera repita la cifra.
+
+| Conjunto | Comando | Resultado |
+|---|---|---|
+| Los 6 módulos del cambio | `pytest tests/test_cmh_os_routes.py tests/test_cmh_restricted_tool_surface.py tests/test_endpoint_selection_by_url.py tests/test_cmh_workflow_routes.py tests/test_cmh_workflows.py tests/test_cmh_workflow_step_decision_migration.py` | **80 de 80** (80 colectadas) |
+| CMH + tareas + política (21 módulos: los 6 anteriores más `test_cmh_control_routes`, `test_cmh_memory_routes`, `test_cmh_restricted_loop`, `test_task_chain_owner_scope`, `test_task_cookbook_admin_gate`, `test_task_endpoint_normalization`, `test_task_routes_shim`, `test_task_scheduler_cache`, `test_task_scheduler_cancel`, `test_task_scheduler_session_delivery`, `test_task_session_folder`, `test_task_shell_tools`, `test_scheduler_prompt_cache_time`, `test_chat_preprocess_tool_policy`, `test_chat_route_tool_policy`) | **172 de 172** |
+| `test_task_workspace.py` aparte (contaminación conocida entre módulos) | `pytest tests/test_task_workspace.py` | **13 de 13** |
+| Interfaz | `bash scripts/cmh_os/check.sh` | tipos 49 archivos / 0 errores · lint 54 / 0 · build **140 851 B** gzip de 150 000 · unitarias **59 de 59** · e2e **32 de 32** |
+
+### Suite completa contra HEAD limpio
+
+Medida antes de las correcciones de la revisión; se repite al cerrar el punto.
+
+| Árbol | Resultado |
+|---|---|
+| Trabajo | 5 628 aprobadas, 77 fallidas, 2 errores, 337 omitidas |
+| HEAD `7e21b7c4` exportado con `git archive` | 5 585 aprobadas, 75 fallidas, 2 errores, 344 omitidas |
+
+Diferencia de conjuntos, comparada id por id: **0 regresiones**. Las 5 que solo
+fallan en el árbol de trabajo son `test_token_cache_atomic_swap`, que dependen
+del `data/auth.json` real que `git archive` no exporta. Las 3 que solo fallan
+en la copia son `test_atomic_io` (intermitente: aislada falla en ambos) y
+`test_chat_helpers` + `test_workspace_confine`, que comparan rutas absolutas y
+fallan porque la copia vive en otra carpeta.
+
+### Revisión independiente (subagente, sin el razonamiento del constructor)
+
+Veredicto inicial **DEVUELTO**: 0 críticos vivos, 5 importantes, 8 menores, con
+26 mutaciones propias de las que 6 sobrevivieron. Estado tras las correcciones:
+
+| # | Hallazgo | Estado |
+|---|---|---|
+| 0 | Crítico: grafías sin normalizar servían la página sin sesión | Cerrado durante la propia revisión; re-medido con 18 grafías |
+| 1 | `disable_mcp` vetaba las 15 herramientas de correo que la allowlist sí permite | Corregido: `allowed_mcp_names` (ADR-018). 4 pruebas nuevas |
+| 2 | El ranking anteponía «lista el modelo» a «tiene clave»: una fila sin credencial ganaba | Corregido: el orden es coincidencia exacta → modelo no oculto → clave → modelo listado → id. 4 pruebas nuevas |
+| 3 | ADR-018 citaba 3 servidores builtin | Corregido a 5, con el límite de lo no medido declarado |
+| 4 | Documentación por detrás del código y conteos no reproducibles | Corregido: ADR-016 y este archivo, con los conjuntos nombrados |
+| 5 | La migración SQLite no la cubría ninguna prueba (mutación M16 sobrevivía) | Corregido: `test_cmh_workflow_step_decision_migration.py`; M16 ahora se captura |
+| 6, 8 | `stop()` en el rechazo y el colapso de barras son código inalcanzable | Se conservan como defensa; comentarios corregidos para no afirmar un escenario imposible |
+| 7 | Pasos hermanos quedan `pending` bajo una ejecución rechazada | Documentado en ADR-017 |
+| 9 | La rama MCP de `reason_for` no se probaba ni se usaba | Corregido: la compuerta usa `reason_for`, y el mensaje ya no dice «guide-only» para toda política |
+| 10 | El estado `rejected` de la interfaz no lo verificaba nada | Corregido: 3 unitarias nuevas |
+| 11 | No se podía filtrar por «Rechazada» | Corregido en ejecuciones, observabilidad y leyenda del grafo |
+| 12 | Una justificación de más de 2 000 caracteres da 422, no 400 | Documentado en ADR-017 |
+| 13 | `logger.info` por resolución ambigua de endpoint | Se conserva: solo se emite cuando hay más de un candidato, que es justo el caso a diagnosticar. Solo ids |
+
+Mutaciones tras las correcciones: las 6 que sobrevivían se volvieron a correr y
+**4 se capturan ahora** (M16 migración, M21/M21b enum `rejected`, M22
+`TERMINAL_RUN_EVENTS`, M23 rama MCP de `reason_for`). Las 2 restantes —M17
+`stop()` y M04b colapso de barras— sobreviven **por diseño**: son defensa sobre
+caminos hoy inalcanzables, y así queda escrito en el código.
+
+**Advertencia de proceso registrada por el revisor:** el árbol se modificó
+mientras revisaba, porque el defecto crítico se cerró en paralelo. Una revisión
+sobre un árbol en movimiento no es una revisión. La siguiente debe hacerse
+sobre un commit congelado.

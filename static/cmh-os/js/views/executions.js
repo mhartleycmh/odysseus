@@ -115,7 +115,7 @@ export function renderList(ctx, match) {
     const toolbar = h('form', { class: 'toolbar', attrs: { role: 'search', 'aria-label': t('executions.filter.label') }, on: { submit: (e) => e.preventDefault() } },
       field({ name: 'q', label: t('executions.filter.search'), type: 'search', placeholder: t('executions.filter.searchPlaceholder'), className: 'grow' }),
       field({ name: 'status', label: t('executions.filter.status'), type: 'select', value: match.query.get('estado') || '',
-              options: [{ value: '', label: t('common.all') }, ...['running', 'waiting_approval', 'completed', 'error', 'interrupted', 'pending'].map((s) => ({ value: s, label: t('status.execution.' + s) }))] }),
+              options: [{ value: '', label: t('common.all') }, ...['running', 'waiting_approval', 'completed', 'error', 'interrupted', 'pending', 'rejected'].map((s) => ({ value: s, label: t('status.execution.' + s) }))] }),
       field({ name: 'workflow', label: t('executions.filter.workflow'), type: 'select', value: '', options: [{ value: '', label: t('common.all') }, ...workflows.map((w) => ({ value: w.id, label: w.name }))] }));
     const host = h('div');
     const count = h('p', { class: 'small muted', attrs: { 'aria-live': 'polite', 'data-count': '' } });

@@ -1912,11 +1912,20 @@ class TaskScheduler:
         tool_policy = None
         if allowed_tools is not None:
             from src.tool_policy import ToolPolicy, known_tool_names
+            from src.tool_security import email_tool_policy_names
             blocked = known_tool_names() - allowed_tools
+            # Some allowlistable native tools are MCP-backed and alias to a
+            # qualified mcp__ name (every email tool does). The MCP clamp must
+            # not veto what this very allowlist permits, so carry those aliases
+            # as explicit exceptions.
+            allowed_mcp = {name for tool in allowed_tools
+                           for name in email_tool_policy_names(tool)
+                           if name.startswith("mcp__")}
             tool_policy = ToolPolicy(
                 disabled_tools=frozenset(blocked),
                 hidden_tools=frozenset(blocked),
                 disable_mcp=True,
+                allowed_mcp_names=frozenset(allowed_mcp),
             )
             disabled_tools = set(disabled_tools or ()) | blocked
             relevant_tools = set(allowed_tools)
@@ -1932,17 +1941,18 @@ class TaskScheduler:
         headers = {}
         try:
             from core.database import SessionLocal, ModelEndpoint
-            from src.endpoint_resolver import normalize_base, build_headers
+            from src.endpoint_resolver import normalize_base, build_headers, select_endpoint_for_url
             from src.auth_helpers import owner_filter
             db2 = SessionLocal()
             try:
                 ep_q = db2.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
                 ep_q = owner_filter(ep_q, ModelEndpoint, task.owner or None)
                 eps = ep_q.all()
-                for ep in eps:
-                    if normalize_base(ep.base_url) in endpoint_url or endpoint_url in normalize_base(ep.base_url):
-                        headers = build_headers(ep.api_key, normalize_base(ep.base_url))
-                        break
+                # Several enabled endpoints can share a base URL; pick the best
+                # match for this model instead of whichever row came first.
+                ep = select_endpoint_for_url(eps, endpoint_url, model)
+                if ep is not None:
+                    headers = build_headers(ep.api_key, normalize_base(ep.base_url))
             finally:
                 db2.close()
         except Exception:
@@ -2169,17 +2179,16 @@ class TaskScheduler:
         # Resolve headers
         try:
             from core.database import ModelEndpoint
-            from src.endpoint_resolver import normalize_base, build_headers
+            from src.endpoint_resolver import normalize_base, build_headers, select_endpoint_for_url
             from src.auth_helpers import owner_filter
             db2 = db
             if not headers_from_resolver:
                 ep_q = db2.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
                 ep_q = owner_filter(ep_q, ModelEndpoint, task.owner or None)
                 eps = ep_q.all()
-                for ep in eps:
-                    if normalize_base(ep.base_url) in endpoint_url or endpoint_url in normalize_base(ep.base_url):
-                        headers = build_headers(ep.api_key, normalize_base(ep.base_url))
-                        break
+                ep = select_endpoint_for_url(eps, endpoint_url, model)
+                if ep is not None:
+                    headers = build_headers(ep.api_key, normalize_base(ep.base_url))
         except Exception:
             pass
 

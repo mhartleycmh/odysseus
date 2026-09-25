@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from core.database import (
     CMHAgent, CMHWorkflowArtifact, CMHWorkflowDefinition, CMHWorkflowEvent,
-    CMHWorkflowRun, CMHWorkflowStep, ScheduledTask, SessionLocal,
+    CMHWorkflowRun, CMHWorkflowStep, ScheduledTask, SessionLocal, utcnow_naive,
 )
 from routes.cmh_control_routes import _admin, _owner, catalog, protected_area
 from src.cmh_workflows import (
@@ -29,6 +29,19 @@ class DefinitionInput(BaseModel):
 
 class RunInput(BaseModel):
     initial_input: str = Field(min_length=1, max_length=12000)
+
+
+class DecisionInput(BaseModel):
+    """The reviewer's reason. Required to reject, optional to approve."""
+    justification: str = Field(default="", max_length=2000)
+
+
+def _record_decision(step, outcome: str, justification: str, owner: str) -> dict:
+    """Freeze the human verdict on the step so it survives the browser."""
+    decision = {"outcome": outcome, "justification": justification.strip(),
+                "by": owner, "at": utcnow_naive().isoformat()}
+    step.decision = json.dumps(decision)
+    return decision
 
 
 def _owned_run(db, run_id, owner):
@@ -150,7 +163,8 @@ def setup_cmh_workflow_routes() -> APIRouter:
             return {"id": run.id, "status": run.status, "project_id": run.project_id,
                     "steps": [{"key": s.step_key, "status": s.status, "agent_id": s.agent_id,
                                "model": json.loads(s.config)["model"], "dependencies": json.loads(s.dependencies),
-                               "error": s.error} for s in steps],
+                               "error": s.error,
+                               "decision": json.loads(s.decision) if s.decision else None} for s in steps],
                     "artifacts": [{"id": a.id, "step_key": a.step_key, "model": a.model,
                                    "content": a.content} for a in artifacts]}
 
@@ -196,24 +210,58 @@ def setup_cmh_workflow_routes() -> APIRouter:
         start(run_id)
         return {"id": run_id, "status": "interrupted"}
 
+    def _pending_step(db, run, step_key):
+        step = db.query(CMHWorkflowStep).filter(CMHWorkflowStep.run_id == run.id,
+                                                CMHWorkflowStep.step_key == step_key).first()
+        if not step or run.status != "waiting_approval" or step.status != "waiting_approval":
+            raise HTTPException(409, "No approval pending for this step")
+        return step
+
     @router.post("/runs/{run_id}/steps/{step_key}/approve")
-    async def approve_step(request: Request, run_id: str, step_key: str):
+    async def approve_step(request: Request, run_id: str, step_key: str,
+                           body: DecisionInput | None = None):
         owner = _owner(request); _admin(owner)
         with SessionLocal() as db:
             run = _owned_run(db, run_id, owner)
-            step = db.query(CMHWorkflowStep).filter(CMHWorkflowStep.run_id == run_id,
-                                                   CMHWorkflowStep.step_key == step_key).first()
-            if not step or run.status != "waiting_approval" or step.status != "waiting_approval":
-                raise HTTPException(409, "No approval pending for this step")
+            step = _pending_step(db, run, step_key)
             config = json.loads(step.config)
             config["approved"] = True
             step.config = json.dumps(config)
             step.status = "pending"
             run.status = "interrupted"
+            _record_decision(step, "approved", (body.justification if body else ""), owner)
             event(db, run_id, "step_approved", step_key)
             db.commit()
         start(run_id)
         return {"id": run_id, "step_key": step_key, "status": "approved"}
+
+    @router.post("/runs/{run_id}/steps/{step_key}/reject")
+    async def reject_step(request: Request, run_id: str, step_key: str, body: DecisionInput):
+        """Refuse the step and end the run. Terminal on purpose: a rejected
+        step was never approved, so resuming it would silently re-ask instead
+        of keeping the refusal. Artifacts already produced are preserved."""
+        owner = _owner(request); _admin(owner)
+        justification = (body.justification or "").strip()
+        if not justification:
+            raise HTTPException(400, "A rejection needs a justification")
+        with SessionLocal() as db:
+            run = _owned_run(db, run_id, owner)
+            step = _pending_step(db, run, step_key)
+            step.status = "rejected"
+            step.finished_at = utcnow_naive()
+            decision = _record_decision(step, "rejected", justification, owner)
+            run.status = "rejected"
+            run.finished_at = utcnow_naive()
+            event(db, run_id, "step_rejected", step_key)
+            event(db, run_id, "run_rejected")
+            db.commit()
+        # Defense in depth, not a live path: today `execute()` sets
+        # waiting_approval and RETURNS before its gather, so no task is running
+        # when a decision arrives and this is a no-op. It stays so that a
+        # future engine which can approve mid-flight cannot leave a sibling
+        # step outliving the refusal. Verified no-op, not assumed.
+        stop(run_id)
+        return {"id": run_id, "step_key": step_key, "status": "rejected", "decision": decision}
 
     @router.get("/runs/{run_id}/events")
     async def stream_events(request: Request, run_id: str, after: int = 0,

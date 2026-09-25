@@ -9,11 +9,11 @@
 
 export const RUN_EVENT_KINDS = Object.freeze([
   'run_created', 'run_started', 'step_started', 'step_completed', 'step_error', 'step_interrupted',
-  'step_approval_requested', 'step_approved', 'run_completed', 'run_error', 'run_interrupted',
+  'step_approval_requested', 'step_approved', 'step_rejected', 'run_completed', 'run_error', 'run_interrupted', 'run_rejected',
   'run_stop_requested', 'run_resume_requested', 'step_input_truncated',
   'tool_started', 'tool_finished', 'model_metrics',
 ]);
-export const TERMINAL_RUN_EVENTS = Object.freeze(['run_completed', 'run_error', 'run_interrupted']);
+export const TERMINAL_RUN_EVENTS = Object.freeze(['run_completed', 'run_error', 'run_interrupted', 'run_rejected']);
 
 /**
  * Only events that just happened animate; a replayed backlog updates state silently.
@@ -146,6 +146,18 @@ export function applyEvent(execution, event) {
     case 'step_approved':
       if (step) step.status = 'pending';
       next.status = 'interrupted';
+      break;
+    // A refusal is terminal: the run never resumes, so the step keeps the
+    // verdict rather than falling back to the generic error state.
+    case 'step_rejected':
+      if (step) {
+        step.status = 'rejected';
+        step.finishedAt = event.at;
+      }
+      break;
+    case 'run_rejected':
+      next.status = 'rejected';
+      next.finishedAt = event.at;
       break;
     case 'run_completed':
       next.status = 'completed';

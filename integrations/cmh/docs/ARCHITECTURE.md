@@ -167,6 +167,25 @@ sequenceDiagram
   API-->>ES: step_approved → … → run_completed
 ```
 
+Si en cambio rechaza, la justificación es obligatoria y la decisión es terminal:
+
+```mermaid
+sequenceDiagram
+  participant U as Persona
+  participant UI as Aprobaciones
+  participant API as FastAPI
+  participant ES as SSE
+  U->>UI: Rechazar con justificación
+  UI->>API: POST /runs/{id}/steps/{key}/reject {justification}
+  API-->>API: paso rejected, ejecución rejected, decisión guardada
+  API-->>ES: step_rejected → run_rejected
+```
+
+Sin justificación el servidor responde 400 y nada cambia. Una ejecución
+`rejected` no se reanuda ni admite una segunda decisión (409): los artefactos ya
+producidos se conservan. La decisión —resultado, justificación, quién y cuándo—
+vive en `cmh_workflow_steps.decision`, no en el navegador (ADR-017).
+
 ## 6. Navegación
 
 ```mermaid

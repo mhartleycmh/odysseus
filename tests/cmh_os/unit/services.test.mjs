@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request, HttpError, callMetrics } from '../../../static/cmh-os/js/services/http.js';
-import { applyEvent, resetCounters, buildTrace, topoOrder, isFresh } from '../../../static/cmh-os/js/services/run-state.js';
+import { applyEvent, resetCounters, buildTrace, topoOrder, isFresh, TERMINAL_RUN_EVENTS, RUN_EVENT_KINDS } from '../../../static/cmh-os/js/services/run-state.js';
 import { createSimulation } from '../../../static/cmh-os/js/services/simulator.js';
 import { createDemoSource } from '../../../static/cmh-os/js/services/demo.js';
 import { createLiveSource, mapMcpServer, mapProvider } from '../../../static/cmh-os/js/services/live.js';
@@ -284,7 +284,7 @@ function fakeApi() {
     if (route === '/api/cmh/runs') return data.runs;
     const detail = route.match(/^\/api\/cmh\/runs\/([^/]+)$/);
     if (detail) return data.run_detail[decodeURIComponent(detail[1])];
-    const action = route.match(/^\/api\/cmh\/runs\/([^/]+)\/(stop|steps\/([^/]+)\/approve)$/);
+    const action = route.match(/^\/api\/cmh\/runs\/([^/]+)\/(stop|steps\/([^/]+)\/(?:approve|reject))$/);
     if (action && method === 'POST') {
       // Mirrors the backend: approve needs a waiting step; stop needs an active run.
       const run = data.run_detail[action[1]];
@@ -296,8 +296,12 @@ function fakeApi() {
       } else {
         const step = run.steps.find((s) => s.key === action[3]);
         if (run.status !== 'waiting_approval' || step?.status !== 'waiting_approval') throw new HttpError('conflict', 'No approval pending for this step', 409);
-        step.status = 'pending';
-        run.status = summary.status = 'running';
+        const rejecting = action[2].endsWith('/reject');
+        const justification = String((options.json && options.json.justification) || '').trim();
+        if (rejecting && !justification) throw new HttpError('validation', 'A rejection needs a justification', 400);
+        step.decision = { outcome: rejecting ? 'rejected' : 'approved', justification, by: 'tester', at: new Date().toISOString() };
+        step.status = rejecting ? 'rejected' : 'pending';
+        run.status = summary.status = rejecting ? 'rejected' : 'running';
       }
       return { id: action[1], status: 'ok' };
     }
@@ -371,13 +375,57 @@ test('live approvals route decisions to the right endpoints and keep the justifi
   await assert.rejects(live.decideApproval(memoryRequest.id, 'aprobar', 'Segunda decisión.', 'tester'), (e) => e.kind === 'not_found' || e.kind === 'conflict');
 });
 
-test('live step rejection stops the run (no reject endpoint) and appears in the history', async () => {
+test('live step rejection calls the native endpoint, is terminal and keeps the reason', async () => {
   const { req, calls } = fakeApi();
   const live = createLiveSource({ demo: createDemoSource({ speed: 0, history: false }), request: req });
   await live.decideApproval('apr-run-1-revisor', 'rechazar', 'No hay evidencia suficiente.', 'tester');
-  assert.ok(calls.includes('POST /api/cmh/runs/run-1/stop'));
+  assert.ok(calls.includes('POST /api/cmh/runs/run-1/steps/revisor/reject'), 'native reject endpoint');
+  assert.ok(!calls.includes('POST /api/cmh/runs/run-1/stop'), 'no longer falls back to stop');
   const history = (await live.listApprovals()).filter((a) => a.kind === 'paso' && a.status !== 'pendiente');
   assert.ok(history.some((a) => a.executionId === 'run-1' && a.status === 'rechazada' && a.justification === 'No hay evidencia suficiente.'));
+  // Terminal: the run cannot be decided again.
+  await assert.rejects(live.decideApproval('apr-run-1-revisor', 'aprobar', 'Segunda decisión.', 'tester'),
+                       (e) => e.kind === 'not_found' || e.kind === 'conflict');
+});
+
+test('a reloaded rejected run keeps its status instead of degrading to error', async () => {
+  // The SSE path sets status directly, so only a RELOAD goes through the
+  // enum in live.js. Without 'rejected' in it, a user who refreshes the page
+  // over a rejected run is told the run failed.
+  const { req } = fakeApi();
+  const live = createLiveSource({ demo: createDemoSource({ speed: 0, history: false }), request: req });
+  await live.decideApproval('apr-run-1-revisor', 'rechazar', 'No hay evidencia suficiente.', 'tester');
+  const reloaded = await live.getExecution('run-1');
+  assert.equal(reloaded.status, 'rejected');
+  assert.equal(reloaded.steps.find((s) => s.key === 'revisor').status, 'rejected');
+});
+
+test('run_rejected is a known, terminal run event', () => {
+  // Left out of TERMINAL_RUN_EVENTS, a rejected run's stream stays open until
+  // the idle timeout instead of closing as soon as the verdict arrives.
+  assert.ok(RUN_EVENT_KINDS.includes('run_rejected'));
+  assert.ok(RUN_EVENT_KINDS.includes('step_rejected'));
+  assert.ok(TERMINAL_RUN_EVENTS.includes('run_rejected'));
+});
+
+test('applyEvent records a rejection on the step and the run', () => {
+  // Start from the real snapshot the other reducer tests use, replayed up to
+  // the approval request, so the rejection lands on a realistic state.
+  const base = sampleEvents().reduce(applyEvent, sampleExecution());
+  assert.equal(base.status, 'waiting_approval');
+  const at = '2026-09-25T12:00:00.000Z';
+  const afterStep = applyEvent(base, { kind: 'step_rejected', stepKey: 'revisor', at, payload: {} });
+  const afterRun = applyEvent(afterStep, { kind: 'run_rejected', stepKey: null, at, payload: {} });
+  assert.equal(afterStep.steps[0].status, 'rejected');
+  assert.equal(afterRun.status, 'rejected');
+  assert.equal(afterRun.finishedAt, at);
+});
+
+test('a rejection without a justification never reaches the backend', async () => {
+  const { req, calls } = fakeApi();
+  const live = createLiveSource({ demo: createDemoSource({ speed: 0, history: false }), request: req });
+  await assert.rejects(live.decideApproval('apr-run-1-revisor', 'rechazar', '  ', 'tester'), (e) => e.kind === 'validation');
+  assert.ok(!calls.some((c) => c.includes('/reject')), 'no call was made');
 });
 
 test('live approvals survive a failing memory-proposals endpoint', async () => {

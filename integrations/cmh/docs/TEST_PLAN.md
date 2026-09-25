@@ -49,6 +49,20 @@ bash scripts/cmh_os/check.sh          # typecheck, lint, build, unitarias, e2e
 Anchos 390, 820, 1440 px: `document.documentElement.scrollWidth <= innerWidth`
 en cada ruta; captura PNG por ruta y ancho en `data/cmh-os-screens/`.
 
+## 4.bis Contrato de backend cubierto por pytest
+
+Lo que la interfaz no puede demostrar por sí sola se mide del lado del servidor:
+
+| Comprobación | Módulo |
+|---|---|
+| `/static/cmh-os/*` exige sesión y responde 404 con la bandera apagada, sin tocar el resto de `/static` | `tests/test_cmh_os_routes.py` |
+| Rechazo de paso: justificación obligatoria, terminal, decisión persistida, eventos `step_rejected` y `run_rejected` | `tests/test_cmh_workflow_routes.py` |
+| Toda herramienta despachable queda permitida o denegada bajo la allowlist del piloto; `disable_mcp` bloquea al ejecutar | `tests/test_cmh_restricted_tool_surface.py` |
+| Elección de endpoint cuando varias filas comparten URL base, incluida una fila sin credencial usable | `tests/test_endpoint_selection_by_url.py` |
+| Ninguna grafía sin normalizar (`/./`, `/../`, `//`, mayúsculas, `\`) sirve la página sin sesión | `tests/test_cmh_os_routes.py` |
+| La columna `decision` llega a una base con el esquema anterior, sin perder filas y de forma idempotente | `tests/test_cmh_workflow_step_decision_migration.py` |
+| El apagón de MCP no veta lo que la allowlist permite (herramientas de correo) | `tests/test_cmh_restricted_tool_surface.py` |
+
 ## 5. Registro
 
 Cada ejecución de `check.sh` imprime conteos por nivel. Los resultados reales

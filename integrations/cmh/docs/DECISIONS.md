@@ -194,15 +194,116 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
   texto» `#8A7623` válido como texto sobre blanco, pero mide 4,47:1, apenas bajo
   AA. La interfaz no lo usa como texto en el tema claro.
 
-## ADR-016 · Límite conocido de `CMH_OS_UI_ENABLED`
+## ADR-016 · `CMH_OS_UI_ENABLED` cubre también los activos (cerrado 2026-09-25)
 
-- La bandera apaga la ruta `/cmh/os` (404) y la interfaz respeta
-  `ui_enabled=false` de `/api/cmh/os/config`. Pero Odysseus sirve `/static/*`
-  sin autenticación (`AUTH_EXEMPT_PREFIXES`), así que
-  `/static/cmh-os/index.html` sigue descargándose y, sin sesión, cae en modo
-  demo. No expone datos: toda la API CMH exige sesión de administrador.
-  Cerrarlo del todo exige sacar `static/cmh-os` de la exención, un cambio del
-  middleware de Odysseus que queda pendiente.
+- Enunciado original: la bandera apagaba la ruta `/cmh/os` (404) y la interfaz
+  respetaba `ui_enabled=false`, pero Odysseus servía `/static/*` sin
+  autenticación (`AUTH_EXEMPT_PREFIXES`), así que `/static/cmh-os/index.html`
+  seguía descargándose y, sin sesión, caía en modo demo.
+- Resuelto: `routes/cmh_os_routes.is_os_asset_path` marca la carpeta de la
+  página, `app.py` la excluye de la exención de `/static` —y solo a ella— y
+  `_RevalidatingStatic` devuelve 404 para esa carpeta cuando la bandera está en
+  `false`. El resto de `/static` conserva la exención.
+- La comprobación es insensible a mayúsculas y al separador a propósito: NTFS
+  sirve `/static/CMH-OS/index.html` de la misma carpeta y `StaticFiles`
+  normaliza su ruta relativa con `os.path.normpath`, que en Windows usa `\`.
+  Un guardia escrito contra la forma literal dejaría pasar ambas grafías.
+- **Defecto encontrado y cerrado dentro de la misma sesión.** La primera
+  versión comparaba la ruta literal, así que `/static/./cmh-os/index.html` y
+  `/static/foo/../cmh-os/index.html` servían la página con **200 y 848 bytes
+  sin sesión**. No apareció antes porque la sonda usaba `httpx`, que colapsa
+  `.` y `..` **antes de enviar** —igual que un navegador—, de modo que el
+  cliente no podía expresar la ruta. Se midió construyendo el `scope` ASGI a
+  mano. La verificación independiente lo reprodujo además con uvicorn real y
+  socket crudo, y encontró una grafía más: `%2e%2e`, que los navegadores **no**
+  decodifican, y `/static//cmh-os/…`, que cualquier navegador manda tal cual.
+- Por eso el guardia normaliza cuatro cosas: mayúsculas, separador, barras
+  repetidas y segmentos punto. El colapso de barras no es alcanzable por
+  ninguna ruta enrutable hoy; se conserva para que el predicado sea correcto
+  por sí mismo.
+- Medición final (18 grafías probadas por la revisión independiente, incluidas
+  `%2e%2e`, `\`, `//`, `/./`, `/foo/../` y mayúsculas): todas 302 con sesión
+  ausente y 404 con la bandera apagada. `/static/cmh-control.html` (4 649 B) e
+  `icon.ico` (174 B) siguen en 200, así que la compuerta no es un 302
+  indiscriminado. Con sesión probada, la página carga entera: `index.html`
+  848 B, `js/main.js` 12 278 B, `css/tokens.css` 3 607 B.
+  `/static/cmh-os/../cmh-control.html` cae correctamente en el estático
+  compartido. Reintroducidos los defectos, fallan las pruebas que los guardan.
+
+## ADR-017 · Rechazo nativo de paso con justificación persistida
+
+- Antes, rechazar un paso en modo real llamaba a `/stop`: la ejecución quedaba
+  `interrupted`, podía reanudarse y volvía a pedir la misma aprobación, y la
+  justificación vivía solo en la auditoría del navegador. Una compuerta humana
+  cuya negativa no sobrevive al navegador no es evidencia.
+- Ahora `POST /api/cmh/runs/{id}/steps/{key}/reject` exige `justification` no
+  vacía (400 si falta), deja el paso y la ejecución en `rejected`, emite
+  `step_rejected` y `run_rejected`, y guarda `{outcome, justification, by, at}`
+  en la columna nueva `cmh_workflow_steps.decision`.
+- Terminal por diseño: `execute()` solo arranca desde `pending`/`interrupted`/
+  `paused` y `resume` solo admite `interrupted`/`error`/`paused`, así que una
+  ejecución rechazada no se reanuda ni admite una segunda decisión (409). Los
+  artefactos ya producidos se conservan.
+- La decisión no se guarda en `config` porque `config` es la foto congelada de
+  la ejecución (agente, modelo, endpoint, versión de instrucciones, carpeta y
+  herramientas); una decisión es evidencia sobre la ejecución, no una entrada.
+- `approve` acepta la misma justificación, opcional, y la guarda igual. Sigue
+  funcionando sin cuerpo, para no romper al llamador anterior.
+- Límites medidos: una justificación de más de 2 000 caracteres la rechaza
+  Pydantic con **422** (`string_too_long`), no con el 400 de la validación
+  propia; 2 000 exactos se almacenan íntegros. Dos rechazos simultáneos dan
+  `[200, 409]` y una sola decisión; rechazo y aprobación a la vez, también.
+- Límite conocido: los pasos hermanos que nunca arrancaron quedan `pending`
+  bajo una ejecución `rejected`. Es inocuo —nada los revive, y una prueba lo
+  fija— pero la interfaz los pinta como «No iniciado» dentro de una ejecución
+  «Rechazada».
+
+## ADR-018 · `disable_mcp` se aplica al ejecutar, no solo al armar el prompt
+
+- `ToolPolicy.blocks()` decidía solo por nombre. Una tarea restringida traduce
+  su allowlist a `known_tool_names() - allowed_tools`, y ese conjunto no puede
+  contener un nombre MCP cualificado (`mcp__servidor__herramienta`): medido, 82
+  nombres, 0 con prefijo `mcp`. `disable_mcp` solo ponía `mcp_mgr = None`
+  dentro de `agent_loop`, mientras `tool_execution` pide el gestor al proceso
+  por su cuenta. Un nombre `mcp__*` adivinado quedaba sin bloquear.
+- Corrección en la raíz: `blocks()` rechaza cualquier nombre con prefijo
+  `mcp__` cuando la política declara `disable_mcp`. El otro único uso de la
+  bandera —el turno guide-only— ya bloqueaba todo, así que el radio del cambio
+  es la política de tareas restringidas.
+- El mapa heredado `_MCP_TOOL_MAP` (`read_file`, `ls`…) no se toca: sus nombres
+  no llevan el prefijo, así que el piloto conserva sus cuatro herramientas.
+- **Excepción explícita, añadida tras la revisión.** 15 herramientas de correo
+  están en `known_tool_names()`, o sea son allowlistables, y cada una aliasa a
+  su forma `mcp__email__*` vía `email_tool_policy_names`. Las compuertas
+  evalúan `any(blocks(n) for n in policy_names)`, así que una cláusula ciega
+  bloqueaba `send_email` **aunque la allowlist lo permitiera**, mientras el
+  prompt seguía ofreciéndolo: vetado en silencio. `ToolPolicy` lleva ahora
+  `allowed_mcp_names`, que `task_scheduler` calcula desde la propia allowlist.
+  La cláusula no puede contradecir a la lista blanca que la acompaña.
+- Inventario real, medido en `src/builtin_mcp.py`: **cinco** servidores
+  builtin, no tres — `image_gen`, `memory`, `rag`, `email` (Python) y
+  `builtin_browser` (Playwright por npx, 12 herramientas con nombres
+  documentados en `routes/chat_routes.py`). `email` ya estaba cubierto por su
+  alias; los otros cuatro no lo estaban.
+- Severidad medida por verificación adversaria independiente: **media**, no
+  alta. Matices que la sostienen y su límite:
+  - los tres nombres con que se demostró el hueco —`mcp__bash__bash`,
+    `mcp__filesystem__read_text_file`, `mcp__anything__do_it`— **no existen**
+    como servidores: bash, python y filesystem se replegaron a ejecución
+    nativa en proceso;
+  - de 4 formatos de llamada probados, solo `<invoke name="mcp__…">` produce
+    un `tool_type` con prefijo `mcp__`; el canal fenced que usa el piloto
+    local no lo parsea, porque `TOOL_TAGS` (77 etiquetas) no tiene ninguna
+    `mcp*`;
+  - **no verificado**: que `builtin_browser` esté conectado en la máquina
+    objetivo —aquí no hay Node en PATH, así que npx no arranca— ni la
+    afirmación de «una sola llamada por ejecución» atribuida a la compuerta de
+    contexto externo. Si `builtin_browser` conecta, la superficie es control de
+    navegador y el argumento de severidad media **no se sostiene**. La
+    corrección no depende de ese dato: la cláusula bloquea los cinco por igual.
+- Medición que sí es firme: `known_tool_names()` = **82** nombres, **0** con
+  prefijo `mcp`, y `validate_task_tools` exige `names <= known_tool_names()`,
+  así que ninguna allowlist puede contener un nombre MCP cualificado.
 
 ## ADR-012 · Configuración por variables de entorno
 

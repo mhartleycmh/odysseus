@@ -41,6 +41,9 @@ function expect(condition, message) {
 
 const demoServer = await startServer({});
 const apiServer = await startServer({ api: true });
+// A second fake backend with its own state: rejecting run-1 is terminal, so it
+// cannot share the instance the approval check consumes.
+const rejectServer = await startServer({ api: true });
 const browser = await launchBrowser();
 const page = browser.page;
 const DEMO = `${demoServer.url}/cmh/os?modo=demo&velocidad=rapida`;
@@ -463,6 +466,23 @@ try {
     expect(apiServer.calls.includes('POST /api/cmh/memory-proposals/prop-1/reject'), 'reject endpoint called');
     noErrors('live memory');
   });
+  await check('Rechazo real de un paso: justificación obligatoria, endpoint nativo y ejecución terminada', async () => {
+    await page.goto(`${rejectServer.url}/cmh/os#/aprobaciones?id=apr-run-1-revisor`);
+    await route('#/aprobaciones?id=apr-run-1-revisor');
+    await page.waitFor(`document.querySelector('[data-block="approval-detail"] h2')`, 10000, 'step approval detail');
+    // Rejecting without a reason must not reach the backend at all.
+    await page.click('[data-action="reject"]');
+    expect(!rejectServer.calls.some((c) => c.includes('/reject')), 'no reject call without a justification');
+    await page.fill('[data-form="decision"] textarea', 'El artefacto no cita la evidencia medida.');
+    await page.click('[data-action="reject"]');
+    await page.click('dialog[open] [data-action="confirm"]');
+    await page.waitFor(`[...document.querySelectorAll('.toast')].some((t) => /rechazada/.test(t.textContent))`, 10000, 'toast');
+    expect(rejectServer.calls.includes('POST /api/cmh/runs/run-1/steps/revisor/reject'), 'native step reject endpoint called');
+    expect(!rejectServer.calls.includes('POST /api/cmh/runs/run-1/stop'), 'no longer falls back to stop');
+    await route('#/ejecuciones/run-1');
+    await page.waitFor(`/Rechazada/.test(document.querySelector('[data-block="badges"]')?.textContent || '')`, 10000, 'run shown as rejected');
+    noErrors('live step rejection');
+  });
   await check('Herramientas reales: variables MCP solo por nombre', async () => {
     await route('#/herramientas');
     const body = await text('[data-view="tools"]');
@@ -494,6 +514,7 @@ try {
   await browser.close();
   await demoServer.close();
   await apiServer.close();
+  await rejectServer.close();
 }
 
 const failed = results.filter((r) => !r.ok);

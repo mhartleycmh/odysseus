@@ -1058,8 +1058,12 @@ async def _execute_tool_block_impl(
 
     if tool_policy and any(tool_policy.blocks(name) for name in policy_names):
         desc = f"{tool}: BLOCKED"
+        # The policy knows WHY; the message used to claim "guide-only" for
+        # every policy, which is wrong for the MCP clamp and for a plain
+        # per-request denylist.
+        blocked_name = next((name for name in policy_names if tool_policy.blocks(name)), tool)
         result = {
-            "error": f"Execution of tool '{tool}' is forbade by the active guide-only policy.",
+            "error": f"Execution of tool '{tool}' is blocked: {tool_policy.reason_for(blocked_name)}",
             "exit_code": 1,
         }
         logger.warning("Tool policy blocked tool=%s", tool)

@@ -40,7 +40,7 @@ export function renderList(ctx, match) {
     const toolbar = h('form', { class: 'toolbar', attrs: { role: 'search', 'aria-label': t('observability.filter.label') }, on: { submit: (e) => e.preventDefault() } },
       field({ name: 'q', label: t('observability.filter.search'), type: 'search', className: 'grow', placeholder: t('observability.filter.searchPlaceholder') }),
       field({ name: 'status', label: t('observability.filter.status'), type: 'select', value: match.query.get('estado') || '',
-              options: [{ value: '', label: t('common.all') }, ...['completed', 'error', 'running', 'waiting_approval', 'interrupted'].map((s) => ({ value: s, label: t('status.execution.' + s) }))] }),
+              options: [{ value: '', label: t('common.all') }, ...['completed', 'error', 'running', 'waiting_approval', 'interrupted', 'rejected'].map((s) => ({ value: s, label: t('status.execution.' + s) }))] }),
       field({ name: 'agent', label: t('observability.filter.agent'), type: 'select', value: '', options: [{ value: '', label: t('common.all') }, ...agents.map((a) => ({ value: a, label: a }))] }));
     const kpis = h('div', { class: 'grid grid-kpi' });
     const tableHost = h('div');

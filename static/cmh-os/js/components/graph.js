@@ -89,7 +89,7 @@ export function layoutGraph(steps, orientation) {
 }
 
 /** @type {Record<StepStatus, string>} */
-const STATUS_GLYPH = { pending: '○', running: '◆', waiting_approval: '▲', completed: '●', error: '■', interrupted: '▲' };
+const STATUS_GLYPH = { pending: '○', running: '◆', waiting_approval: '▲', completed: '●', error: '■', interrupted: '▲', rejected: '✕' };
 const PHASES = /** @type {const} */ (['plan', 'ejecutar', 'observar', 'reflexionar']);
 
 /**
@@ -203,7 +203,7 @@ export function createGraph(options) {
 
   const liveText = h('p', { class: 'sr-only', attrs: { 'aria-live': 'polite' } });
   const legend = h('ul', { class: 'graph-legend', attrs: { 'aria-label': t('graph.legend') } },
-    /** @type {StepStatus[]} */ (['pending', 'running', 'waiting_approval', 'completed', 'error']).map((st) =>
+    /** @type {StepStatus[]} */ (['pending', 'running', 'waiting_approval', 'completed', 'error', 'rejected']).map((st) =>
       h('li', { class: `legend-${st}` }, h('span', { attrs: { 'aria-hidden': 'true' } }, STATUS_GLYPH[st]), t('status.step.' + st))));
   const figure = h('figure', { class: `graph graph-${orientation}` }, svg, h('figcaption', { class: 'graph-caption' }, legend), liveText);
 

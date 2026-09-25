@@ -121,8 +121,8 @@
  */
 
 /**
- * @typedef {'pending'|'running'|'waiting_approval'|'completed'|'error'|'interrupted'|'paused'} ExecutionStatus
- * @typedef {'pending'|'running'|'waiting_approval'|'completed'|'error'|'interrupted'} StepStatus
+ * @typedef {'pending'|'running'|'waiting_approval'|'completed'|'error'|'interrupted'|'paused'|'rejected'} ExecutionStatus
+ * @typedef {'pending'|'running'|'waiting_approval'|'completed'|'error'|'interrupted'|'rejected'} StepStatus
  */
 
 /**

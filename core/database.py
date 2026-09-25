@@ -780,6 +780,11 @@ class CMHWorkflowStep(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     error = Column(Text, nullable=True)
+    # The human gate's verdict, as JSON: {outcome, justification, by, at}. It
+    # is kept out of `config` because config is the frozen execution snapshot
+    # (agent, model, endpoint, instructions version, workspace, tools) and a
+    # decision is evidence about the run, not an input to it.
+    decision = Column(Text, nullable=True)
 
 
 class CMHWorkflowArtifact(Base):
@@ -2172,6 +2177,9 @@ def init_db():
             agent_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(cmh_agents)"))}
             if agent_columns and "task_id" not in agent_columns:
                 conn.execute(text("ALTER TABLE cmh_agents ADD COLUMN task_id VARCHAR"))
+            step_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(cmh_workflow_steps)"))}
+            if step_columns and "decision" not in step_columns:
+                conn.execute(text("ALTER TABLE cmh_workflow_steps ADD COLUMN decision TEXT"))
     # Lock the DB file (and any SQLite sidecars) to 0o600 — it holds bearer-token
     # + bcrypt hashes and encrypted provider keys. POSIX only; safe_chmod no-ops
     # on Windows (ACL-restricted profile dir) and the path helper returns None for

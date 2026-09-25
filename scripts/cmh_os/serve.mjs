@@ -59,7 +59,7 @@ async function fakeApi(state, req, res, url) {
   }
   if (path === '/api/__test/streams') return json(res, 200, { open: [...state.streams.values()].reduce((n, set) => n + set.size, 0) });
   state.calls.push(`${method} ${path}`);
-  if (method !== 'GET') await readBody(req);
+  const body = method !== 'GET' ? await readBody(req) : null;
   if (state.latencyMs) await new Promise((resolveDelay) => setTimeout(resolveDelay, state.latencyMs));
   const run = path.match(/^\/api\/cmh\/runs\/([^/]+)(\/.*)?$/);
   if (method === 'GET' && path === '/api/cmh/os/config') return json(res, 200, s.os_config);
@@ -109,6 +109,23 @@ async function fakeApi(state, req, res, url) {
         emit(state, id, 'run_completed', null);
       }, 1500);
       return json(res, 200, { id, step_key: key, status: 'approved' });
+    }
+    const reject = run[2] && run[2].match(/^\/steps\/([^/]+)\/reject$/);
+    if (reject) {
+      // Mirrors routes/cmh_workflow_routes.py: a refusal needs a reason, ends
+      // the run and is terminal, so the artifacts already produced stay.
+      const key = decodeURIComponent(reject[1]);
+      const step = detail.steps.find((st) => st.key === key);
+      const justification = String((body && body.justification) || '').trim();
+      if (!justification) return json(res, 400, { detail: 'A rejection needs a justification' });
+      if (!step || detail.status !== 'waiting_approval' || step.status !== 'waiting_approval') return json(res, 409, { detail: 'No approval pending for this step' });
+      const decision = { outcome: 'rejected', justification, by: 'admin', at: new Date().toISOString() };
+      step.status = 'rejected';
+      step.decision = decision;
+      detail.status = summary.status = 'rejected';
+      emit(state, id, 'step_rejected', key);
+      emit(state, id, 'run_rejected', null);
+      return json(res, 200, { id, step_key: key, status: 'rejected', decision });
     }
     if (run[2] === '/stop') {
       if (!['running', 'pending', 'waiting_approval'].includes(detail.status)) return json(res, 409, { detail: 'Run is not active' });

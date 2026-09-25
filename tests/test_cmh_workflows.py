@@ -235,3 +235,33 @@ async def test_long_artifact_is_cut_with_a_visible_marker_and_event(db):
         truncated = session.query(cdb.CMHWorkflowEvent).filter_by(run_id=run_id, kind="step_input_truncated").one()
     assert json.loads(truncated.payload) == {"artifact_id": stored.id,
                                              "included": flow.MAX_ARTIFACT_INPUT_CHARS, "total": total}
+
+
+async def test_a_restart_never_revives_a_rejected_run(db):
+    """A refusal must outlive a server restart: recovery revives running and
+    pending work, and a rejected run is neither."""
+    run_id = seed(db, [("a", []), ("b", ["a"])])
+    with db() as session:
+        run = session.get(cdb.CMHWorkflowRun, run_id)
+        run.status = "rejected"
+        a = session.query(cdb.CMHWorkflowStep).filter_by(run_id=run_id, step_key="a").one()
+        a.status = "completed"
+        b = session.query(cdb.CMHWorkflowStep).filter_by(run_id=run_id, step_key="b").one()
+        b.status = "rejected"
+        b.decision = '{"outcome": "rejected", "justification": "Sin evidencia.", "by": "admin", "at": "2026-09-25T00:00:00"}'
+        session.commit()
+    flow.reconcile_interrupted_runs()
+    calls = []
+
+    async def fake(config, prompt):
+        calls.append(config["model"])
+        return "no debería ejecutarse"
+
+    await flow.execute(run_id, model_call=fake)
+    with db() as session:
+        run = session.get(cdb.CMHWorkflowRun, run_id)
+        step = session.query(cdb.CMHWorkflowStep).filter_by(run_id=run_id, step_key="b").one()
+    assert run.status == "rejected"
+    assert step.status == "rejected"
+    assert step.decision and "Sin evidencia." in step.decision
+    assert calls == [], f"the rejected run executed {calls}"

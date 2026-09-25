@@ -232,3 +232,112 @@ async def test_run_refuses_step_whose_workspace_reaches_financial_folders(client
         run = await client.post(f"/api/cmh/workflows/{definition.json()['id']}/runs",
                                 json={"initial_input": "synthetic"})
     assert run.status_code == 400 and "protected area" in run.json()["detail"]
+
+
+async def _run_waiting_on_b(client, monkeypatch):
+    async def fake(config, prompt):
+        return config["model"] + " artifact"
+    monkeypatch.setattr(flow, "call_model", fake)
+    run_id = await create_run(client, [
+        {"key": "a", "agent_id": "agent-a"},
+        {"key": "b", "agent_id": "agent-b", "depends_on": ["a"], "requires_approval": True},
+    ])
+    await idle(run_id)
+    return run_id
+
+
+async def test_rejecting_a_step_ends_the_run_and_keeps_the_justification(client, monkeypatch):
+    async with client:
+        run_id = await _run_waiting_on_b(client, monkeypatch)
+        rejected = await client.post(f"/api/cmh/runs/{run_id}/steps/b/reject",
+                                     json={"justification": "El artefacto no cita evidencia medida."})
+        assert rejected.status_code == 200, rejected.text
+        await idle(run_id)
+        detail = (await client.get(f"/api/cmh/runs/{run_id}")).json()
+    assert detail["status"] == "rejected"
+    step = next(s for s in detail["steps"] if s["key"] == "b")
+    assert step["status"] == "rejected"
+    assert step["decision"]["outcome"] == "rejected"
+    assert step["decision"]["justification"] == "El artefacto no cita evidencia medida."
+    assert step["decision"]["by"] == "admin"
+    assert step["decision"]["at"]
+    # The work already done survives the refusal.
+    assert [a["step_key"] for a in detail["artifacts"]] == ["a"]
+
+
+async def test_a_rejection_without_a_justification_is_refused(client, monkeypatch):
+    async with client:
+        run_id = await _run_waiting_on_b(client, monkeypatch)
+        for body in ({"justification": ""}, {"justification": "   "}):
+            answer = await client.post(f"/api/cmh/runs/{run_id}/steps/b/reject", json=body)
+            assert answer.status_code == 400, answer.text
+        detail = (await client.get(f"/api/cmh/runs/{run_id}")).json()
+    # Nothing moved: the step is still waiting for a decision.
+    assert detail["status"] == "waiting_approval"
+    assert next(s for s in detail["steps"] if s["key"] == "b")["decision"] is None
+
+
+async def test_a_rejected_run_cannot_be_resumed_or_decided_again(client, monkeypatch):
+    async with client:
+        run_id = await _run_waiting_on_b(client, monkeypatch)
+        first = await client.post(f"/api/cmh/runs/{run_id}/steps/b/reject",
+                                  json={"justification": "Sin trazabilidad de las cifras."})
+        assert first.status_code == 200
+        await idle(run_id)
+        again = await client.post(f"/api/cmh/runs/{run_id}/steps/b/reject",
+                                  json={"justification": "Segundo intento de rechazo."})
+        approve = await client.post(f"/api/cmh/runs/{run_id}/steps/b/approve")
+        resume = await client.post(f"/api/cmh/runs/{run_id}/resume")
+        detail = (await client.get(f"/api/cmh/runs/{run_id}")).json()
+    assert again.status_code == 409, again.text
+    assert approve.status_code == 409, approve.text
+    assert resume.status_code == 409, resume.text
+    assert detail["status"] == "rejected"
+    # The first verdict is the one that stands.
+    assert next(s for s in detail["steps"] if s["key"] == "b")["decision"]["justification"] == "Sin trazabilidad de las cifras."
+
+
+async def test_approval_records_its_own_optional_justification(client, monkeypatch):
+    async with client:
+        run_id = await _run_waiting_on_b(client, monkeypatch)
+        approved = await client.post(f"/api/cmh/runs/{run_id}/steps/b/approve",
+                                     json={"justification": "Revisado contra el artefacto del verificador."})
+        assert approved.status_code == 200, approved.text
+        await idle(run_id)
+        detail = (await client.get(f"/api/cmh/runs/{run_id}")).json()
+    assert detail["status"] == "completed"
+    decision = next(s for s in detail["steps"] if s["key"] == "b")["decision"]
+    assert decision["outcome"] == "approved"
+    assert decision["justification"] == "Revisado contra el artefacto del verificador."
+
+
+async def test_approve_still_works_without_a_body(client, monkeypatch):
+    """The existing caller sends no body; adding the field must not break it."""
+    async with client:
+        run_id = await _run_waiting_on_b(client, monkeypatch)
+        approved = await client.post(f"/api/cmh/runs/{run_id}/steps/b/approve")
+        assert approved.status_code == 200, approved.text
+        await idle(run_id)
+        detail = (await client.get(f"/api/cmh/runs/{run_id}")).json()
+    assert detail["status"] == "completed"
+    assert next(s for s in detail["steps"] if s["key"] == "b")["decision"]["justification"] == ""
+
+
+async def test_the_rejection_reaches_the_event_stream(client, monkeypatch):
+    from types import SimpleNamespace
+    async with client:
+        run_id = await _run_waiting_on_b(client, monkeypatch)
+        assert (await client.post(f"/api/cmh/runs/{run_id}/steps/b/reject",
+                                  json={"justification": "No cumple el estándar del canon."})).status_code == 200
+        await idle(run_id)
+    stream = next(r.endpoint for r in routes.setup_cmh_workflow_routes().routes
+                  if r.path == "/api/cmh/runs/{run_id}/events" and "GET" in r.methods)
+    polls = iter([False])
+
+    async def is_disconnected():
+        return next(polls, True)
+    response = await stream(SimpleNamespace(state=SimpleNamespace(current_user="admin"),
+                                            is_disconnected=is_disconnected), run_id, after=0, last_event_id=None)
+    replay = "".join([chunk async for chunk in response.body_iterator])
+    kinds = [line[7:] for line in replay.splitlines() if line.startswith("event: ")]
+    assert "step_rejected" in kinds and "run_rejected" in kinds

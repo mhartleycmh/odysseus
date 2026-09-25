@@ -110,10 +110,10 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Próxima acción exacta
 
-1. El usuario abre `/cmh/os` en Edge con sesión de administrador y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Es lo único de la interfaz que no se pudo verificar en esta sesión.
-2. Hecho: commit `bba01a65` de la interfaz y de los registros de los puntos 6 y 7.
-3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones (en la nube tarda minutos). Registrar los IDs. El piloto sigue pausado hasta aprobarlo.
-4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6 y 7.
+1. **Autorizar el commit del punto limpio 8** (31 archivos sin commit sobre `7e21b7c4`). Hasta que exista ese commit, la próxima revisión independiente no es válida: la del 2026-09-25 tuvo que medir un árbol que cambiaba bajo sus pies.
+2. El usuario abre `/cmh/os` en Edge con **sesión de administrador** y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Sigue siendo lo único de la interfaz que no se puede verificar sin esa sesión. Evidencia a registrar: que la página carga autenticada tras sacarla de la exención de `/static`, que el badge dice modo real y no demo, y que el rechazo de un paso desde Aprobaciones deja la ejecución en `rejected` con su justificación.
+3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones. Registrar los IDs. El piloto **sigue pausado**.
+4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6, 7 y 8.
 
 ## Punto limpio 6: piloto en la nube (2026-09-24)
 
@@ -156,3 +156,44 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
   - Corregidos 13 de los 14 menores. Queda parcial `CMH_OS_UI_ENABLED`, porque `/static` está exento de autenticación en Odysseus (ADR-016).
 - No verificado: el modo real con sesión de administrador en Edge contra el servidor vivo.
 - Documentos: `integrations/cmh/docs/` (plan, arquitectura, 16 ADR, especificación UX, plan de pruebas, estado, investigación, licencias, README).
+
+
+## Punto limpio 8: pendientes de backend y endurecimiento del piloto (2026-09-25)
+
+- **Estado Git:** rama `dev`, base `7e21b7c4`, **31 archivos sin commit** (pendiente de autorización). Modificados: `app.py`, `core/database.py`, `routes/cmh_os_routes.py`, `routes/cmh_workflow_routes.py`, `src/endpoint_resolver.py`, `src/task_scheduler.py`, `src/tool_policy.py`, `src/tool_execution.py`, 8 archivos de `static/cmh-os/`, `scripts/cmh_os/serve.mjs`, 4 documentos de `integrations/cmh/docs/` y 6 módulos de prueba. Nuevos: `tests/test_cmh_restricted_tool_surface.py`, `tests/test_endpoint_selection_by_url.py`, `tests/test_cmh_workflow_step_decision_migration.py`.
+
+### Capacidades cerradas
+
+1. **`/static/cmh-os/*` fuera de la exención de autenticación** (ADR-016, el pendiente que quedaba del punto 7). La carpeta de la página sale de `AUTH_EXEMPT_PREFIXES` —y solo ella— y devuelve 404 con `CMH_OS_UI_ENABLED=false`. Durante la propia sesión se encontró y cerró un defecto en la primera versión del guardia: comparaba la ruta literal, así que `/static/./cmh-os/index.html` y `/static/foo/../cmh-os/index.html` servían la página con **200 y 848 bytes sin sesión**. No apareció antes porque `httpx` y los navegadores colapsan `.` y `..` antes de enviar; se midió construyendo el `scope` ASGI a mano. La verificación independiente lo reprodujo con uvicorn y socket crudo y añadió `%2e%2e`, que los navegadores no decodifican. El guardia normaliza ahora mayúsculas, separador, barras repetidas y segmentos punto: 18 grafías probadas, todas 302 sin sesión y 404 con la bandera apagada; `/static/cmh-control.html` (4 649 B) e `icon.ico` (174 B) siguen en 200.
+2. **Resolución de endpoints duplicados por URL** (el pendiente de código del punto 6). `select_endpoint_for_url` rankea de forma determinista —coincidencia exacta, modelo no oculto, clave usable, modelo listado, id— en lugar de tomar la primera fila que coincide. La revisión independiente encontró que el orden inicial anteponía «lista el modelo» a «tiene clave», con lo que una fila sin credencial ganaba y producía el mismo 401 que el cambio venía a evitar; corregido y fijado con 4 pruebas.
+3. **`disable_mcp` efectivo al ejecutar** (ADR-018). Medido: `known_tool_names()` = 82 nombres, 0 con prefijo `mcp`, así que la denylist de una tarea restringida nunca podía alcanzar un `mcp__servidor__herramienta`, y `disable_mcp` solo ponía `mcp_mgr = None` dentro de `agent_loop` mientras `tool_execution` pedía el gestor al proceso por su cuenta. La cláusula vive ahora en `ToolPolicy.blocks()`, con una excepción explícita `allowed_mcp_names` para que no contradiga a la lista blanca que la acompaña: sin ella vetaba en silencio las 15 herramientas de correo que sí son permitibles, mientras el prompt seguía ofreciéndolas.
+4. **Rechazo nativo de paso con justificación persistida** (ADR-017). `POST /api/cmh/runs/{id}/steps/{key}/reject` exige justificación, deja paso y ejecución en `rejected` de forma terminal, emite `step_rejected` y `run_rejected`, y guarda `{outcome, justification, by, at}` en la columna nueva `cmh_workflow_steps.decision`. Antes la interfaz llamaba a `/stop`: la ejecución quedaba reanudable, volvía a pedir la misma aprobación y el motivo vivía solo en la auditoría del navegador.
+
+### Pruebas realmente ejecutadas
+
+| Conjunto | Resultado |
+|---|---|
+| Los 6 módulos del cambio (nombrados en `docs/IMPLEMENTATION_STATUS.md` §7) | **80 de 80** |
+| CMH + tareas + política (21 módulos nombrados) | **172 de 172** |
+| `test_task_workspace.py` aparte | **13 de 13** |
+| Interfaz (`check.sh`) | tipos 49 archivos / 0 errores; lint 54 / 0; build **140 851 B** gzip de 150 000; unitarias **59 de 59**; e2e **32 de 32** |
+| Suite completa, árbol de trabajo | **5 640 aprobadas, 78 fallidas, 2 errores, 337 omitidas** |
+| Suite completa, HEAD `7e21b7c4` exportado con `git archive` | 5 585 aprobadas, 75 fallidas, 2 errores, 344 omitidas |
+
+**0 regresiones**, comparando los conjuntos de fallos id por id: las 5 que solo fallan en el árbol de trabajo son `test_token_cache_atomic_swap`, que dependen del `data/auth.json` real que `git archive` no exporta; las 2 que solo fallan en la copia comparan rutas absolutas y fallan porque la copia vive en otra carpeta.
+
+### Verificación adversaria y revisión independiente
+
+- **Refutación de un hallazgo de severidad alta** (`refutador`, según CLAUDE.md). El hallazgo afirmaba que una tarea restringida podía ejecutar cualquier herramienta MCP adivinando su nombre. **Confirmado: false como estaba enunciado.** Los tres nombres con que se demostró (`mcp__bash__bash`, `mcp__filesystem__read_text_file`, `mcp__anything__do_it`) no existen como servidores en esta build —bash, python y filesystem se replegaron a ejecución nativa en proceso—, así que el `exit_code 0` era artefacto del gestor falso de la propia sonda. Severidad que soporta la evidencia: **media**, no alta. El defecto de diseño sí era real y está corregido.
+- **Revisión independiente de código** (subagente sin el razonamiento del constructor): veredicto inicial **DEVUELTO**, 0 críticos vivos, 5 importantes, 8 menores, con 26 mutaciones propias de las que 6 sobrevivieron. Los 5 importantes y 6 de los 8 menores están corregidos; 4 de las 6 mutaciones supervivientes se capturan ahora. Las 2 restantes sobreviven por diseño (defensa sobre caminos inalcanzables) y así está escrito en el código.
+- **Advertencia de proceso, asumida:** el árbol se modificó mientras el revisor medía, porque el defecto crítico se cerró en paralelo. Una revisión sobre un árbol en movimiento no es una revisión. La siguiente exige commit congelado.
+
+### Incidencias
+
+- **La base activa se migró durante las pruebas.** Importar `core.database` en pytest ejecuta `init_db()`, que aplicó `ALTER TABLE cmh_workflow_steps ADD COLUMN decision` a `data/app.db` a las 16:42, unos 19 minutos antes de que se detectara. La columna es anulable y aditiva, la tabla tenía 0 filas e `integrity_check=ok`. Punto de restauración creado **después**, no antes: `data/backups/app-after-decision-column-20260925.db`, 802 816 bytes, íntegro. La copia debió hacerse antes de correr pruebas que tocan el esquema.
+- Sin ejecución en vivo de ningún proveedor en este punto: no se reinició el servidor ni se llamó a ningún modelo. Los dos proveedores conservan la evidencia en vivo de los puntos 4 (Ollama local) y 6 (Anthropic en la nube).
+- El piloto y sus agentes **siguen pausados**. Nada en este punto los aprueba.
+
+### Decisión registrada
+
+Los **límites por ejecución** (iteraciones, tiempo, presupuesto y prioridad) que el estado listaba como pendientes de backend **no se implementaron**, y no por falta de tiempo: la especificación UX documenta lo contrario —«en modo real se elige una definición de flujo existente; presupuesto, iteraciones y timeout se muestran deshabilitados con el motivo»—. Implementarlos sería diseño nuevo sin criterios de aceptación, no completar una función incompleta. ADR-013 fija el límite de iteraciones por ejecución en 40 para la interfaz, mientras el backend usa `max_steps=12` **por paso** y no guarda la prioridad. Lo que falta antes de construir: definir qué cuenta como iteración del lado del servidor, dónde se persiste el límite y qué hace una ejecución que lo alcanza.

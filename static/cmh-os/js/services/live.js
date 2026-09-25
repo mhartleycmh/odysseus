@@ -22,8 +22,8 @@ import { recordAudit, listAudit } from '../core/audit.js';
 /** @typedef {import('../types.js').RunEvent} RunEvent */
 /** @typedef {import('./http.js').RequestOptions} RequestOptions */
 
-const EXECUTION_STATUSES = ['pending', 'running', 'waiting_approval', 'completed', 'error', 'interrupted', 'paused'];
-const STEP_STATUSES = ['pending', 'running', 'waiting_approval', 'completed', 'error', 'interrupted'];
+const EXECUTION_STATUSES = ['pending', 'running', 'waiting_approval', 'completed', 'error', 'interrupted', 'paused', 'rejected'];
+const STEP_STATUSES = ['pending', 'running', 'waiting_approval', 'completed', 'error', 'interrupted', 'rejected'];
 
 /** @param {string} value @returns {ExecutionStatus} */
 const execStatus = (value) => /** @type {ExecutionStatus} */ (EXECUTION_STATUSES.includes(value) ? value : 'error');
@@ -268,7 +268,7 @@ export function createLiveSource(options) {
           action: `Ejecutar ${step.agentName} dentro de «${execution.workflowName}»`,
           args: { ejecución: execution.id, paso: step.key, modelo: step.model || '—', dependencias: step.dependencies.join(', ') || '—' },
           impact: 'Hasta aprobar, este paso y los que dependen de él no se ejecutan.',
-          rejectEffect: 'El backend no tiene rechazo de paso: rechazar detiene la ejecución, que puede reanudarse y volverá a pedir aprobación.',
+          rejectEffect: 'Rechazar termina la ejecución con la justificación guardada en el servidor; los artefactos ya producidos se conservan y no puede reanudarse.',
           risk: 'medio', status: 'pendiente', createdAt: execution.createdAt, decidedAt: null, decidedBy: null, justification: null, diff: null, origin: 'real',
         });
       }
@@ -379,12 +379,14 @@ export function createLiveSource(options) {
       if (decision === 'aprobar' && request.risk === 'alto' && text.length < 10) throw new HttpError('validation', 'El riesgo alto exige justificar también la aprobación (mínimo 10 caracteres)', 400);
       if (request.kind === 'paso' && request.executionId && request.stepKey) {
         const run = encodeURIComponent(request.executionId);
-        if (decision === 'aprobar') await api(`/api/cmh/runs/${run}/steps/${encodeURIComponent(request.stepKey)}/approve`, { method: 'POST' });
-        else await api(`/api/cmh/runs/${run}/stop`, { method: 'POST' });
+        const step = encodeURIComponent(request.stepKey);
+        const verb = decision === 'aprobar' ? 'approve' : 'reject';
+        await api(`/api/cmh/runs/${run}/steps/${step}/${verb}`, { method: 'POST', json: { justification: text } });
       } else if (request.kind === 'memoria' && request.proposalId) {
         await api(`/api/cmh/memory-proposals/${encodeURIComponent(request.proposalId)}/${decision === 'aprobar' ? 'approve' : 'reject'}`, { method: 'POST' });
       }
-      // The backend stores no justification: keep it in the local, labelled trail.
+      // The backend now stores the step verdict; the local trail stays as the
+      // browser-side record and still covers memory proposals.
       recordAudit({ actor, action: decision === 'aprobar' ? 'Aprobó solicitud' : 'Rechazó solicitud',
                     target: request.proposalId ? `prop:${request.proposalId}` : request.executionId && request.stepKey ? `step:${request.executionId}:${request.stepKey}` : request.title,
                     outcome: decision === 'aprobar' ? 'ok' : 'rechazado', detail: text || 'Sin justificación' });

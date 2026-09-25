@@ -234,6 +234,60 @@ def normalize_base(url: str) -> str:
     return url
 
 
+def select_endpoint_for_url(endpoints, endpoint_url: str, model: Optional[str] = None):
+    """Pick one endpoint row for a URL, deterministically. None when none match.
+
+    A scheduled task stores a URL, not an endpoint id, so several enabled rows
+    can share one base URL — e.g. two Anthropic entries holding different API
+    keys. Taking the first match made the run depend on row order: on
+    2026-09-24 a CMH task resolved the entry whose key the provider rejected
+    (401) while chat used the working one. Rank the candidates instead:
+
+    1. an exact normalized base beats a substring match;
+    2. an endpoint that HIDES the model ranks last: a hidden model means a
+       failed probe or an admin who disabled it there;
+    3. having a usable API key beats not having one. This outranks "lists the
+       model" on purpose: the caller builds headers from ``api_key`` alone, so
+       a row whose credential lives in a session (``provider_auth_id``, key
+       NULL) yields no auth header at all — the very 401 this selection
+       exists to avoid — even when its cached model list looks better;
+    4. among equally credentialed rows, one that lists the model wins;
+    5. ties break on the endpoint id, so the choice is reproducible.
+
+    Pure over anything exposing ``id``/``base_url``/``api_key`` and the model
+    lists, so it is unit-testable without a database.
+    """
+    target = normalize_base(endpoint_url or "")
+    if not target:
+        return None
+    ranked = []
+    for ep in endpoints or []:
+        base = normalize_base(getattr(ep, "base_url", "") or "")
+        if not base:
+            continue
+        if base == target:
+            match_rank = 2
+        elif base in target or target in base:
+            match_rank = 1
+        else:
+            continue
+        not_hidden = 0 if (model and model in _endpoint_hidden_models(ep)) else 1
+        lists_model = 1 if (model and model in _endpoint_enabled_models(ep)) else 0
+        key_rank = 1 if str(getattr(ep, "api_key", None) or "").strip() else 0
+        ranked.append((-match_rank, -not_hidden, -key_rank, -lists_model,
+                       str(getattr(ep, "id", "") or ""), ep))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda row: row[:5])
+    if len(ranked) > 1:
+        # Ids only: never log the URL or the key.
+        logger.info(
+            "Endpoint URL matched %d enabled endpoints; selected %s of %s",
+            len(ranked), ranked[0][4], [row[4] for row in ranked],
+        )
+    return ranked[0][5]
+
+
 def _validated_endpoint_base(url: str) -> str:
     """Return a base URL that is safe for endpoint path appends."""
     base = (url or "").strip().rstrip("/")
