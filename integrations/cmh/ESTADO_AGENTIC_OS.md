@@ -74,9 +74,43 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
   - `phi4` y `gemma3` no declaran soporte de herramientas; no se probaron.
 - Implicancia: un paso de unas 800 palabras tarda del orden de 5 minutos; sirve para el piloto sintético, no para entregables reales. No se probó aún a través del bucle de agentes de Odysseus ni con la compuerta de modelos locales (`workload="background"`).
 
+## Punto limpio 4: reinicio y piloto local en vivo (2026-09-24)
+
+- Estado Git: sin cambios de código; solo este registro. Base `3519b7d7`, rama `dev`.
+- Copia previa al reinicio: `data/backups/app-before-workflows-restart-20260924.db`, 626 688 bytes, `integrity_check=ok` (API de backup de SQLite). Servidor anterior (PID 33724/52632, iniciado 11:49) detenido; nuevo servidor con `DEBUG=false`, log `logs/server-20260924-restart.log`: 0 tracebacks, `Application startup complete`. Se crearon las tablas `cmh_workflow_definitions`, `_runs`, `_steps`, `_artifacts`, `_events` y `cmh_memory_proposals`. Sin sesión, `/cmh` → 302 y `/api/cmh/projects` → 401. **La vista autenticada en Edge no se verificó en esta sesión.**
+- Configuración: endpoint local `c6a553e7` pasó de `supports_tools=NULL` a `1` (actualización condicionada; `integrity_check=ok`). Sin ese valor, `_agent_route_tool_mode` devuelve `is_api=False` para Ollama `/v1`: no se envían esquemas y el prompt compacto prohíbe la sintaxis en texto, así que el modelo queda sin canal. Reproducido sin llamar al modelo para `qwen3:8b` y `mistral`.
+- Procedimiento: tareas gemelas del piloto (misma carpeta y allowlist, `email_results=0`, `notifications_enabled=0`, `next_run=NULL`), ejecutadas una vez con `TaskScheduler(None)._execute_task(..., bypass_model_slot=True)` en un proceso aparte y devueltas a `paused`. La tarea original `07d5899e-…` no se tocó (`paused`, `run_count=1`).
+- Corridas con `qwen3:8b`:
+
+  | Run | Gemela | Esquemas | Llamadas | Estado | Tiempo | Tokens entrada/salida |
+  |---|---|---|---|---|---|---|
+  | `0850ebfe-aa31-42eb-87e7-9a374497968b` | `1e8be7b9-…` (A, antes del cambio) | 0 | 0 | `success` — **falso positivo** | 593 s | 1 289 / 1 055 |
+  | `7a3cec04-2b62-4cfb-907e-a79d58811a5b` | `9dbfc87a-…` (A) | 4 | 1 (`ls` raíz, exit 0) | `success` | 840 s | 3 813 / 1 661 |
+  | `306e08b5-a327-4320-be4d-618ac861537e` | `39729621-…` (B, sonda de escape) | 4 | 3 | `error` (sin respuesta final; sin fallback) | 1 247 s | 8 256 / 2 258 |
+
+- Escapes (run `306e08b5`): `ls` del workspace permitido; `read_file ..\..\..\README.md` **bloqueado** (exit 1, «outside the workspace»); `ls …\CMH_Claude` **bloqueado** (exit 1); shell sin herramienta para el modelo. 2 de 2 intentos de salida bloqueados.
+- Contenido NO aprobado: `0850ebfe` afirmó «sin archivos» y «no se pueden listar directorios» con 0 llamadas; `7a3cec04` dijo «no se encontraron archivos» sin listar `input/` (existe `piloto_sintetico.txt`) y afirmó falta de permisos sin probarla.
+- Hallazgos (canon 06): la guardia restringida acepta respuestas sin herramientas; el prompt compacto lista solo herramientas con `TOOL_SECTIONS` (listó `read_file`, omitió `ls`, `grep` y `glob`) y promete esquemas nativos aunque no se envíen; un run en `error` conserva `result="Starting…"` y `model=NULL`; el flujo local choca con la compuerta de primer plano.
+- Latencia medida en CPU: 135 a 500 s por ronda; 14 a 21 min por corrida.
+- Canon: 3 filas en 05 y 5 en 06, más 2 actualizadas en 06 (piloto; commit resuelto). Espejo 7 de 7 idéntico (`cmp`). Las 20 filas que la sesión WACC agregó a la maestra durante este punto se conservaron.
+
+## Punto limpio 5: guardia de evidencia de herramientas (2026-09-24)
+
+- Estado Git: código **sin commit** sobre `3519b7d7` (pendiente de autorización): `src/task_scheduler.py`, `tests/test_cmh_restricted_loop.py`, `tests/test_task_shell_tools.py` y este registro.
+- Capacidad: `_run_agent_loop(..., require_tool_evidence=False)`. Con `True`, un run restringido sin ninguna `tool_output` exitosa (`exit_code` 0 o ausente) termina en `RuntimeError("Restricted task answered without any successful tool call")`. `_execute_llm_task` la re-lanza como «no untraced fallback» y el run queda en `error`, sin llamada de respaldo. La activa solo `_requires_tool_evidence(task)`: tarea con allowlist **y** workspace no vacío. Un bloqueo por límite del workspace (exit 1) no cuenta como evidencia; tampoco las `tool_output` sintéticas.
+- Fuera del alcance, por diseño: los flujos (`cmh_workflows.call_model`) no la activan, porque el revisor recibe los artefactos en su entrada. Tampoco detecta un run como `7a3cec04` (1 llamada real y después una afirmación exagerada): seguiría en `success`, y ese control le toca al verificador. Límite: las herramientas que devuelven solo `{"error": …}` sin `exit_code` (sesión, documentos, modelos) contarían como evidencia; hoy no forman parte de ninguna allowlist de piloto.
+- Prompt compacto: **no se modifica**. La lista corta es una economía de Odysseus que comparten los modelos en la nube; el caso sin esquemas queda cubierto por `supports_tools=1` y por esta guardia, que lo convierte en `error`.
+- Validación:
+  - `test_cmh_restricted_loop.py`: 13 de 13.
+  - Conjunto `test_cmh_*` + `test_task_*` (sin `test_task_workspace`) + `test_scheduler_prompt_cache_time`: 83 aprobadas.
+  - `test_task_workspace.py` solo: 13 de 13.
+  - Mutaciones: sin la excepción fallan los 2 casos sin evidencia; contando toda `tool_output` falla el caso «solo bloqueada»; desconectando la llamada de la ruta programada falla la prueba de extremo a extremo.
+  - `git diff --check` sin errores.
+- Revisión independiente (subagente, sin el razonamiento del constructor): 0 críticos, 1 importante (la conexión en la ruta programada no tenía prueba: la mutación sobrevivía 36 de 36), 4 menores. Corregidos el importante y los menores #2 (docstring), #3 (workspace `""`) y #5 (este registro); el #4 (allowlist vacía más workspace siempre falla) se mantiene por diseño. Veredicto: «With fixes».
+
 ## Próxima acción exacta
 
-1. Copia de seguridad de `data/app.db` y reinicio del servidor (el que corre usa el código anterior a `10f477b3`); verificar `/cmh` en Edge.
-2. Piloto sintético con `qwen3:8b` por el endpoint local: repetir el caso de `input/piloto_sintetico.txt`, registrar herramienta por herramienta y escapes bloqueados. No depende de la clave de Anthropic.
-3. Flujo sintético de cinco pasos con dos modelos locales (`qwen3:8b` y `mistral`, con el constructor y el revisor en agentes distintos). Registrar los IDs. El piloto sigue pausado hasta aprobarlo.
-4. Cuando se corrija la clave de Anthropic (y se depure el endpoint duplicado), repetir con un proveedor en la nube.
+1. Autorización del usuario para el commit del punto 5.
+2. Verificar `/cmh` autenticado en Edge (lo hace el usuario) y confirmar que se ven las tablas de flujos.
+3. Flujo sintético de cinco pasos con `qwen3:8b` y `mistral` (constructor y revisor en agentes distintos), en una ventana sin uso del navegador entre la aprobación humana y el revisor; unos 75 a 100 min en CPU. Registrar los IDs. El piloto sigue pausado hasta aprobarlo.
+4. Cuando se corrija la clave de Anthropic (y se depure el endpoint duplicado), repetir el piloto con un proveedor en la nube.

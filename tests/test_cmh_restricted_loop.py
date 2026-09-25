@@ -6,6 +6,7 @@ the chunks agent_loop.py emits; no provider is called.
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -24,7 +25,7 @@ def run(monkeypatch, tmp_path):
     workspace.mkdir()
     seen = {}
 
-    async def execute(chunks, allowed_tools=("glob", "grep", "ls", "read_file")):
+    async def execute(chunks, allowed_tools=("glob", "grep", "ls", "read_file"), **loop_kwargs):
         async def fake_stream(**kwargs):
             seen.update(kwargs)
             for item in chunks:
@@ -36,7 +37,8 @@ def run(monkeypatch, tmp_path):
                                max_steps=12)
         output = await TaskScheduler(None)._run_agent_loop(
             "http://model.invalid", "m", task, "session", system_prompt="x", override_user_message="p",
-            foreground_controlled=True, event_sink=lambda kind, **payload: events.append((kind, payload)))
+            foreground_controlled=True, event_sink=lambda kind, **payload: events.append((kind, payload)),
+            **loop_kwargs)
         return output, events
 
     execute.seen = seen
@@ -94,3 +96,83 @@ async def test_unrestricted_tasks_keep_escalation_and_legacy_text(run):
                            "data: [DONE]\n\n"], allowed_tools=None)
     assert output == "texto nota"
     assert run.seen["allow_escalation"] is True
+
+
+@pytest.mark.parametrize("tool_events", [
+    [],
+    [chunk({"type": "tool_start", "tool": "read_file"}),
+     chunk({"type": "tool_output", "tool": "read_file", "exit_code": 1,
+            "output": "read_file: path '..' is outside the workspace"})],
+], ids=["no_tool_call", "only_blocked_call"])
+async def test_evidence_required_run_without_a_successful_tool_call_fails(run, tool_events):
+    # Run 0850ebfe (2026-09-24): 0 tool calls, yet it reported "no files found".
+    with pytest.raises(RuntimeError, match="without any successful tool call"):
+        await run([*tool_events, chunk({"delta": "Workspace accesible, sin archivos."}), "data: [DONE]\n\n"],
+                  require_tool_evidence=True)
+
+
+async def test_evidence_required_run_with_a_successful_tool_call_returns_its_answer(run):
+    output, _ = await run([
+        chunk({"type": "tool_start", "tool": "ls"}),
+        chunk({"type": "tool_output", "tool": "ls", "exit_code": 0, "output": "input/\noutput/"}),
+        chunk({"delta": "Hay dos carpetas."}),
+        "data: [DONE]\n\n",
+    ], require_tool_evidence=True)
+    assert output == "Hay dos carpetas."
+
+
+def test_scheduled_restricted_task_with_workspace_requires_tool_evidence():
+    from src import task_scheduler
+    for allowed, workspace, expected in [
+        ('["ls"]', "C:/ws", True),
+        (None, "C:/ws", False),
+        ('["ls"]', None, False),
+        ('["ls"]', "", False),  # validate_task_workspace("") is None: no workspace bound
+    ]:
+        task = SimpleNamespace(allowed_tools=allowed, workspace=workspace)
+        assert task_scheduler._requires_tool_evidence(task) is expected
+
+
+def scheduled_pilot(workspace):
+    return SimpleNamespace(
+        workspace=str(workspace), owner="admin", prompt="Inspecciona el workspace", name="Pilot",
+        crew_member_id=None, endpoint_url="http://model.invalid", model="m", session_id="session",
+        max_steps=4, character_id=None, allowed_tools='["glob", "grep", "ls", "read_file"]',
+    )
+
+
+@pytest.fixture
+def scheduled(monkeypatch, tmp_path):
+    monkeypatch.setattr("src.tool_security.owner_is_admin_or_single_user", lambda owner: owner == "admin")
+    monkeypatch.setattr("src.tool_index.get_tool_index", lambda: None)
+    fallback = AsyncMock(return_value="UNTRACED")
+    monkeypatch.setattr("src.task_endpoint.task_llm_call_async", fallback)
+
+    async def execute(chunks):
+        async def fake_stream(**kwargs):
+            for item in chunks:
+                yield item
+        monkeypatch.setattr(agent_loop, "stream_agent_loop", fake_stream)
+        return await TaskScheduler(session_manager=None)._execute_llm_task(
+            scheduled_pilot(tmp_path.resolve()), None)
+
+    execute.fallback = fallback
+    return execute
+
+
+async def test_scheduled_pilot_without_tool_calls_ends_in_error_without_fallback(scheduled):
+    # The scheduled path, not a hand-set flag, must turn run 0850ebfe into an error.
+    with pytest.raises(RuntimeError, match="no untraced fallback") as exc:
+        await scheduled([chunk({"delta": "Workspace accesible, sin archivos."}), "data: [DONE]\n\n"])
+    assert "without any successful tool call" in str(exc.value.__cause__)
+    scheduled.fallback.assert_not_awaited()
+
+
+async def test_scheduled_pilot_with_a_successful_tool_call_returns_its_answer(scheduled):
+    output = await scheduled([
+        chunk({"type": "tool_start", "tool": "ls"}),
+        chunk({"type": "tool_output", "tool": "ls", "exit_code": 0, "output": "input/"}),
+        chunk({"delta": "Hay una carpeta input/."}),
+        "data: [DONE]\n\n",
+    ])
+    assert output == "Hay una carpeta input/."

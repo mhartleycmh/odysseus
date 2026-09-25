@@ -112,10 +112,11 @@ async def test_scheduled_task_honors_global_disabled_tools(monkeypatch):
 
     async def _capture(endpoint_url, model, task, session_id, *,
                        system_prompt=None, disabled_tools=None, relevant_tools=None,
-                       datetime_context_msg=None, workspace=None):
+                       datetime_context_msg=None, workspace=None, require_tool_evidence=False):
         captured["disabled_tools"] = disabled_tools
         captured["relevant_tools"] = relevant_tools
         captured["workspace"] = workspace
+        captured["require_tool_evidence"] = require_tool_evidence
         return "done"
 
     scheduler = TaskScheduler(session_manager=None)
@@ -137,6 +138,8 @@ async def test_scheduled_task_honors_global_disabled_tools(monkeypatch):
 
     result = await scheduler._execute_llm_task(task, db=None)
     assert result == "done"
+    # An unrestricted task is not held to the tool-evidence guard.
+    assert captured["require_tool_evidence"] is False
 
     # Enforcement side: the global list reached the agent loop, so the
     # prompt/schema/execution gates will strip these even for an admin owner.

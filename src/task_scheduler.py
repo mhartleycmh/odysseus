@@ -25,6 +25,19 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _requires_tool_evidence(task) -> bool:
+    """A restricted task bound to a workspace must ground its answer in at
+    least one successful tool call; a model that never looked cannot report
+    what the workspace holds.
+
+    "Successful" means a tool_output event with exit_code 0 or absent. The
+    file tools and every policy/workspace block set exit_code on failure;
+    tools that only return {"error": ...} (session, document, model tools)
+    would still count, so keep them out of evidence-bound allowlists."""
+    return (getattr(task, "allowed_tools", None) is not None
+            and bool(getattr(task, "workspace", None)))
+
+
 # Shell/file tools a scheduled task's agent should be offered by default,
 # mirroring the chat agent (where these are on unless a privilege or global
 # setting turns them off). The RAG tool selector + ASSISTANT_ALWAYS_AVAILABLE
@@ -1663,6 +1676,7 @@ class TaskScheduler:
                 system_prompt=system_prompt, disabled_tools=disabled_tools or None,
                 relevant_tools=relevant_tools,
                 datetime_context_msg=_dt_msg,
+                require_tool_evidence=_requires_tool_evidence(task),
             )
         except (TaskWorkspaceError, PermissionError):
             raise
@@ -1882,7 +1896,8 @@ class TaskScheduler:
                               override_user_message: str | None = None,
                               datetime_context_msg: dict | None = None,
                               foreground_controlled: bool = False,
-                              event_sink=None) -> str:
+                              event_sink=None,
+                              require_tool_evidence: bool = False) -> str:
         """Run the full agent loop with tool access, collecting the final text."""
         from src.agent_loop import stream_agent_loop
 
@@ -1936,6 +1951,7 @@ class TaskScheduler:
         tool_results = []
         approval_pause = None
         tool_started = {}
+        successful_tool_calls = 0
 
         # Honor per-task max_steps (defense against runaway agent loops).
         # Falls back to 20 if not set — the historical default.
@@ -2023,6 +2039,8 @@ class TaskScheduler:
                             continue
                         full_text += data["delta"]
                     elif data.get("type") == "tool_output":
+                        if data.get("exit_code") in (None, 0):
+                            successful_tool_calls += 1
                         # Tool results — capture summary so we have SOMETHING even
                         # if the model never produces a final text response
                         tool_summary = data.get("stdout") or data.get("output") or data.get("result") or ""
@@ -2078,6 +2096,8 @@ class TaskScheduler:
             full_text = strip_think(full_text, prompt_echo=False)
             if not full_text:
                 raise RuntimeError("Restricted task produced no final model output")
+            if require_tool_evidence and not successful_tool_calls:
+                raise RuntimeError("Restricted task answered without any successful tool call")
         if not full_text.strip():
             try:
                 from src.task_endpoint import task_llm_call_async
