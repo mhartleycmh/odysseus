@@ -111,7 +111,7 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 ## Próxima acción exacta
 
 1. El usuario abre `/cmh/os` en Edge con sesión de administrador y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Es lo único de la interfaz que no se pudo verificar en esta sesión.
-2. Autorización del usuario para el commit de la interfaz `/cmh/os` (punto 7) y del registro de los puntos 6 y 7.
+2. Hecho: commit `bba01a65` de la interfaz y de los registros de los puntos 6 y 7.
 3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones (en la nube tarda minutos). Registrar los IDs. El piloto sigue pausado hasta aprobarlo.
 4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6 y 7.
 
@@ -130,7 +130,7 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Punto limpio 7: interfaz Agentic OS en `/cmh/os` (2026-09-25)
 
-- Estado Git: **sin commit** sobre `6db87031` (el commit del punto 5 se hizo el 2026-09-24).
+- Estado Git: commit `bba01a65` (`Add Agentic OS web interface at /cmh/os`), autorizado por el usuario el 2026-09-25; incluye el registro de los puntos 6 y 7. El commit del punto 5 es `6db87031`.
 - Capacidad: página `/cmh/os` (`static/cmh-os/`, JS nativo con tipos JSDoc, sin dependencias ni build).
   - 12 módulos más el chat del coordinador.
   - Grafo de orquestación que solo se mueve con eventos de la ejecución.

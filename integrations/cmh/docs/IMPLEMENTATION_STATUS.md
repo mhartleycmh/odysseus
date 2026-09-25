@@ -1,7 +1,7 @@
 # Estado de implementación — Interfaz Agentic OS CMH
 
-Corte: 2026-09-25 (Lima). Base Git: `6db87031` en `dev`. **Todo el trabajo está
-sin commit** (pendiente de autorización del usuario).
+Corte: 2026-09-25 (Lima). Rama `dev`. Commit de la interfaz: `bba01a65`
+(autorizado por el usuario el 2026-09-25) sobre `6db87031`.
 
 ## 1. Tareas
 
@@ -94,5 +94,5 @@ reprodujo cada importante con sondas propias.
 ## 6. Siguiente bloque
 
 1. El usuario abre `/cmh/os` en Edge con sesión de administrador y revisa el modo real con agentes y ejecuciones verdaderos.
-2. Autorización de commit: interfaz, rutas, pruebas y documentación.
+2. Hecho: commit `bba01a65`.
 3. Backend: endpoint de rechazo de paso y persistencia de justificaciones; límites por ejecución; `static/cmh-os` fuera de la exención de autenticación.
