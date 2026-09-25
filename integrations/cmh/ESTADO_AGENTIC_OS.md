@@ -110,7 +110,7 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Próxima acción exacta
 
-1. **Autorizar el commit del punto limpio 8** (31 archivos sin commit sobre `7e21b7c4`). Hasta que exista ese commit, la próxima revisión independiente no es válida: la del 2026-09-25 tuvo que medir un árbol que cambiaba bajo sus pies.
+1. Hecho: commit **`0c4e33c8`** del punto limpio 8, autorizado por el usuario. El árbol queda congelado, que era la condición para que la próxima revisión independiente sea válida: la del 2026-09-25 tuvo que medir un árbol que cambiaba bajo sus pies. **Sin push** — decidir si `origin/dev` se actualiza.
 2. El usuario abre `/cmh/os` en Edge con **sesión de administrador** y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Sigue siendo lo único de la interfaz que no se puede verificar sin esa sesión. Evidencia a registrar: que la página carga autenticada tras sacarla de la exención de `/static`, que el badge dice modo real y no demo, y que el rechazo de un paso desde Aprobaciones deja la ejecución en `rejected` con su justificación.
 3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones. Registrar los IDs. El piloto **sigue pausado**.
 4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6, 7 y 8.
@@ -160,7 +160,7 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Punto limpio 8: pendientes de backend y endurecimiento del piloto (2026-09-25)
 
-- **Estado Git:** rama `dev`, base `7e21b7c4`, **31 archivos sin commit** (pendiente de autorización). Modificados: `app.py`, `core/database.py`, `routes/cmh_os_routes.py`, `routes/cmh_workflow_routes.py`, `src/endpoint_resolver.py`, `src/task_scheduler.py`, `src/tool_policy.py`, `src/tool_execution.py`, 8 archivos de `static/cmh-os/`, `scripts/cmh_os/serve.mjs`, 4 documentos de `integrations/cmh/docs/` y 6 módulos de prueba. Nuevos: `tests/test_cmh_restricted_tool_surface.py`, `tests/test_endpoint_selection_by_url.py`, `tests/test_cmh_workflow_step_decision_migration.py`.
+- **Estado Git:** rama `dev`, commit **`0c4e33c8`** (`Close CMH backend gaps: asset auth gate, endpoint choice, MCP clamp, step reject`), autorizado por el usuario el 2026-09-25, sobre `7e21b7c4`. 32 archivos, 1 313 inserciones, 65 eliminaciones. Árbol de trabajo limpio; **sin push** (HEAD queda 1 commit por delante de `origin/dev`). Modificados: `app.py`, `core/database.py`, `routes/cmh_os_routes.py`, `routes/cmh_workflow_routes.py`, `src/endpoint_resolver.py`, `src/task_scheduler.py`, `src/tool_policy.py`, `src/tool_execution.py`, 8 archivos de `static/cmh-os/`, `scripts/cmh_os/serve.mjs`, 4 documentos de `integrations/cmh/docs/` y 6 módulos de prueba. Nuevos: `tests/test_cmh_restricted_tool_surface.py`, `tests/test_endpoint_selection_by_url.py`, `tests/test_cmh_workflow_step_decision_migration.py`.
 
 ### Capacidades cerradas
 
@@ -193,6 +193,7 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 - **La base activa se migró durante las pruebas.** Importar `core.database` en pytest ejecuta `init_db()`, que aplicó `ALTER TABLE cmh_workflow_steps ADD COLUMN decision` a `data/app.db` a las 16:42, unos 19 minutos antes de que se detectara. La columna es anulable y aditiva, la tabla tenía 0 filas e `integrity_check=ok`. Punto de restauración creado **después**, no antes: `data/backups/app-after-decision-column-20260925.db`, 802 816 bytes, íntegro. La copia debió hacerse antes de correr pruebas que tocan el esquema.
 - Sin ejecución en vivo de ningún proveedor en este punto: no se reinició el servidor ni se llamó a ningún modelo. Los dos proveedores conservan la evidencia en vivo de los puntos 4 (Ollama local) y 6 (Anthropic en la nube).
 - El piloto y sus agentes **siguen pausados**. Nada en este punto los aprueba.
+- **Corrección de un dato del registro anterior:** la ficha afirmaba «rama `dev`, 7 commits por delante de `origin/dev`, sin push». Medido el 2026-09-25 antes de commitear, `origin/dev` ya contenía `7e21b7c4` y HEAD coincidía exactamente con él (0/0). Los commits previos sí estaban publicados en el fork `mhartleycmh/odysseus`. `upstream` (`odysseus-dev/odysseus`) es otro remoto y no se tocó.
 
 ### Decisión registrada
 
