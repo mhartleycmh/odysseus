@@ -111,7 +111,8 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 ## Próxima acción exacta
 
 1. Hecho: commit **`0c4e33c8`** del punto limpio 8, autorizado por el usuario. El árbol queda congelado, que era la condición para que la próxima revisión independiente sea válida: la del 2026-09-25 tuvo que medir un árbol que cambiaba bajo sus pies. **Sin push** — decidir si `origin/dev` se actualiza.
-2. **El servidor ya está arrancado con el código del punto 8** (PID 28036, puerto 7000, reiniciado el 2026-09-25 a las 19:03; el anterior corría código previo y sí tenía la fuga). El usuario abre `/cmh/os` en Edge con **sesión de administrador** y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Sigue siendo lo único de la interfaz que no se puede verificar sin esa sesión. Evidencia a registrar: que la página carga autenticada tras sacarla de la exención de `/static`, que el badge dice modo real y no demo, y que el rechazo de un paso desde Aprobaciones deja la ejecución en `rejected` con su justificación.
+2. **Comportamiento ya verificado** con `scripts/cmh_os/realmode/run.sh` (12 de 12, navegador real contra backend real). Lo que queda es una **revisión de contenido**, no de funcionamiento: abrir `http://127.0.0.1:7000/cmh/os` —el servidor ya corre el código del punto 8, PID 28036, reiniciado el 2026-09-25 a las 19:03— y mirar que los proyectos, agentes y ejecuciones **propios** se vean como se espera.
+   - Aclaración medida el 2026-09-25: la instalación tiene **una sola cuenta**, `mijhael hartley`, y pasa el control de administrador, porque `owner_is_admin_or_single_user` trata al único usuario de una instalación monousuario como administrador. No hace falta ningún rol extra ni permisos de Windows.
 3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones. Registrar los IDs. El piloto **sigue pausado**.
 4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6, 7 y 8.
 
@@ -239,6 +240,42 @@ severidad media **no existe en este equipo**. La rebaja de alta a media se
 sostiene aquí, y solo aquí: otra máquina con npx sí levantaría
 `builtin_browser` y sus 12 herramientas. La corrección de ADR-018 no depende
 de ese dato, porque la cláusula bloquea los cinco servidores por igual.
+
+### Modo real verificado en navegador contra un Odysseus real (2026-09-25)
+
+Cierra el punto que llevaba abierto desde el punto limpio 7. El usuario
+autorizó hacerlo sobre una **instancia desechable** en vez de su instalación.
+
+- `bash scripts/cmh_os/realmode/run.sh` levanta un Odysseus con base, carpeta
+  de datos, puerto y cuenta propios; siembra datos sintéticos; conduce Edge
+  contra los manejadores reales de FastAPI; y borra todo al salir. La
+  contraseña se genera al azar y no se guarda en ningún archivo. La instancia
+  del usuario (puerto 7000) no se contacta en ningún momento.
+- **12 de 12 comprobaciones.** Sin sesión, `/cmh/os` redirige y sus activos no
+  se sirven. Con sesión, la página carga entera, los módulos ES responden 200
+  y la interfaz se declara en modo real sin franja demo. Los agentes y la
+  ejecución sembrados llegan del backend. El rechazo exige justificación —sin
+  ella ni siquiera abre el diálogo—, llama al endpoint nativo y termina la
+  ejecución; la decisión queda en el servidor; una ejecución rechazada
+  devuelve 409 a reanudar y a decidir otra vez; el artefacto sobrevive.
+- Estado real de la base al terminar, impreso por el propio guion:
+  ejecución `rejected`; paso `revisor` `rejected` con
+  `{outcome: rejected, justification: "El artefacto no cita la evidencia
+  medida.", by: prueba}`; eventos `… step_approval_requested, step_rejected,
+  run_rejected`; 1 artefacto conservado.
+- **Defecto encontrado en la propia verificación, no en el producto.** La
+  primera versión de estas comprobaciones **pasó sin poder fallar**:
+  `page.waitFor` envuelve la expresión en `Boolean(...)` y `Boolean(<Promise>)`
+  siempre es cierto, así que la condición asíncrona nunca se evaluaba. Ocultó
+  que el rechazo por interfaz no se había completado —la base mostraba
+  `step_approved` y `run_error`, sin ningún `step_rejected`—. Reescrita con un
+  sondeo que espera la promesa, detectó el problema y, corregido el guion,
+  pasa de verdad. Es el mismo defecto que la revisión independiente ya había
+  señalado en este proyecto: «pruebas que no podían fallar».
+- Mutación: devolviendo la interfaz a `/stop` fallan 3 de las 12. El archivo
+  se restauró verificando su sha256.
+- **Lo que esto NO cubre:** que el usuario mire la página con **sus** datos.
+  El guion verifica comportamiento sobre datos inventados, no contenido.
 
 ### Decisión registrada
 

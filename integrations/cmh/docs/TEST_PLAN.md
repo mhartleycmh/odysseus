@@ -63,6 +63,34 @@ Lo que la interfaz no puede demostrar por sí sola se mide del lado del servidor
 | La columna `decision` llega a una base con el esquema anterior, sin perder filas y de forma idempotente | `tests/test_cmh_workflow_step_decision_migration.py` |
 | El apagón de MCP no veta lo que la allowlist permite (herramientas de correo) | `tests/test_cmh_restricted_tool_surface.py` |
 
+## 4.ter Modo real contra un Odysseus real
+
+`bash scripts/cmh_os/realmode/run.sh` cierra el hueco que deja el end-to-end
+con API falsa: levanta un Odysseus **desechable** con su propia base y su
+propia carpeta de datos, crea una cuenta de un solo uso por el alta de primera
+ejecución del propio producto, siembra datos sintéticos y conduce Edge contra
+los manejadores reales de FastAPI. No toca ninguna instancia existente: puerto,
+base, carpeta y cuenta se crean ahí y se borran al salir; la contraseña se
+genera al azar y no se guarda.
+
+12 comprobaciones: sin sesión la página y sus activos quedan cerrados; con
+sesión la página carga entera y se declara en modo real sin franja demo; los
+agentes y la ejecución sembrados llegan del backend; el rechazo exige
+justificación, no abre el diálogo sin ella, llama al endpoint nativo y termina
+la ejecución; la decisión queda en el servidor; una ejecución rechazada no se
+reanuda ni se decide otra vez (409); el artefacto sobrevive; y la consola no
+tiene errores hasta el rechazo.
+
+El guion imprime además el estado de la base al terminar, porque una pantalla
+verde no es evidencia: la primera versión de estas comprobaciones **pasó sin
+poder fallar** —`page.waitFor` envuelve la expresión en `Boolean(...)`, y
+`Boolean(<Promise>)` siempre es cierto— y ocultó que el rechazo no se había
+completado. Se reescribió con un sondeo que espera la promesa, y entonces
+detectó el problema real.
+
+Mutación que lo respalda: devolviendo la interfaz a `/stop` en lugar del
+endpoint nativo, fallan 3 de las 12.
+
 ## 5. Registro
 
 Cada ejecución de `check.sh` imprime conteos por nivel. Los resultados reales
