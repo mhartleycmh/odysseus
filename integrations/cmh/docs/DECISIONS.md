@@ -295,12 +295,15 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
     un `tool_type` con prefijo `mcp__`; el canal fenced que usa el piloto
     local no lo parsea, porque `TOOL_TAGS` (77 etiquetas) no tiene ninguna
     `mcp*`;
-  - **no verificado**: que `builtin_browser` esté conectado en la máquina
-    objetivo —aquí no hay Node en PATH, así que npx no arranca— ni la
-    afirmación de «una sola llamada por ejecución» atribuida a la compuerta de
-    contexto externo. Si `builtin_browser` conecta, la superficie es control de
-    navegador y el argumento de severidad media **no se sostiene**. La
-    corrección no depende de ese dato: la cláusula bloquea los cinco por igual.
+  - **medido en el arranque real del 2026-09-25 (19:03)**: de los cinco
+    servidores builtin, cuatro conectan —`email` con 16 herramientas,
+    `image_gen`, `memory` y `rag` con 1 cada uno— y `builtin_browser`
+    **falla** con `[WinError 2]` porque no hay npx en PATH. La superficie de
+    control de navegador que habría tumbado el argumento de severidad media no
+    existe en este equipo; en otro con npx sí existiría. La corrección no
+    depende de ese dato: la cláusula bloquea los cinco por igual.
+  - **sigue sin verificar**: la afirmación de «una sola llamada por ejecución»
+    atribuida a la compuerta de contexto externo.
 - Medición que sí es firme: `known_tool_names()` = **82** nombres, **0** con
   prefijo `mcp`, y `validate_task_tools` exige `names <= known_tool_names()`,
   así que ninguna allowlist puede contener un nombre MCP cualificado.

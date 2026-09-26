@@ -111,7 +111,7 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 ## Próxima acción exacta
 
 1. Hecho: commit **`0c4e33c8`** del punto limpio 8, autorizado por el usuario. El árbol queda congelado, que era la condición para que la próxima revisión independiente sea válida: la del 2026-09-25 tuvo que medir un árbol que cambiaba bajo sus pies. **Sin push** — decidir si `origin/dev` se actualiza.
-2. El usuario abre `/cmh/os` en Edge con **sesión de administrador** y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Sigue siendo lo único de la interfaz que no se puede verificar sin esa sesión. Evidencia a registrar: que la página carga autenticada tras sacarla de la exención de `/static`, que el badge dice modo real y no demo, y que el rechazo de un paso desde Aprobaciones deja la ejecución en `rejected` con su justificación.
+2. **El servidor ya está arrancado con el código del punto 8** (PID 28036, puerto 7000, reiniciado el 2026-09-25 a las 19:03; el anterior corría código previo y sí tenía la fuga). El usuario abre `/cmh/os` en Edge con **sesión de administrador** y revisa el modo real (agentes, ejecuciones, aprobaciones y eventos verdaderos). Sigue siendo lo único de la interfaz que no se puede verificar sin esa sesión. Evidencia a registrar: que la página carga autenticada tras sacarla de la exención de `/static`, que el badge dice modo real y no demo, y que el rechazo de un paso desde Aprobaciones deja la ejecución en `rejected` con su justificación.
 3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones. Registrar los IDs. El piloto **sigue pausado**.
 4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6, 7 y 8.
 
@@ -194,6 +194,51 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 - Sin ejecución en vivo de ningún proveedor en este punto: no se reinició el servidor ni se llamó a ningún modelo. Los dos proveedores conservan la evidencia en vivo de los puntos 4 (Ollama local) y 6 (Anthropic en la nube).
 - El piloto y sus agentes **siguen pausados**. Nada en este punto los aprueba.
 - **Corrección de un dato del registro anterior:** la ficha afirmaba «rama `dev`, 7 commits por delante de `origin/dev`, sin push». Medido el 2026-09-25 antes de commitear, `origin/dev` ya contenía `7e21b7c4` y HEAD coincidía exactamente con él (0/0). Los commits previos sí estaban publicados en el fork `mhartleycmh/odysseus`. `upstream` (`odysseus-dev/odysseus`) es otro remoto y no se tocó.
+
+### Evidencia en vivo tras el commit (2026-09-25, 19:03)
+
+Reinicio del servidor local con el código de `0c4e33c8`, siguiendo el
+procedimiento registrado. **Copia previa hecha antes esta vez**:
+`data/backups/app-before-restart-20260925.db`, 802 816 bytes,
+`integrity_check=ok`.
+
+- Servidor anterior PID 4584 (arrancado 13:17:55, código previo al punto 8)
+  detenido; nuevo PID **28036**, log `logs/server-20260925-punto8.log`:
+  **0 tracebacks**, `Application startup complete`, `Uvicorn running`.
+- Se comprobó primero que el servidor anterior **sí tenía la fuga**:
+  `/static/cmh-os/index.html` respondía **200 sin sesión**. La corrección no
+  estaba activa hasta este reinicio.
+- Humo sin sesión sobre el servidor nuevo: `/` 302, `/cmh` 302, `/cmh/os` 302,
+  `/api/cmh/projects` 401, `/api/cmh/os/config` 401, `/login` 200,
+  `/api/health` 200.
+- **Compuerta de activos medida sobre el despliegue real con socket crudo**
+  (ni curl ni los navegadores pueden expresar estas grafías: colapsan `.` y
+  `..` en el cliente). 10 grafías de la página —literal, `/./`, `/foo/../`,
+  `/../static/`, `//`, `%2e`, `%2e%2e`, mayúsculas, `js/main.js`,
+  `css/tokens.css`— **todas 302, 0 bytes**. `/static/cmh-control.html`
+  (4 649 B) e `icon.ico` (174 B) siguen en **200**, así que la compuerta no es
+  un 302 indiscriminado. **0 fugas.**
+- **No medido en vivo:** el 404 con `CMH_OS_UI_ENABLED=false` —exigiría otro
+  reinicio con la bandera apagada— y todo el modo real autenticado, que
+  necesita sesión de administrador.
+
+#### Inventario MCP medido en el arranque real
+
+Cierra una de las preguntas que la revisión independiente dejó sin medir:
+
+| Servidor | Resultado en esta máquina |
+|---|---|
+| Built-in: Email | conectado, 16 herramientas |
+| Built-in: Image Generation | conectado, 1 herramienta |
+| Built-in: Memory | conectado, 1 herramienta |
+| Built-in: RAG | conectado, 1 herramienta |
+| Built-in: Browser (`builtin_browser`) | **falla**: `[WinError 2] The system cannot find the file specified` — no hay npx en PATH |
+
+La superficie de control de navegador que habría tumbado el argumento de
+severidad media **no existe en este equipo**. La rebaja de alta a media se
+sostiene aquí, y solo aquí: otra máquina con npx sí levantaría
+`builtin_browser` y sus 12 herramientas. La corrección de ADR-018 no depende
+de ese dato, porque la cláusula bloquea los cinco servidores por igual.
 
 ### Decisión registrada
 
