@@ -201,7 +201,7 @@ async def test_a_queued_foreground_caller_keeps_background_out_of_the_lock_queue
     assert not entered_background
 
     release.set()
-    await asyncio.gather(holder_task, fg_task, bg_task)
+    await asyncio.wait_for(asyncio.gather(holder_task, fg_task, bg_task), timeout=DEADLINE * 4)
     assert entered_background
     assert gate.waiting() == 0
 
@@ -241,7 +241,7 @@ async def test_foreground_callers_serialize_without_pre_emption(gate):
     assert order == ["step-in"]
 
     release.set()
-    await asyncio.gather(step_task, chat_task)
+    await asyncio.wait_for(asyncio.gather(step_task, chat_task), timeout=DEADLINE * 4)
     assert order == ["step-in", "step-out", "chat-in"]
 
 
@@ -327,6 +327,46 @@ async def test_background_does_not_queue_while_a_foreground_caller_generates(gat
     finish.set()
     await asyncio.wait_for(asyncio.gather(step_task, chat_task, bg_task), timeout=DEADLINE * 4)
     assert order == ["foreground", "background"], f"automatic work went first: {order}"
+    assert gate.waiting() == 0
+
+
+async def test_background_defers_to_browser_activity_and_polls_instead_of_spinning(gate, monkeypatch):
+    """Covers the third clause of the wait loop, and that the loop sleeps.
+
+    Both were unpinned: a mutation blanking `has_foreground_activity()` and one
+    turning the 0.25 s sleep into `sleep(0)` each left the module green. The
+    second is not equivalent -- it burns a core for the whole time the gate is
+    meant to be protecting foreground work.
+
+    The probe counts calls, because the loop asks once per iteration: with the
+    sleep intact a ~0.6 s wait is a handful of calls, without it thousands.
+    """
+    calls = 0
+    busy = True
+
+    def fake_activity():
+        nonlocal calls
+        calls += 1
+        return busy
+
+    monkeypatch.setenv("BACKGROUND_TASK_FOREGROUND_GATE", "true")
+    monkeypatch.setattr("src.interactive_gate.has_foreground_activity", fake_activity)
+
+    entered = False
+
+    async def task():
+        nonlocal entered
+        async with background():  # the lock is free; only the clause holds it back
+            entered = True
+
+    bg_task = asyncio.create_task(task())
+    await asyncio.sleep(0.6)
+    assert not entered, "background ran while the browser was active"
+    assert 0 < calls <= 20, f"the wait loop spun instead of sleeping: {calls} polls in 0.6 s"
+
+    busy = False
+    await asyncio.wait_for(bg_task, timeout=DEADLINE * 4)
+    assert entered
     assert gate.waiting() == 0
 
 

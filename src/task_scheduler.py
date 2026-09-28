@@ -2013,6 +2013,19 @@ class TaskScheduler:
             # the single local model is an operator decision, not a technical
             # one; test_foreground_callers_serialize_without_pre_emption pins
             # the contract so a future change has to argue with it.
+            #
+            # What this costs a scheduled task, measured rather than assumed:
+            # nothing cancels it while it defers. _cancel_if_foreground_active
+            # below only fires when has_foreground_activity() is true, and the
+            # case this change exists for is the opposite one -- /cmh/os open,
+            # sending no browser heartbeat. So the task sits in the local-slot
+            # wait loop with its TaskRun row still reading "running" and the
+            # _run_semaphore(1) still held, which holds every other scheduled
+            # task behind it for as long as the chain runs. Bounded by the
+            # chain, not indefinite, and there is no deadlock. Turning that
+            # wait into a TaskDeferred (the except path already reschedules
+            # cleanly) would be the fix, and it is new design: it needs a
+            # deadline nobody has chosen yet.
             workload="foreground" if foreground_controlled else "background",
             # A restricted run must be answered by its own model only.
             allow_escalation=allowed_tools is None,
