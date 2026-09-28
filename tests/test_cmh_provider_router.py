@@ -379,3 +379,65 @@ async def test_the_charge_lands_on_the_candidate_that_answered(flow_db, monkeypa
         assert usage_snapshot(session, "cerebras")["day"]["requests"] == 1
         # The one that refused is not charged: it never served a request.
         assert usage_snapshot(session, "groq")["day"]["requests"] == 0
+
+
+# --- require_tool_evidence per role (canon 06 pending of 2026-09-24) ---------
+
+def test_the_definition_defaults_every_step_to_requiring_tool_evidence():
+    steps = flow.validate_dag([{"key": "uno", "agent_id": "a"}])
+    assert steps[0]["require_tool_evidence"] is True
+
+
+def test_a_step_can_be_declared_exempt():
+    steps = flow.validate_dag([{"key": "uno", "agent_id": "a",
+                                "require_tool_evidence": False}])
+    assert steps[0]["require_tool_evidence"] is False
+
+
+async def test_the_frozen_flag_reaches_the_agent_loop(flow_db, monkeypatch):
+    """The pending said call_model never switched it on: a step with zero tool
+    calls passed. Assert on the argument the loop actually receives."""
+    seen = {}
+
+    class _Scheduler:
+        def __init__(self, _):
+            pass
+
+        async def _run_agent_loop(self, endpoint_url, model, task, session_id, **kwargs):
+            seen.update(kwargs)
+            return "artifact"
+
+    import src.task_scheduler as scheduler
+    monkeypatch.setattr(scheduler, "TaskScheduler", _Scheduler)
+    candidates = [{"endpoint_id": "groq", "endpoint_url": GROQ, "model": "m",
+                   "host": "api.groq.com"}]
+    config = _config(candidates)
+    config["require_tool_evidence"] = True
+    assert await flow.call_model(config, "prompt") == "artifact"
+    assert seen["require_tool_evidence"] is True
+
+    seen.clear()
+    config["require_tool_evidence"] = False
+    await flow.call_model(config, "prompt")
+    assert seen["require_tool_evidence"] is False
+
+
+async def test_an_old_run_without_the_flag_still_requires_evidence(flow_db, monkeypatch):
+    """A run frozen before this existed must not become the lax case."""
+    seen = {}
+
+    class _Scheduler:
+        def __init__(self, _):
+            pass
+
+        async def _run_agent_loop(self, endpoint_url, model, task, session_id, **kwargs):
+            seen.update(kwargs)
+            return "artifact"
+
+    import src.task_scheduler as scheduler
+    monkeypatch.setattr(scheduler, "TaskScheduler", _Scheduler)
+    config = _config([{"endpoint_id": "groq", "endpoint_url": GROQ, "model": "m",
+                       "host": "api.groq.com"}])
+    config.pop("require_tool_evidence", None)
+    await flow.call_model(config, "prompt")
+    assert seen["require_tool_evidence"] is True

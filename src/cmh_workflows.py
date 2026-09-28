@@ -68,7 +68,14 @@ def validate_dag(steps: list[dict]) -> list[dict]:
     return [{"key": s["key"], "agent_id": s["agent_id"],
              "depends_on": s.get("depends_on", []),
              "independent_of": s.get("independent_of", []),
-             "requires_approval": bool(s.get("requires_approval", False))} for s in steps]
+             "requires_approval": bool(s.get("requires_approval", False)),
+             # Whether this step must ground its artifact in at least one
+             # successful tool call. Default True: a step that read nothing
+             # and answered anyway is the failure this chain exists to catch.
+             # The reviewer and the documenter are the deliberate exceptions —
+             # they work on the artifacts they were handed, not on the files.
+             "require_tool_evidence": bool(s.get("require_tool_evidence", True))}
+            for s in steps]
 
 
 def event(db, run_id, kind, step_key=None, **payload):
@@ -188,6 +195,10 @@ async def _run_one_candidate(config: dict, candidate: dict, prompt: str, record)
         candidate["endpoint_url"], candidate["model"], task, str(uuid.uuid4()),
         system_prompt=config["instructions"], override_user_message=prompt,
         foreground_controlled=True, event_sink=record,
+        # Canon 06 pending of 2026-09-24: call_model never switched this on, so
+        # a step that made zero tool calls still passed. Now the definition
+        # decides it per role and the run freezes the answer.
+        require_tool_evidence=bool(config.get("require_tool_evidence", True)),
     )
 
 

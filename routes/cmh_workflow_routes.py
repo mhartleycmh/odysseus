@@ -155,6 +155,7 @@ def setup_cmh_workflow_routes() -> APIRouter:
             snapshots = [_snapshot(db, owner, definition.project_id, spec) for spec in specs]
             for spec, config in zip(specs, snapshots):
                 config["requires_approval"] = spec["requires_approval"]
+                config["require_tool_evidence"] = spec.get("require_tool_evidence", True)
                 config["approved"] = False
             run = CMHWorkflowRun(id=str(uuid.uuid4()), owner=owner,
                                  definition_id=definition_id, project_id=definition.project_id,
