@@ -131,10 +131,15 @@ async def _local_model_slot(target_url: str, model: str, workload: Optional[str]
         })
         yield
     finally:
-        # The count is spent the moment the wait ends. A caller that acquired
-        # already gave it back above; decrementing again here erased a sibling
-        # that was still queued, and a background caller polling the counter
-        # then saw a clear field and jumped the foreground request.
+        # Exactly one decrement per foreground caller. The count is spent the
+        # moment the wait ends, so a caller that acquired already gave it back
+        # above; running this again erased the count of a sibling still queued.
+        # The counter is read only by the background branch's wait loop, to
+        # decide whether to start queueing at all, so an under-count let a
+        # background caller arriving in that window queue immediately instead
+        # of deferring. It does not reorder callers already in the lock queue:
+        # asyncio.Lock is FIFO, and a background caller that leaves the loop
+        # early still queues behind a foreground caller that is waiting.
         if kind == "foreground" and not acquired:
             _LOCAL_MODEL_WAITING_FOREGROUND = max(0, _LOCAL_MODEL_WAITING_FOREGROUND - 1)
         if acquired and _LOCAL_MODEL_LOCK.locked():

@@ -2002,6 +2002,17 @@ class TaskScheduler:
             # foreground request. The browser heartbeat fires every 15 s and keeps
             # has_foreground_activity() true for 45 s, so the step the user is
             # watching could never acquire the slot. Scheduled tasks keep yielding.
+            #
+            # The cost, deliberately taken: foreground never cancels foreground,
+            # so the chat can no longer pre-empt a step the way it pre-empted a
+            # background task -- it queues behind it instead. The slot is held
+            # per HTTP generation, so the wait is one generation and the FIFO
+            # lock rules out starvation, but on a local model that generation
+            # can run minutes (agent_stream_timeout defaults to 300 s) and the
+            # chat will look hung. A hand-launched step outranking the chat on
+            # the single local model is an operator decision, not a technical
+            # one; test_foreground_callers_serialize_without_pre_emption pins
+            # the contract so a future change has to argue with it.
             workload="foreground" if foreground_controlled else "background",
             # A restricted run must be answered by its own model only.
             allow_escalation=allowed_tools is None,

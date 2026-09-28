@@ -398,3 +398,18 @@ def test_memory_endpoints_match_the_ui_samples(monkeypatch, tmp_path):
     detail = endpoint_of(router, "GET", "/api/cmh/memory-proposals/{proposal_id}")(request(), proposal["id"])
     assert set(detail) == set(SAMPLES["memory_proposal_detail"])
     engine.dispose()
+
+
+def test_the_icon_rail_links_to_the_agentic_os():
+    """/cmh/os must be reachable from the UI, not only by typing the URL.
+
+    The neighbouring CMH button goes to /cmh, the project and agent registry,
+    which is a different page; a rail entry pointing there instead would leave
+    the Agentic OS with no entry point anywhere in the interface.
+    """
+    rail = re.search(r'<div class="icon-rail".*?</div>\s*<nav',
+                     (ROOT / "static" / "index.html").read_text(encoding="utf-8"), re.S)
+    assert rail, "icon rail not found in static/index.html"
+    hrefs = re.findall(r'<a\s[^>]*href="([^"]+)"', rail.group(0))
+    assert "/cmh/os" in hrefs, f"the rail does not link to /cmh/os; found {hrefs}"
+    assert "/cmh" in hrefs, f"the rail lost its link to /cmh; found {hrefs}"
