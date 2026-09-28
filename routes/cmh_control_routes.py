@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from core.database import CMHAgent, ScheduledTask, SessionLocal, TaskRun
 from src.auth_helpers import get_current_user
 from src.cmh_cost_policy import ZeroCostViolation, assert_zero_cost_url
+from src.cmh_provider_router import normalize_policy
 from src.task_workspace import validate_task_tools, validate_task_workspace
 from src.tool_security import owner_is_admin_or_single_user
 
@@ -127,6 +128,7 @@ def _agent_dict(agent: CMHAgent) -> dict:
         "workspace": agent.workspace,
         "status": agent.status,
         "task_id": agent.task_id,
+        "provider_policy": agent.provider_policy,
     }
 
 
@@ -374,7 +376,7 @@ def setup_cmh_control_routes() -> APIRouter:
                 instructions=body.instructions, model=body.model,
                 allowed_tools=json.dumps(sorted(tools)), workspace=workspace,
                 status="paused", instructions_version=1,
-                task_id=task_id,
+                task_id=task_id, provider_policy=normalize_policy(body.provider_policy),
             )
             db.add(agent)
             db.commit()
@@ -402,6 +404,7 @@ def setup_cmh_control_routes() -> APIRouter:
             agent.allowed_tools = json.dumps(sorted(tools))
             agent.workspace = workspace
             agent.task_id = body.task_id
+            agent.provider_policy = normalize_policy(body.provider_policy)
             db.commit()
             db.refresh(agent)
             return _agent_dict(agent)

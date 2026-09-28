@@ -69,13 +69,29 @@ def validate_dag(steps: list[dict]) -> list[dict]:
              "depends_on": s.get("depends_on", []),
              "independent_of": s.get("independent_of", []),
              "requires_approval": bool(s.get("requires_approval", False)),
-             # Whether this step must ground its artifact in at least one
-             # successful tool call. Default True: a step that read nothing
-             # and answered anyway is the failure this chain exists to catch.
-             # The reviewer and the documenter are the deliberate exceptions —
-             # they work on the artifacts they were handed, not on the files.
-             "require_tool_evidence": bool(s.get("require_tool_evidence", True))}
+             "require_tool_evidence": bool(s["require_tool_evidence"])
+             if s.get("require_tool_evidence") is not None
+             else default_tool_evidence(s["key"]),
+             "provider_policy": s.get("provider_policy")}
             for s in steps]
+
+
+#: Steps that work on the artifacts they were handed rather than on files, so
+#: demanding a successful tool call from them would fail every run. Their own
+#: derived instructions tell them to read the input artifacts, not the disk.
+_NO_EVIDENCE_ROLES = frozenset({"revisor", "revisor-cmh", "documentador"})
+
+
+def default_tool_evidence(step_key: str) -> bool:
+    """Whether a step must ground its artifact in a successful tool call.
+
+    True for everything except the reviewer and the documenter. The default
+    lives here, not in the browser: a definition created by script, by the API
+    or by a future screen must land on the same answer, and an earlier version
+    of this defaulted every step to True — which would have failed the reviewer
+    on every single run while the commit message claimed it was "per role".
+    """
+    return str(step_key or "").strip().lower() not in _NO_EVIDENCE_ROLES
 
 
 def event(db, run_id, kind, step_key=None, **payload):
@@ -152,11 +168,24 @@ def _frozen_candidates(config: dict) -> list[dict]:
 
     A run created before the router existed froze a single ``endpoint_url`` and
     ``model``; it is read as a one-entry list, so an old run still executes.
+
+    Every entry is completed with ``endpoint_id`` and ``host``, because the
+    quota accounting and the fallback events index on them. Leaving the legacy
+    shape incomplete made ``CMH_ZERO_COST=false`` die with ``KeyError:
+    'endpoint_id'`` in the one branch that is supposed to degrade to logging.
     """
+    from src.cmh_cost_policy import endpoint_host
+
     candidates = config.get("candidates") or [
         {"endpoint_url": config["endpoint_url"], "model": config["model"]}
     ]
-    return [dict(candidate) for candidate in candidates]
+    complete = []
+    for candidate in candidates:
+        entry = dict(candidate)
+        entry.setdefault("endpoint_id", entry.get("endpoint_url"))
+        entry.setdefault("host", endpoint_host(entry.get("endpoint_url")))
+        complete.append(entry)
+    return complete
 
 
 def _zero_cost_candidates(config: dict, record) -> list[dict]:
@@ -178,8 +207,13 @@ def _zero_cost_candidates(config: dict, record) -> list[dict]:
             if not is_zero_cost_endpoint(endpoint, model):
                 record("zero_cost_blocked", endpoint_url=url, candidate_model=model)
                 continue
-            candidate.setdefault("endpoint_id", getattr(row, "id", None) or url)
-            candidate.setdefault("host", endpoint_host(url))
+            # A registered row's id wins over the URL placeholder that
+            # _frozen_candidates filled in: quota is charged per endpoint row,
+            # and charging a URL string would split one provider's counter.
+            if getattr(row, "id", None):
+                candidate["endpoint_id"] = row.id
+            candidate.setdefault("endpoint_id", url)
+            candidate["host"] = endpoint_host(url)
             allowed.append(candidate)
     return allowed
 
@@ -214,10 +248,15 @@ async def call_model(config: dict, prompt: str) -> str:
     from src.cmh_cost_policy import ZeroCostViolation, enforced
     from src.cmh_provider_router import is_fallback_error, record_usage, usable_candidates
 
+    # The model label follows whichever candidate is actually answering. It
+    # used to report config["model"] always, so a fallback event was stamped
+    # with the model that did NOT produce it.
+    active = {"model": config["model"]}
+
     def record(kind, **payload):
         with SessionLocal() as db:
             event(db, config["run_id"], kind, config["step_key"],
-                  agent_id=config["agent_id"], model=config["model"], **payload)
+                  agent_id=config["agent_id"], model=active["model"], **payload)
             db.commit()
 
     free = _zero_cost_candidates(config, record)
@@ -240,6 +279,7 @@ async def call_model(config: dict, prompt: str) -> str:
 
     last_error: Exception | None = None
     for index, candidate in enumerate(ready):
+        active["model"] = candidate.get("model") or config["model"]
         try:
             output = await _run_one_candidate(config, candidate, prompt, record)
         except asyncio.CancelledError:

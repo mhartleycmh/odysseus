@@ -743,6 +743,10 @@ class CMHAgent(TimestampMixin, Base):
     workspace = Column(String, nullable=True)
     status = Column(String, nullable=False, default="paused")
     task_id = Column(String, nullable=True, index=True)
+    # Which providers this agent's steps may use: "free-cloud-first" or
+    # "local-only". NULL means the agent states no preference and the step, or
+    # failing that the default, decides. Nullable and additive on purpose.
+    provider_policy = Column(String, nullable=True)
 
 
 class CMHWorkflowDefinition(TimestampMixin, Base):
@@ -2202,6 +2206,8 @@ def init_db():
             step_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(cmh_workflow_steps)"))}
             if step_columns and "decision" not in step_columns:
                 conn.execute(text("ALTER TABLE cmh_workflow_steps ADD COLUMN decision TEXT"))
+            if agent_columns and "provider_policy" not in agent_columns:
+                conn.execute(text("ALTER TABLE cmh_agents ADD COLUMN provider_policy VARCHAR"))
     # Lock the DB file (and any SQLite sidecars) to 0o600 — it holds bearer-token
     # + bcrypt hashes and encrypted provider keys. POSIX only; safe_chmod no-ops
     # on Windows (ACL-restricted profile dir) and the path helper returns None for

@@ -39,7 +39,8 @@
         ],
         "workspace": "C:/vault/odysseus/data/agent_workspace/cmh-researcher",
         "status": "active",
-        "task_id": "task-a"
+        "task_id": "task-a",
+        "provider_policy": null
       },
       {
         "id": "a2",
@@ -54,7 +55,8 @@
         ],
         "workspace": "C:/vault/odysseus/data/agent_workspace/cmh-reviewer",
         "status": "active",
-        "task_id": "task-b"
+        "task_id": "task-b",
+        "provider_policy": null
       }
     ]
   },
@@ -72,7 +74,8 @@
             "depends_on": [],
             "independent_of": [],
             "requires_approval": false,
-            "require_tool_evidence": true
+            "require_tool_evidence": true,
+            "provider_policy": null
           },
           {
             "key": "revisor",
@@ -84,7 +87,8 @@
               "investigador"
             ],
             "requires_approval": true,
-            "require_tool_evidence": false
+            "require_tool_evidence": false,
+            "provider_policy": null
           }
         ]
       }

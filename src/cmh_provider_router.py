@@ -266,7 +266,10 @@ def is_fallback_error(exc: BaseException) -> Optional[str]:
     """
     status = getattr(getattr(exc, "response", None), "status_code", None) or getattr(
         exc, "status_code", None)
-    if status in FALLBACK_STATUS:
+    # Any 5xx, not an enumeration of them. The list used to name 500/502/503/504
+    # while the commit said "5xx", so 501, 505 and the 529 that providers send
+    # when overloaded fell through to killing the step.
+    if status in FALLBACK_STATUS or (isinstance(status, int) and 500 <= status <= 599):
         return f"http:{status}"
     if isinstance(exc, TimeoutError):
         return "timeout"

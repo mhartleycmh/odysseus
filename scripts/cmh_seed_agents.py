@@ -187,9 +187,15 @@ def main() -> int:
         print("Escribir en la base activa exige --authorized-by (decision §6.4).")
         return 2
 
+    # Validate the inputs before touching anything. An earlier version copied
+    # the database and then aborted for missing instructions, leaving a backup
+    # behind under a banner that said nothing was written.
+    for _, role in ((name, role) for role, name, _ in AGENTS):
+        instructions_for(role)
+
     # Before the import, not after: importing core.database migrates the file.
     db_path = live_database_path()
-    if db_path.is_file():
+    if args.apply and db_path.is_file():
         backup_database(db_path, "before-seed-agents")
 
     from core.database import CMHAgent, SessionLocal

@@ -140,11 +140,16 @@ def assert_zero_cost(endpoint: Any, model: Optional[str] = None) -> None:
 
 def endpoint_for_url(db, endpoint_url: Optional[str], owner: Optional[str] = None,
                      model: Optional[str] = None):
-    """The enabled endpoint row a URL resolves to, or None.
+    """The enabled endpoint row a URL resolves to, ON THE SAME HOST, or None.
 
-    Uses the same ranking the runner uses (``select_endpoint_for_url``), so the
-    row this gate judges is the row the call will actually use. Judging a
-    different row than the one that gets called would make the gate decorative.
+    Uses the runner's own ranking (``select_endpoint_for_url``) so the row this
+    gate judges is the row the call will use — but that function matches by
+    SUBSTRING, which is right for its job (picking among rows that share a base
+    URL) and wrong for this one. A row for ``https://api.groq.com``
+    substring-matches a task pointed at ``https://api.groq.com.attacker.example
+    /v1``: the gate would clear the free row while the call dialled the other
+    host. So a winner on a different host is discarded and the bare URL is
+    judged on its own, where ``FREE_HOSTS`` refuses it by exact match.
     """
     from core.database import ModelEndpoint
     from src.auth_helpers import owner_filter
@@ -152,7 +157,10 @@ def endpoint_for_url(db, endpoint_url: Optional[str], owner: Optional[str] = Non
 
     query = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)  # noqa: E712
     query = owner_filter(query, ModelEndpoint, owner or None)
-    return select_endpoint_for_url(query.all(), endpoint_url or "", model)
+    row = select_endpoint_for_url(query.all(), endpoint_url or "", model)
+    if row is not None and endpoint_host(getattr(row, "base_url", "")) != endpoint_host(endpoint_url):
+        return None
+    return row
 
 
 def assert_zero_cost_url(db, endpoint_url: Optional[str], model: Optional[str] = None,

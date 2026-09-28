@@ -13,7 +13,11 @@ from core.database import (
     CMHWorkflowRun, CMHWorkflowStep, ScheduledTask, SessionLocal, utcnow_naive,
 )
 from routes.cmh_control_routes import _admin, _owner, catalog, protected_area
-from src.cmh_cost_policy import ZeroCostViolation, assert_zero_cost_url
+from src.cmh_cost_policy import (
+    ZeroCostViolation, assert_zero_cost_url, endpoint_for_url, endpoint_host,
+    is_local_endpoint,
+)
+from src.cmh_provider_router import LOCAL_ONLY, resolve_candidates, resolve_policy
 from src.cmh_workflows import (
     READ_TOOLS, event, is_active, release_stranded_steps, start, stop, validate_dag,
 )
@@ -108,10 +112,35 @@ def _snapshot(db, owner, project_id, spec):
         assert_zero_cost_url(db, task.endpoint_url, agent.model, owner)
     except ZeroCostViolation as exc:
         raise HTTPException(400, f"Step {spec['key']}: {exc}") from exc
+    # Freeze the ordered candidate list here, where the run is born. Resolving
+    # it per attempt would let a step's route change under it mid-run, which is
+    # the guarantee of clean point 3. The step's own policy wins over the
+    # agent's; both may be silent and the default applies.
+    policy = resolve_policy(spec, {"provider_policy": agent.provider_policy})
+    candidates = resolve_candidates(db, policy, owner)
+    already_listed = any(c["endpoint_url"] == task.endpoint_url and c["model"] == agent.model
+                         for c in candidates)
+    # The task's own route leads when the policy allows it: it is what the
+    # agent was configured with and what the cost gate just cleared, and the
+    # router's list is what the step falls back TO, not a silent replacement.
+    # Under local-only it must NOT be prepended, or naming that policy would
+    # send the first attempt to the cloud anyway — which is the whole thing
+    # local-only exists to prevent.
+    allowed_by_policy = policy != LOCAL_ONLY or is_local_endpoint(
+        endpoint_for_url(db, task.endpoint_url, owner, agent.model)
+        or {"base_url": task.endpoint_url, "endpoint_kind": "auto"})
+    if not already_listed and allowed_by_policy:
+        candidates = [{"endpoint_id": None, "endpoint_url": task.endpoint_url,
+                       "model": agent.model,
+                       "host": endpoint_host(task.endpoint_url)}] + candidates
+    if not candidates:
+        raise HTTPException(400, f"Step {spec['key']}: la politica '{policy}' no deja "
+                                 f"ningun candidato gratuito disponible")
     return {"owner": owner, "name": agent.name, "agent_id": agent.id,
             "instructions": agent.instructions, "instructions_version": agent.instructions_version,
             "model": agent.model, "endpoint_url": task.endpoint_url,
-            "workspace": workspace, "allowed_tools": sorted(tools)}
+            "workspace": workspace, "allowed_tools": sorted(tools),
+            "provider_policy": policy, "candidates": candidates}
 
 
 def setup_cmh_workflow_routes() -> APIRouter:

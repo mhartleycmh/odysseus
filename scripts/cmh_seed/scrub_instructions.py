@@ -46,6 +46,12 @@ FORBIDDEN = [
     ("plantilla financiera nombrada", r"PLANTILLA_BASE"),
     ("importe con moneda", r"\bS/\s?[\d.,]+|\bUSD\s?[\d.,]+|\$\s?\d[\d.,]*"),
     ("ratio o covenant nombrado", r"\bDSCR\b|\bFCSD\b|\bAISC\b|\bITAN\b|\bIEM\b|\bGEM\b"),
+    # The header of every derived file claims no personal names. Until this
+    # pattern existed the claim was unbacked: the check had five patterns and
+    # none of them looked for a person. Found by the independent review of
+    # 2026-09-28, which verified the files were in fact clean and that the
+    # control which said so was not measuring it.
+    ("nombre de persona", r"(?i)\bmijhael\b|\bhartley\b|@cmh\.com\.pe"),
 ]
 
 _HEADER = """# Instrucciones del paso: {role}
