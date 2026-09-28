@@ -106,13 +106,21 @@ async def _local_model_slot(target_url: str, model: str, workload: Optional[str]
                 )
                 task.cancel()
     else:
-        # Background work should not jump in while the browser/chat is active
-        # or while a foreground request is waiting to acquire the local model.
+        # Background work should not jump in while the browser/chat is active,
+        # while a foreground request is waiting to acquire the local model, or
+        # while one is holding it. The third clause matters because the counter
+        # is spent on acquiring: without it, a foreground caller generating for
+        # minutes left the counter at zero, a background caller joined the FIFO
+        # queue behind it, and every foreground caller arriving after that
+        # queued behind the background one. Measured before this clause
+        # existed: ['C(bg task)', 'B(fg chat)'].
         try:
             from src.interactive_gate import has_foreground_activity
         except Exception:
             has_foreground_activity = lambda: False  # type: ignore
-        while _LOCAL_MODEL_WAITING_FOREGROUND > 0 or has_foreground_activity():
+        while (_LOCAL_MODEL_WAITING_FOREGROUND > 0
+               or _LOCAL_MODEL_CURRENT.get("workload") == "foreground"
+               or has_foreground_activity()):
             await asyncio.sleep(0.25)
 
     acquired = False

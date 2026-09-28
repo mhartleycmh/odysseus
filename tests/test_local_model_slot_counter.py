@@ -245,6 +245,91 @@ async def test_foreground_callers_serialize_without_pre_emption(gate):
     assert order == ["step-in", "step-out", "chat-in"]
 
 
+async def test_background_defers_to_a_queued_foreground_caller_on_a_free_lock(gate):
+    """Pins the waiting-counter clause, which the holding clause does not cover.
+
+    The window: the lock is free and a foreground caller has been counted but
+    has not yet resumed from acquire(), so _LOCAL_MODEL_CURRENT is still empty
+    and only the counter can hold background work back. Forced by taking the
+    raw lock, which leaves CURRENT untouched, and releasing it by hand.
+
+    Ordering cannot detect this: measured both ways, the order is ['fg', 'bg']
+    either way, because asyncio.Lock is FIFO and the foreground caller queued
+    first. What the clause changes is whether the background caller joins the
+    queue at all -- 1 waiter with it, 2 without -- so that is what is asserted.
+    """
+    order = []
+    await llm_core._LOCAL_MODEL_LOCK.acquire()  # raw, so CURRENT stays empty
+
+    async def fg():
+        async with foreground():
+            order.append("fg")
+
+    async def bg():
+        async with background():
+            order.append("bg")
+
+    fg_task = asyncio.create_task(fg())
+    await gate.until(lambda: gate.waiting() == 1, "the foreground caller to be counted")
+    bg_task = asyncio.create_task(bg())
+    await asyncio.sleep(0.6)  # several cycles of the loop's 0.25 s sleep
+
+    assert llm_core._LOCAL_MODEL_CURRENT.get("workload") is None, "probe no longer isolates the clause"
+    assert gate.queued_on_lock() == 1, "a background caller queued past a counted foreground one"
+
+    llm_core._LOCAL_MODEL_LOCK.release()
+    await asyncio.wait_for(asyncio.gather(fg_task, bg_task), timeout=DEADLINE * 4)
+    assert order == ["fg", "bg"]
+    assert gate.waiting() == 0
+
+
+async def test_background_does_not_queue_while_a_foreground_caller_generates(gate):
+    """The counter goes to zero the moment a foreground caller acquires.
+
+    That left a window as wide as one generation in which a background caller
+    polling the loop saw a clear field, joined the lock queue, and so sat ahead
+    of any foreground caller that arrived later -- automatic work beating
+    interactive work on the single local model. Measured on the commit before
+    this one: ['C(bg task)', 'B(fg chat)'].
+
+    The gate is disabled here on purpose: it models the case this whole series
+    is about, where only /cmh/os is open and sends no browser heartbeat, so
+    has_foreground_activity() is false and the counter is the only thing left
+    holding background work back.
+    """
+    order = []
+    generating = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def step():
+        async with foreground():
+            generating.set()
+            await finish.wait()
+
+    step_task = asyncio.create_task(step())
+    await asyncio.wait_for(generating.wait(), timeout=DEADLINE)
+
+    async def task():
+        async with background():
+            order.append("background")
+
+    bg_task = asyncio.create_task(task())
+    await asyncio.sleep(0.6)  # several cycles of the loop's 0.25 s sleep
+    assert gate.queued_on_lock() == 0, "a background caller queued while a foreground one generated"
+
+    async def chat():
+        async with foreground():
+            order.append("foreground")
+
+    chat_task = asyncio.create_task(chat())
+    await gate.until(lambda: gate.queued_on_lock() == 1, "the chat to queue")
+
+    finish.set()
+    await asyncio.wait_for(asyncio.gather(step_task, chat_task, bg_task), timeout=DEADLINE * 4)
+    assert order == ["foreground", "background"], f"automatic work went first: {order}"
+    assert gate.waiting() == 0
+
+
 async def test_a_foreground_caller_does_cancel_a_running_background_one(gate):
     # The other half of the contract, unchanged by the workload fix: automatic
     # work still loses the slot the moment interactive work wants it.
