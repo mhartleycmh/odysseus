@@ -229,3 +229,60 @@ def test_site_3_the_registered_row_decides_not_the_bare_url(factory):
               "endpoint_url": LOCAL, "model": "m"}
     assert flow._zero_cost_candidates(config, lambda kind, **p: events.append((kind, p))) == []
     assert [kind for kind, _ in events] == ["zero_cost_blocked"]
+
+
+# --- the twin LLM task (§3.5) -----------------------------------------------
+
+async def test_creating_an_agent_without_a_task_id_creates_its_paused_twin(client, factory):
+    """The user no longer builds the task by hand and pastes its id."""
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="groq", name="groq", base_url=GROQ,
+                                 endpoint_kind="api", is_enabled=True))
+        db.commit()
+    body = {"name": "Investigador", "project_id": "project", "role": "investigador",
+            "instructions": "i", "allowed_tools": ["read_file"], "workspace": "."}
+    async with client:
+        created = await client.post("/api/cmh/agents", json=body)
+    assert created.status_code == 201, created.text
+    task_id = created.json()["task_id"]
+    assert task_id
+
+    with factory() as db:
+        task = db.query(cdb.ScheduledTask).filter(cdb.ScheduledTask.id == task_id).first()
+    assert task.task_type == "llm"
+    assert task.status == "paused"          # the workflow engine drives it, not cron
+    assert task.email_results is False      # canon rule of 2026-09-24 for pilots
+    assert task.notifications_enabled is False
+    assert task.endpoint_url == GROQ        # first free candidate, not a paid one
+
+
+async def test_the_twin_task_never_lands_on_a_paid_endpoint(client, factory):
+    """Only Anthropic is registered, so no free candidate exists."""
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="anthropic", name="a", base_url=ANTHROPIC,
+                                 endpoint_kind="api", is_enabled=True))
+        db.commit()
+    body = {"name": "Investigador", "project_id": "project", "role": "investigador",
+            "instructions": "i", "allowed_tools": ["read_file"], "workspace": "."}
+    async with client:
+        created = await client.post("/api/cmh/agents", json=body)
+    assert created.status_code == 201, created.text
+    with factory() as db:
+        task = db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == created.json()["task_id"]).first()
+    # No free candidate means no endpoint at all, never the paid one that was
+    # sitting right there. _snapshot refuses the step later, with its own 400.
+    assert task.endpoint_url is None
+
+
+async def test_an_agent_workspace_inside_a_financial_folder_is_refused(client, monkeypatch):
+    """The guard already existed (cmh_control_routes.py:158); this fixes it for
+    the twin-task path too, where a workspace now reaches a task as well."""
+    monkeypatch.setattr(control, "protected_area",
+                        lambda path: "Modelo Financiero Nuevo")
+    body = {"name": "Investigador", "project_id": "project", "role": "investigador",
+            "instructions": "i", "allowed_tools": ["read_file"], "workspace": "."}
+    async with client:
+        refused = await client.post("/api/cmh/agents", json=body)
+    assert refused.status_code == 400
+    assert "Modelo Financiero Nuevo" in refused.json()["detail"]

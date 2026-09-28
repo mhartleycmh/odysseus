@@ -138,7 +138,10 @@ class AgentInput(BaseModel):
     model: Optional[str] = None
     allowed_tools: list[str] = Field(default_factory=list)
     workspace: Optional[str] = None
+    # Omitting task_id creates the paused twin LLM task from these same fields.
+    # Passing one keeps the previous behaviour, so an existing caller is intact.
     task_id: Optional[str] = None
+    provider_policy: Optional[str] = None
 
 
 class ProjectInput(BaseModel):
@@ -182,6 +185,43 @@ def _validate_task_link(db, task_id: Optional[str], owner: str,
         assert_zero_cost_url(db, task.endpoint_url, model, owner)
     except ZeroCostViolation as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+def _create_twin_task(db, body: AgentInput, workspace, tools, owner: str) -> str:
+    """Create the paused LLM task an agent needs, and return its id.
+
+    Until now the user had to build the task by hand in another screen and paste
+    its id, and a step whose task had a different model than its agent was
+    refused at run time with no clue why. The twin is created from the agent's
+    own fields, so the two cannot disagree at birth.
+
+    Paused, with e-mail and notifications off: canon rule of 2026-09-24 for
+    pilot tasks. A task that runs on its own schedule, or writes to the user's
+    inbox, is not what an agent's twin is for — the workflow engine drives it.
+    """
+    import json
+    from src.cmh_cost_policy import ZeroCostViolation, assert_zero_cost_url
+    from src.cmh_provider_router import resolve_candidates
+
+    candidates = resolve_candidates(db, body.provider_policy or "free-cloud-first", owner)
+    endpoint_url = candidates[0]["endpoint_url"] if candidates else None
+    model = body.model or (candidates[0]["model"] if candidates else None)
+    if endpoint_url:
+        try:
+            assert_zero_cost_url(db, endpoint_url, model, owner)
+        except ZeroCostViolation as exc:
+            raise HTTPException(400, str(exc)) from exc
+    task = ScheduledTask(
+        id=str(uuid.uuid4()), owner=owner, name=f"{body.name.strip()} (agente CMH)",
+        task_type="llm", prompt="Gestionada por el motor de flujos CMH.",
+        status="paused", trigger_type="manual", model=model,
+        endpoint_url=endpoint_url, workspace=workspace,
+        allowed_tools=json.dumps(sorted(tools)) if tools else None,
+        email_results=False, notifications_enabled=False,
+    )
+    db.add(task)
+    db.flush()
+    return task.id
 
 
 def _recent_runs(db, agents: list[CMHAgent]) -> list[dict]:
@@ -323,14 +363,18 @@ def setup_cmh_control_routes() -> APIRouter:
         _admin(owner)
         workspace, tools = _validated_input(body, owner)
         with SessionLocal() as db:
-            _validate_task_link(db, body.task_id, owner, body.model)
+            task_id = body.task_id
+            if task_id:
+                _validate_task_link(db, task_id, owner, body.model)
+            else:
+                task_id = _create_twin_task(db, body, workspace, tools, owner)
             agent = CMHAgent(
                 id=uuid.uuid4().hex, owner=owner, name=body.name.strip(),
                 project_id=body.project_id, role=body.role.strip(),
                 instructions=body.instructions, model=body.model,
                 allowed_tools=json.dumps(sorted(tools)), workspace=workspace,
                 status="paused", instructions_version=1,
-                task_id=body.task_id,
+                task_id=task_id,
             )
             db.add(agent)
             db.commit()
