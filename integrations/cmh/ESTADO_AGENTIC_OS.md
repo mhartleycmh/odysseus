@@ -110,11 +110,47 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Próxima acción exacta
 
-1. Hecho: commit **`0c4e33c8`** del punto limpio 8, autorizado por el usuario. El árbol queda congelado, que era la condición para que la próxima revisión independiente sea válida: la del 2026-09-25 tuvo que medir un árbol que cambiaba bajo sus pies. **Sin push** — decidir si `origin/dev` se actualiza.
-2. **Comportamiento ya verificado** con `scripts/cmh_os/realmode/run.sh` (12 de 12, navegador real contra backend real). Lo que queda es una **revisión de contenido**, no de funcionamiento: abrir `http://127.0.0.1:7000/cmh/os` —el servidor ya corre el código del punto 8, PID 28036, reiniciado el 2026-09-25 a las 19:03— y mirar que los proyectos, agentes y ejecuciones **propios** se vean como se espera.
-   - Aclaración medida el 2026-09-25: la instalación tiene **una sola cuenta**, `mijhael hartley`, y pasa el control de administrador, porque `owner_is_admin_or_single_user` trata al único usuario de una instalación monousuario como administrador. No hace falta ningún rol extra ni permisos de Windows.
-3. Flujo sintético de cinco pasos en vivo, lanzado desde `/cmh/os` → Ejecuciones. Registrar los IDs. El piloto **sigue pausado**.
-4. Aprobación humana del piloto (paso 9), con la evidencia de los puntos limpios 6, 7 y 8.
+Actualizada el 2026-09-28 al cerrar el punto limpio 9. Los pasos 1 y 2
+**bloquean todo lo demás**: sin ellos no existe ningún flujo que ejecutar.
+
+1. **Crear un segundo agente y activar los dos.** Hoy hay **1** agente y está
+   `paused`, así que `cmh_workflow_definitions` no puede pasar de 0: cada uno
+   de los cinco pasos exige agente `active` con `task_id`, tarea LLM con
+   `endpoint_url` y `task.model` idéntico al del agente, y además
+   `verificador` y `revisor` deben usar un agente distinto del `constructor`.
+   Mínimo real: **2 agentes activos y vinculados**. Se hace en `/cmh`.
+2. **Registrar el endpoint de LM Studio** por Settings → Model Endpoints:
+   `http://127.0.0.1:1234/v1`, tipo `local`, **`supports_tools` marcado** (sin
+   eso no se envían esquemas y se reproduce el falso positivo del punto 4).
+   Antes, fijar el GPU offload del modelo en la GUI de LM Studio (≈0,5) o el
+   endpoint fallará de forma intermitente: la carga automática usa los
+   ajustes por defecto, que crashean (punto 9).
+3. **Decidir sobre el endpoint duplicado `2345ab42`** (`localhost:11434`,
+   `supports_tools` vacío, Ollama caído). Es un borrado y necesita
+   autorización explícita.
+4. **Crear el flujo** en `/cmh` → panel *Flujo CMH*. Ese submit **crea y
+   lanza** en un solo acto; no existe un camino «crear definición sin
+   ejecutar». Registrar los IDs de la ejecución y de cada paso.
+5. **Revisión de contenido de `/cmh/os` con datos propios**, que sigue
+   abierta desde el punto 7. El comportamiento ya está verificado por
+   `scripts/cmh_os/realmode/run.sh` (12 de 12 contra backend real); lo que
+   falta es mirar que los proyectos, agentes y ejecuciones **propios** se vean
+   como se espera. El servidor en el puerto 7000 **no autoarranca**: si no
+   responde, relanzarlo desacoplado con `DEBUG=false` y `APP_PORT=7000`.
+   - Medido el 2026-09-25: la instalación tiene **una sola cuenta**,
+     `mijhael hartley`, y pasa el control de administrador, porque
+     `owner_is_admin_or_single_user` trata al único usuario de una
+     instalación monousuario como administrador. No hace falta ningún rol
+     extra ni permisos de Windows.
+6. **Aprobación humana del piloto**, con la evidencia de los puntos limpios
+   6, 7, 8 y 9. El piloto y sus agentes **siguen pausados**; nada en el punto
+   9 los aprueba.
+7. **Sin push:** HEAD queda 2 commits por delante de `origin/dev`
+   (`e3ae1915`, `7f7795e5`). Decidir si se publica.
+8. **Pendiente de código, en su propio commit:** la inversión de prioridad que
+   el revisor midió y que sobrevive al punto 9 (`llm_core.py:123` deja el
+   contador en 0 mientras un llamador de primer plano todavía genera). Exige
+   su propia prueba; no debe colarse en un commit que arregle otra cosa.
 
 ## Punto limpio 6: piloto en la nube (2026-09-24)
 
@@ -280,3 +316,88 @@ autorizó hacerlo sobre una **instancia desechable** en vez de su instalación.
 ### Decisión registrada
 
 Los **límites por ejecución** (iteraciones, tiempo, presupuesto y prioridad) que el estado listaba como pendientes de backend **no se implementaron**, y no por falta de tiempo: la especificación UX documenta lo contrario —«en modo real se elige una definición de flujo existente; presupuesto, iteraciones y timeout se muestran deshabilitados con el motivo»—. Implementarlos sería diseño nuevo sin criterios de aceptación, no completar una función incompleta. ADR-013 fija el límite de iteraciones por ejecución en 40 para la interfaz, mientras el backend usa `max_steps=12` **por paso** y no guarda la prioridad. Lo que falta antes de construir: definir qué cuenta como iteración del lado del servidor, dónde se persiste el límite y qué hace una ejecución que lo alcanza.
+
+
+## Punto limpio 9: compuerta de primer plano y pila local (2026-09-28)
+
+- **Estado Git:** rama `dev`, commits **`e3ae1915`** (`Let a watched workflow step hold the local model slot`) y **`7f7795e5`** (`Correct the local-slot rationale and close the review's coverage gaps`), sobre `9854abf4`. Árbol limpio; **sin push** (HEAD queda 2 commits por delante de `origin/dev`). Modificados: `src/llm_core.py`, `src/task_scheduler.py`, `static/index.html`, `tests/test_cmh_restricted_loop.py`, `tests/test_cmh_os_routes.py`. Nuevo: `tests/test_local_model_slot_counter.py`.
+- **Queda un stash colgado:** `stash@{0}: On dev: fase3b-temp`. `git stash push -u` sobre OneDrive creó el stash pero **solo quitó el archivo no rastreado**, dejando las modificaciones rastreadas en el árbol. Su contenido ya está en los dos commits. Descartarlo es decisión del usuario. Lección: sobre OneDrive, medir HEAD limpio se hace con `git archive`, no con stash.
+
+### Capacidades cerradas
+
+1. **Un paso de flujo lanzado a mano ya puede adquirir el modelo local.** `_run_agent_loop` pasaba `workload="background"` sin condición, así que en un endpoint local `_local_model_slot` lo hacía esperar mientras el navegador estuviera activo y lo cancelaba en plena generación ante cualquier pedido de primer plano. El latido del navegador sale cada 15 s (`static/app.js`) y mantiene `has_foreground_activity()` en cierto durante 45 s (`BACKGROUND_TASK_BROWSER_ACTIVE_SECONDS`), de modo que **el paso que el usuario estaba mirando nunca podía tomar el candado**. La bandera `foreground_controlled` ya existía desde el punto 3 pero solo salteaba el `wait_for_interactive_quiet` previo al bucle; ahora llega a la compuerta. Los dos llamadores del planificador (`:1525`, `:1674`) la omiten y siguen cediendo el paso.
+2. **Contabilidad exacta del contador de esperadores.** Un llamador de primer plano que adquiría el candado decrementaba `_LOCAL_MODEL_WAITING_FOREGROUND` dos veces —una tras adquirir y otra en el `finally`—, borrando la cuenta de un hermano todavía encolado. El `finally` es para el cancelado **mientras esperaba** y ahora corre solo entonces. Latente antes de este cambio, porque el chat era el único llamador de primer plano.
+3. **`/cmh/os` tiene entrada en la interfaz.** No había enlace en ninguna parte: la única vía era escribir la URL. Botón `OS` en el riel de iconos, junto al `CMH` que va a `/cmh` (el registro, no el Agentic OS).
+
+### Trueque declarado, no descubierto
+
+Primer plano no cancela a primer plano, así que **el chat ya no puede expropiar un paso de flujo**: se encola detrás. El candado se toma por generación HTTP y el FIFO descarta la inanición, pero con un modelo local esa generación puede ser de minutos (`agent_stream_timeout` por defecto 300 s) y el chat se ve colgado. Medido: `['step-in', 'step-out', 'chat-in after 0.61s']` sobre un paso simulado de 0,60 s. Que un paso lanzado a mano le gane al chat sobre la única GPU local es **decisión de operación, no técnica**; queda fijada por `test_foreground_callers_serialize_without_pre_emption`.
+
+### Pruebas realmente ejecutadas
+
+| Conjunto | Resultado |
+|---|---|
+| `test_local_model_slot_counter.py` (nuevo) | **8 de 8** |
+| `test_cmh_os_routes.py` | **27 de 27** |
+| 74 módulos que tocan `llm_core` | **1 019 aprobadas, 9 omitidas, 1 fallida** |
+| 23 módulos `test_cmh_*` + `test_task_*` + `test_endpoint*` | **256 de 256** |
+| `test_task_workspace.py` aparte | **13 de 13** |
+| `git diff --check` | sin errores |
+
+La única fallida es **preexistente y ambiental**: `test_model_routes.py::TestDockerLoopbackRewrite::test_rewrites_loopback_when_in_docker` falla **siempre que algo escuche en el puerto 1234**. Sustituye `_docker_host_gateway_reachable` pero no `_container_loopback_reachable`, que `_rewrite_loopback_for_docker` consulta primero (`routes/model_routes.py:317`). Medido: con el puerto 1234 vivo devuelve la URL sin tocar; con un puerto muerto (59999) reescribe a `host.docker.internal` como la prueba espera. **Defecto de la prueba, no del producto.** El revisor lo reprodujo y diagnosticó de forma independiente.
+
+### Revisión independiente
+
+Subagente `revisor-cmh` sobre el árbol congelado en `e3ae1915`, sin acceso al razonamiento del constructor. **Veredicto inicial DEVUELTO**: 0 críticos, 3 importantes, 3 menores, con 15 mutantes propios de los que **6 sobrevivieron** y 1 colgó. Midió el balance del contador en **6 de 6 caminos de salida: todos correctos**, y confirmó que no hay fuga del candado ni estado inconsistente de tarea o de run.
+
+Lo que devolvió el commit no fue la aritmética, sino **la razón registrada**:
+
+- La justificación escrita en `llm_core.py` afirmaba que un llamador de fondo «se adelantaba al de primer plano». **No se reproduce.** Verificado con medición propia además de la del revisor, mismo escenario (A primer plano con el candado, B primer plano encolado, C fondo sondeando): **orden idéntico con y sin el arreglo — `A, B, C`**. `asyncio.Lock` es FIFO, así que un llamador de fondo que sale del sondeo antes de tiempo igual se encola detrás del de primer plano que ya esperaba. La afirmación de orden fue **retirada** del comentario y del mensaje del commit.
+- El trueque contra el chat no estaba declarado (ver arriba).
+- Una prueba nueva **podía colgarse en vez de fallar**: el sondeo que esperaba el registro del esperador no tenía cota, y `pytest-timeout` **no está instalado** en este venv. El revisor lo midió como `HANG > 90 s` bajo la mutación que deja de contar esperadores. Todas las esperas pasan ahora por un ayudante con plazo que llama `pytest.fail`; re-medido bajo la misma mutación: **falla en 4,3 s**.
+
+Las tres mutaciones que habían sobrevivido a la revisión **ahora caen**:
+
+| Mutante | Antes | Ahora |
+|---|---|---|
+| M8 · sobre-decremento en la guarda nueva (`-1` a `-2`) | SOBREVIVIÓ | **CAUGHT** |
+| M17 · borrar el chequeo del contador del bucle de espera | SOBREVIVIÓ | **CAUGHT** |
+| M10 · el enlace del riel apuntando a `/cmh` | SOBREVIVIÓ | **CAUGHT** |
+
+M17 era el que más importaba: **el mecanismo que esta serie arregla podía borrarse con todas las pruebas en verde.**
+
+### Hallazgo abierto, no corregido a propósito
+
+El revisor midió una **inversión de prioridad que sobrevive a esta serie**: `llm_core.py:123` deja el contador en 0 mientras un llamador de primer plano todavía genera, así que una tarea programada que sondee en esa ventana puede tomar el candado antes que un llamador de primer plano que llegue después, y no es cancelada porque `_LOCAL_MODEL_CURRENT` todavía informa el `workload` de primer plano anterior. Traza del revisor:
+
+```
+A(fg step) holds slot
+counter while A holds = 0
+CURRENT workload seen by a newcomer = foreground
+A(fg step) released
+>>> C(bg task) GOT the slot
+>>> B(fg chat) GOT the slot
+```
+
+Es **preexistente**, pero esta serie convierte su ventana en la normal, porque al hacer primer plano al paso de flujo el contador queda en 0 durante toda la generación. Va en su propio commit con su propia prueba; no la tapa esta.
+
+### Pila local: LM Studio medido, Ollama caído
+
+- **Ollama (`:11434`) no responde.** Los **dos** endpoints locales de la base (`c6a553e7` y el duplicado `2345ab42`) apuntan ahí. El duplicado sigue con `supports_tools` vacío y **no se borró**: es un borrado y necesita autorización del usuario.
+- **LM Studio (`:1234`) está corriendo** y ningún endpoint lo apunta.
+- **Crash al cargar, causa raíz:** el runtime seleccionado es `llama.cpp-win-x86_64-vulkan-avx2@2.46.0` e intenta offload completo de **5,89 GiB** (`lms load --estimate-only`) sobre una iGPU Intel de **2,0 GB**. `exitCode=3221226505` = `0xC0000409`, *stack buffer overrun*. Reproducible 2 de 2. **Se resuelve con `--gpu 0.3` a `0.6`.**
+- **Velocidades medidas** (`google/gemma-4-e4b`, 7,5B / 6,33 GB, ctx 8192): CPU puro **1,68 tok/s**; `--gpu 0.3` **4,16**; `--gpu 0.6` **4,24**. Meseta en ~4,2 tok/s — el cuello es ancho de banda de memoria compartida del chip de 15W, no cómputo. Referencia del punto 4: Ollama `qwen3:8b` daba 2,7.
+- **Tool calling: PASA.** `finish_reason: tool_calls` con estructura nativa correcta y argumentos bien formados. `deepseek-r1:7b` fallaba justo ahí.
+- **Trampa al integrarlo:** si el endpoint pide el modelo y no hay nada cargado, LM Studio lo carga **con los ajustes por defecto, los que crashean**. Hay que fijar el offload como preferencia del modelo en la GUI. El endpoint necesita `supports_tools=1` o no se envían esquemas.
+- **No hecho, bloqueado:** registrar el endpoint de LM Studio en la base. El intento de escritura directa a `data/app.db` fue **denegado por clasificador** (modificar sistema en producción). Copia previa hecha: `data/backups/app-before-lmstudio-endpoint-20260927.db`, 802 816 bytes, `integrity_check=ok`. Debe hacerse por Settings → Model Endpoints, que además es la vía correcta.
+- **«Bionic» es un producto de LM Studio**, no BionicGPT: app Electron aparte, agente sobre el mismo runtime, con «Secure Cloud» (modelos abiertos frontier, retención cero). **No se pudo confirmar que exponga API para terceros**, así que como proveedor de modelos para Odysseus queda sin verificar; como aplicación es un par del Agentic OS, no un acelerador.
+
+### Implicancia para la mezcla de modelos
+
+A 4,2 tok/s una cadena de 5 pasos generando unos 5 500 tokens tarda **~22 minutos solo en generación**; la misma cadena en la nube tarda ~2 minutos. Además el contexto cargado fue 8 192 tokens y las dependencias de un flujo se truncan en 40 000 caracteres (~10 000 tokens), así que **un artefacto real no entra**. Los pasos tardíos (revisor, documentador), que son los que más dependencias acumulan, son los peores candidatos para local. Criterio registrado: local **solo** en `verificador` —entrada acotada, salida corta, conteos mecánicos— y nunca en `constructor` ni `revisor`, y solo después de que una corrida local supere la guardia `require_tool_evidence`.
+
+### Incidencias
+
+- Se corrió pytest, así que `core.database.init_db()` volvió a tocar la base activa. Esta vez **la copia se hizo antes**, no después.
+- La interfaz `/cmh/os` **sigue sin revisión de contenido con datos propios**, y el piloto y sus agentes **siguen pausados**. Nada en este punto los aprueba. `cmh_workflow_definitions` sigue en **0** y `cmh_agents` en **1**, con el único agente en `paused`: con un solo agente **no se puede crear ningún flujo**, porque `verificador` y `revisor` deben usar un agente distinto del `constructor` (`independent_of`, validado en servidor). Eso, y no un defecto, es lo que produce el mensaje «No hay flujos definidos» en `/cmh/os` a Nueva ejecución.
+- **La barra izquierda de Odysseus no está fallando.** El riel es un gestor de ventanas flotantes: `modalManager.js` documenta «closed → open, minimized → restore, open → minimize», con acople (`modalSnap.js`), mosaico (`tileManager.js`) y orden de apilado (`toolWindowZOrder.js`). La única ventana real del navegador en todo el código es `codeRunner.js:363`, que no es un botón del riel.
