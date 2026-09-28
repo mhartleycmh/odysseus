@@ -131,7 +131,11 @@ async def _local_model_slot(target_url: str, model: str, workload: Optional[str]
         })
         yield
     finally:
-        if kind == "foreground":
+        # The count is spent the moment the wait ends. A caller that acquired
+        # already gave it back above; decrementing again here erased a sibling
+        # that was still queued, and a background caller polling the counter
+        # then saw a clear field and jumped the foreground request.
+        if kind == "foreground" and not acquired:
             _LOCAL_MODEL_WAITING_FOREGROUND = max(0, _LOCAL_MODEL_WAITING_FOREGROUND - 1)
         if acquired and _LOCAL_MODEL_LOCK.locked():
             owner = _LOCAL_MODEL_CURRENT.get("task")

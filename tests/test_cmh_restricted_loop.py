@@ -25,7 +25,8 @@ def run(monkeypatch, tmp_path):
     workspace.mkdir()
     seen = {}
 
-    async def execute(chunks, allowed_tools=("glob", "grep", "ls", "read_file"), **loop_kwargs):
+    async def execute(chunks, allowed_tools=("glob", "grep", "ls", "read_file"),
+                      foreground_controlled=True, **loop_kwargs):
         async def fake_stream(**kwargs):
             seen.update(kwargs)
             for item in chunks:
@@ -37,7 +38,8 @@ def run(monkeypatch, tmp_path):
                                max_steps=12)
         output = await TaskScheduler(None)._run_agent_loop(
             "http://model.invalid", "m", task, "session", system_prompt="x", override_user_message="p",
-            foreground_controlled=True, event_sink=lambda kind, **payload: events.append((kind, payload)),
+            foreground_controlled=foreground_controlled,
+            event_sink=lambda kind, **payload: events.append((kind, payload)),
             **loop_kwargs)
         return output, events
 
@@ -98,6 +100,16 @@ async def test_unrestricted_tasks_keep_escalation_and_legacy_text(run):
     assert run.seen["allow_escalation"] is True
 
 
+@pytest.mark.parametrize("foreground_controlled, workload", [(True, "foreground"), (False, "background")])
+async def test_foreground_controlled_step_is_not_gated_as_background_work(run, foreground_controlled, workload):
+    # _local_model_slot makes a background caller wait while has_foreground_activity()
+    # is true and cancels it mid-generation for any foreground request. The browser
+    # heartbeat fires every 15 s and keeps that true for 45 s, so a workflow step the
+    # user launched and is watching could never acquire the local model.
+    await run([chunk({"delta": "Listo."}), "data: [DONE]\n\n"], foreground_controlled=foreground_controlled)
+    assert run.seen["workload"] == workload
+
+
 @pytest.mark.parametrize("tool_events", [
     [],
     [chunk({"type": "tool_start", "tool": "read_file"}),
@@ -147,9 +159,11 @@ def scheduled(monkeypatch, tmp_path):
     monkeypatch.setattr("src.tool_index.get_tool_index", lambda: None)
     fallback = AsyncMock(return_value="UNTRACED")
     monkeypatch.setattr("src.task_endpoint.task_llm_call_async", fallback)
+    seen = {}
 
     async def execute(chunks):
         async def fake_stream(**kwargs):
+            seen.update(kwargs)
             for item in chunks:
                 yield item
         monkeypatch.setattr(agent_loop, "stream_agent_loop", fake_stream)
@@ -157,6 +171,7 @@ def scheduled(monkeypatch, tmp_path):
             scheduled_pilot(tmp_path.resolve()), None)
 
     execute.fallback = fallback
+    execute.seen = seen
     return execute
 
 
@@ -176,3 +191,31 @@ async def test_scheduled_pilot_with_a_successful_tool_call_returns_its_answer(sc
         "data: [DONE]\n\n",
     ])
     assert output == "Hay una carpeta input/."
+
+
+async def test_scheduled_path_keeps_yielding_to_the_foreground(scheduled):
+    # The scheduled route must not inherit the workflow step's exemption:
+    # an automatic job still waits for the browser to go quiet.
+    await scheduled([
+        chunk({"type": "tool_start", "tool": "ls"}),
+        chunk({"type": "tool_output", "tool": "ls", "exit_code": 0, "output": "input/"}),
+        chunk({"delta": "Listo."}), "data: [DONE]\n\n",
+    ])
+    assert scheduled.seen["workload"] == "background"
+
+
+async def test_workflow_step_declares_itself_foreground_controlled(monkeypatch, tmp_path):
+    # Connects the wire: without this, the fix above is unreachable from a flow.
+    import src.cmh_workflows as cmh_workflows
+    seen = {}
+
+    async def fake_loop(self, endpoint_url, model, task, session_id, **kwargs):
+        seen.update(kwargs)
+        return "artefacto"
+
+    monkeypatch.setattr(TaskScheduler, "_run_agent_loop", fake_loop)
+    config = {"run_id": "r", "step_key": "constructor", "agent_id": "a", "model": "m", "owner": "admin",
+              "name": "constructor", "workspace": str(tmp_path), "allowed_tools": ["ls"],
+              "endpoint_url": "http://model.invalid", "instructions": "x"}
+    assert await cmh_workflows.call_model(config, "objetivo") == "artefacto"
+    assert seen["foreground_controlled"] is True

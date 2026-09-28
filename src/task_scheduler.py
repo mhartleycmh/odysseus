@@ -1995,7 +1995,14 @@ class TaskScheduler:
             fallbacks=_task_fallbacks,
             workspace=task_workspace,
             tool_policy=tool_policy,
-            workload="background",
+            # A caller that owns the foreground (a CMH workflow step launched by
+            # hand and watched in /cmh/os) must not be gated as background work:
+            # on a local endpoint _local_model_slot makes background callers wait
+            # while the browser is active and cancels them mid-generation for any
+            # foreground request. The browser heartbeat fires every 15 s and keeps
+            # has_foreground_activity() true for 45 s, so the step the user is
+            # watching could never acquire the slot. Scheduled tasks keep yielding.
+            workload="foreground" if foreground_controlled else "background",
             # A restricted run must be answered by its own model only.
             allow_escalation=allowed_tools is None,
         ):
