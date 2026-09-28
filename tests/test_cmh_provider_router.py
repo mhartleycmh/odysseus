@@ -441,3 +441,37 @@ async def test_an_old_run_without_the_flag_still_requires_evidence(flow_db, monk
     config.pop("require_tool_evidence", None)
     await flow.call_model(config, "prompt")
     assert seen["require_tool_evidence"] is True
+
+
+# --- OpenRouter free-model discovery (§3.3) ---------------------------------
+
+from src.cmh_provider_router import pick_openrouter_free_model  # noqa: E402
+
+_MODELS = {"data": [
+    {"id": "paid/big", "supported_parameters": ["tools"], "context_length": 1000000},
+    {"id": "free/no-tools:free", "supported_parameters": ["temperature"], "context_length": 900000},
+    {"id": "free/small:free", "supported_parameters": ["tools"], "context_length": 8192},
+    {"id": "free/large:free", "supported_parameters": ["tools"], "context_length": 131072},
+]}
+
+
+def test_the_longest_free_model_with_tool_calling_wins():
+    assert pick_openrouter_free_model(_MODELS) == "free/large:free"
+
+
+def test_a_paid_model_never_wins_however_large():
+    """The 1M-context model is not ':free'; it must not be chosen."""
+    assert pick_openrouter_free_model(_MODELS) != "paid/big"
+
+
+def test_a_free_model_without_tool_calling_is_skipped():
+    only_untooled = {"data": [{"id": "free/x:free", "supported_parameters": ["temperature"],
+                               "context_length": 900000}]}
+    assert pick_openrouter_free_model(only_untooled) is None
+
+
+def test_malformed_payloads_do_not_raise():
+    for payload in (None, {}, {"data": None}, {"data": ["junk", 3]},
+                    {"data": [{"id": "a:free", "supported_parameters": ["tools"],
+                               "context_length": "no es un numero"}]}):
+        pick_openrouter_free_model(payload)

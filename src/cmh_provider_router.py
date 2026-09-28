@@ -274,3 +274,44 @@ def is_fallback_error(exc: BaseException) -> Optional[str]:
     if name in {"ConnectTimeout", "ReadTimeout", "ConnectError", "ReadError", "PoolTimeout"}:
         return f"connection:{name}"
     return None
+
+
+def pick_openrouter_free_model(models: Any) -> Optional[str]:
+    """First `:free` model that declares tool calling, longest context first.
+
+    The rule the brief fixes, kept pure so it can be tested without a key: the
+    payload of ``GET /models`` goes in, a model id comes out.
+
+    A model that does not declare ``tools`` is skipped rather than tried. The
+    chain's steps read files, so a model without tool calling cannot satisfy
+    ``require_tool_evidence`` and would burn a step's whole round budget before
+    failing — the 2026-09-24 measurement of `deepseek-r1:7b`, which answered
+    fluently and never called a tool.
+
+    Longest context first because the late steps carry every earlier artifact,
+    and a dependency is cut at 40 000 characters per artifact.
+    """
+    # One definition of what ":free" means, shared with the cost gate: if the
+    # two ever disagreed, the router would freeze a model the gate then blocks.
+    from src.cmh_cost_policy import _FREE_SUFFIX
+
+    # `or []` on both branches: a provider that answers {"data": null} is a
+    # bad payload, not a crash in the step that asked which model to use.
+    entries = (models.get("data") if isinstance(models, dict) else models) or []
+    usable = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = str(entry.get("id") or "")
+        if not model_id.lower().endswith(_FREE_SUFFIX):
+            continue
+        supported = entry.get("supported_parameters") or []
+        if "tools" not in [str(p).lower() for p in supported]:
+            continue
+        try:
+            context = int(entry.get("context_length") or 0)
+        except (TypeError, ValueError):
+            context = 0
+        usable.append((-context, model_id))
+    usable.sort()
+    return usable[0][1] if usable else None

@@ -313,3 +313,115 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
 - `CMH_OS_UI_ENABLED` (por defecto `true`) y `CMH_OS_DEFAULT_MODE`
   (`auto` | `demo`). Se leen en el servidor y se exponen sin secretos en
   `GET /api/cmh/os/config`. Se documentan en `.env.example`.
+
+---
+
+## ADR-019 · Compuerta de costo cero por host, con su límite declarado
+
+- **Contexto.** Decisión D1 del usuario (2026-09-28): ningún agente, paso de
+  flujo ni automatización llama a un endpoint de pago. El endpoint Anthropic
+  `9a76d7a3` no se borra: sirve al chat personal y queda excluido de la cadena.
+- **Decisión.** `src/cmh_cost_policy.py` clasifica una ruta como gratuita si el
+  endpoint es un runtime local o si su host está en `FREE_HOSTS`
+  (`api.groq.com`, `api.cerebras.ai`, `openrouter.ai`); en OpenRouter exige
+  además que el modelo termine en `:free`, y un modelo desconocido **falla
+  cerrado**. Coincidencia de host **exacta**, nunca por sufijo.
+- **Cuatro sitios de aplicación**, no tres: enlazar agente y tarea
+  (`cmh_control_routes._validate_task_link`), crear la definición
+  (`_assert_definition_zero_cost`), congelar el run (`_snapshot`) y por
+  candidato en `cmh_workflows.call_model`. El tercero se añadió porque una
+  definición solo guarda un `agent_id`: repuntar el agente después de guardarla
+  dejaba pasar una ruta de pago, y hay una prueba que lo demuestra.
+- **Límite declarado, no implícito.** La clasificación es **por host**: no puede
+  ver si una cuenta tiene método de pago, así que un nivel gratuito y uno de
+  pago sobre el mismo host le resultan idénticos. Esa mitad de la garantía es
+  operativa —las cuentas se registran sin tarjeta— y está escrita en el módulo.
+- **`endpoint_kind = "auto"` cuenta como local solo con host loopback.** El
+  valor por defecto en la base es `auto`; exigir la cadena literal `"local"`
+  habría bloqueado un endpoint loopback que nadie reetiquetó. `api` y `proxy`
+  nunca cuentan como locales, ni sobre una URL loopback: quien los etiquetó así
+  declaró un túnel.
+- **Descartado: reutilizar `endpoint_cost_tracked`** (`src/endpoint_resolver.py`).
+  Responde «¿contabilizo costo?» con una heurística sobre cualquier host global
+  y devuelve verdadero para los tres proveedores gratuitos por igual.
+  Reutilizarlo habría bloqueado exactamente lo que D3 quiere usar.
+
+## ADR-020 · Un paso congela una lista de candidatos, no una ruta
+
+- **Contexto.** Decisión D3: APIs gratuitas primero, local como respaldo. Un
+  paso que congelaba un solo `endpoint_url` moría con su proveedor.
+- **Decisión.** El run congela una **lista ordenada** de candidatos
+  (`src/cmh_provider_router.resolve_candidates`) y el ejecutor la recorre. Se
+  conserva la semántica de «congelado por paso» del punto limpio 3: lo que un
+  paso va a llamar no cambia bajo sus pies a mitad de ejecución.
+- **Orden de eliminación: costo → cuota → alcanzabilidad.** El costo primero,
+  para que una ruta de pago no se intente ni cuando todo lo demás ha fallado;
+  la cuota antes de enviar, para que la llamada que cruzaría el límite no se
+  haga; la alcanzabilidad al final, porque es lo único que solo se aprende
+  intentando.
+- **Solo las negativas a responder cambian de proveedor**: 402, 408, 429, 5xx y
+  timeouts. Un 401 o un 400 es un defecto de configuración que el proveedor
+  siguiente encontraría igual, así que detiene el paso donde ocurrió.
+- **Precedencia de política: paso > agente > automatización.** Por
+  especificidad, no por quién la escribió último. Un nombre de política no
+  reconocido no se honra: cae al valor por defecto en vez de convertirse en
+  política por un error de tecleo.
+- **Sin respaldo de pago.** Si ningún candidato gratuito sirve, el paso falla.
+
+## ADR-021 · Las cuotas se cuentan aquí, y son una estimación de las del proveedor
+
+- **Decisión.** Tabla nueva `cmh_provider_quota` con ventana **explícita y
+  truncada** (`minute`, `day`) por endpoint: «cuánto se gastó hoy» es una
+  búsqueda, no un recorrido del historial de peticiones. Los límites viven en
+  `config/cmh_free_quotas.json` con `source_url` y `source_date`.
+- **Descartado: ventana deslizante.** Necesitaría justo el registro de
+  peticiones que esta tabla existe para no llevar.
+- **El umbral es 0,9 y es un margen, no un adorno.** Nuestro conteo ve las
+  llamadas de esta instalación y no ve ni el reloj del proveedor ni a sus otros
+  clientes. El 10 % restante absorbe esa diferencia en vez de fingir que no
+  existe.
+- **Un límite nulo significa no medido, nunca ilimitado.** Ninguna cifra del
+  JSON está verificada todavía: las tres llevan `verified: false` y un
+  `PENDIENTE` que nombra qué leer en el panel del proveedor. `GET /api/cmh/quotas`
+  propaga ese `verified` para que la interfaz no pueda pintar una suposición
+  como medición.
+
+## ADR-022 · Las instrucciones que salen de la máquina se derivan, no se recortan
+
+- **Contexto.** Las instrucciones de los cinco agentes viajan a proveedores
+  externos. El plan era una copia depurada: quitar cifras financieras, nombres
+  de archivos financieros, rutas locales y nombres de personas.
+- **Medición que cambió el enfoque.** Sobre los cinco originales, **35
+  instrucciones nombran una capacidad que un paso de Odysseus no tiene**:
+  invocar a otro agente (14), leer el canon o `fuentes/` (8), correr Bash (6),
+  escribir archivos (5), la web (2). Un paso tiene `read_file, ls, grep, glob` y
+  una carpeta sin nada de eso. El recorte línea a línea se intentó primero y
+  produjo frases truncadas y un procedimiento que mandaba al verificador
+  «correr» una frase.
+- **Decisión.** Cada rol se reescribe alrededor de lo que su paso puede hacer,
+  conservando las reglas de gobierno del original —no autoevaluarse, conteos y
+  no adjetivos, `PENDIENTE` nunca un cero silencioso, el formato del veredicto,
+  la tabla de severidad, la cobertura declarada— y soltando su mecánica.
+  `scripts/cmh_seed/scrub_instructions.py` genera los cinco archivos y audita:
+  cuántas líneas del original sobreviven literales, cuántas no, y las lista.
+- **Razón.** Una instrucción que no se puede seguir produce la disculpa que la
+  guardia de evidencia rechaza. Copiarla literal no es fidelidad: es un fracaso
+  programado.
+- **Control de fuga con autoprueba.** Seis patrones (ruta absoluta, OneDrive,
+  `.xlsx`, plantilla, importe con moneda, ratio o covenant nombrado) medidos
+  contra el cuerpo derivado, no contra la cabecera que el propio guion escribe,
+  y probados contra sondas que deben disparar.
+
+## ADR-023 · La guardia de evidencia de herramientas se enciende por rol
+
+- **Contexto.** Pendiente del canon 06 del 2026-09-24: la guardia existía y
+  estaba verificada para tareas programadas, pero `cmh_workflows.call_model`
+  nunca pasaba la bandera, así que un paso con **cero** llamadas exitosas
+  producía artefacto igual y lo pasaba al siguiente.
+- **Decisión.** La definición lo decide por paso y el run congela la respuesta.
+  Por defecto `true`; `revisor` y `documentador` son las excepciones
+  deliberadas, porque trabajan sobre los artefactos que recibieron y no sobre
+  los archivos.
+- **Un run congelado antes de que esto existiera se lee como `true`.** El valor
+  laxo es el tentador y habría eximido en silencio a toda ejecución anterior.
+  Fijado por prueba.
