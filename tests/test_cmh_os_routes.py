@@ -312,7 +312,7 @@ def workflow_client(monkeypatch, tmp_path):
     monkeypatch.setattr(workflow_routes, "validate_task_workspace", lambda workspace, owner, persisted=True: workspace)
     with factory() as db:
         for key in ("a", "b"):
-            db.add(cdb.ScheduledTask(id=f"task-{key}", owner="admin", name=key, task_type="llm", endpoint_url="http://model.invalid",
+            db.add(cdb.ScheduledTask(id=f"task-{key}", owner="admin", name=key, task_type="llm", endpoint_url="http://127.0.0.1:59999/v1",
                                      model=f"model-{key}", prompt="unused", status="paused"))
             db.add(cdb.CMHAgent(id=f"agent-{key}", owner="admin", name=key, project_id="project", role=key, instructions=key,
                                 model=f"model-{key}", allowed_tools=json.dumps(["read_file"]), workspace=str(tmp_path),

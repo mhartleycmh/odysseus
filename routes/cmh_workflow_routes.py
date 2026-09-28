@@ -13,6 +13,7 @@ from core.database import (
     CMHWorkflowRun, CMHWorkflowStep, ScheduledTask, SessionLocal, utcnow_naive,
 )
 from routes.cmh_control_routes import _admin, _owner, catalog, protected_area
+from src.cmh_cost_policy import ZeroCostViolation, assert_zero_cost_url
 from src.cmh_workflows import (
     READ_TOOLS, event, is_active, release_stranded_steps, start, stop, validate_dag,
 )
@@ -52,6 +53,30 @@ def _owned_run(db, run_id, owner):
     return run
 
 
+def _assert_definition_zero_cost(db, owner, steps) -> None:
+    """Refuse a definition whose steps already point at a paid route (D1).
+
+    Only what is resolvable now is judged: a step whose agent has no linked
+    task yet has no route to classify, and ``_snapshot`` gates it at run
+    creation, where the route stops being hypothetical. Catching it here as
+    well means the user is told at the moment they can still change the step,
+    instead of at the moment they press run.
+    """
+    for spec in steps:
+        agent = db.query(CMHAgent).filter(CMHAgent.id == spec["agent_id"],
+                                          CMHAgent.owner == owner).first()
+        if not agent or not agent.task_id:
+            continue
+        task = db.query(ScheduledTask).filter(ScheduledTask.id == agent.task_id,
+                                              ScheduledTask.owner == owner).first()
+        if not task or not task.endpoint_url:
+            continue
+        try:
+            assert_zero_cost_url(db, task.endpoint_url, agent.model, owner)
+        except ZeroCostViolation as exc:
+            raise HTTPException(400, f"Step {spec['key']}: {exc}") from exc
+
+
 def _snapshot(db, owner, project_id, spec):
     agent = db.query(CMHAgent).filter(CMHAgent.id == spec["agent_id"],
                                       CMHAgent.owner == owner,
@@ -77,6 +102,12 @@ def _snapshot(db, owner, project_id, spec):
     area = protected_area(workspace)
     if area:
         raise HTTPException(400, f"Step {spec['key']} workspace lies in or contains the protected area {area}")
+    # Zero cost (D1) on the route this step freezes. The strongest of the
+    # gate's positions: whatever the definition said, this is what will run.
+    try:
+        assert_zero_cost_url(db, task.endpoint_url, agent.model, owner)
+    except ZeroCostViolation as exc:
+        raise HTTPException(400, f"Step {spec['key']}: {exc}") from exc
     return {"owner": owner, "name": agent.name, "agent_id": agent.id,
             "instructions": agent.instructions, "instructions_version": agent.instructions_version,
             "model": agent.model, "endpoint_url": task.endpoint_url,
@@ -104,6 +135,7 @@ def setup_cmh_workflow_routes() -> APIRouter:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         with SessionLocal() as db:
+            _assert_definition_zero_cost(db, owner, steps)
             row = CMHWorkflowDefinition(id=str(uuid.uuid4()), owner=owner,
                                         project_id=body.project_id, name=body.name.strip(),
                                         version=1, steps=json.dumps(steps))

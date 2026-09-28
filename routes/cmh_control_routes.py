@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from core.database import CMHAgent, ScheduledTask, SessionLocal, TaskRun
 from src.auth_helpers import get_current_user
+from src.cmh_cost_policy import ZeroCostViolation, assert_zero_cost_url
 from src.task_workspace import validate_task_tools, validate_task_workspace
 from src.tool_security import owner_is_admin_or_single_user
 
@@ -160,12 +161,27 @@ def _validated_input(body: AgentInput, owner: str):
     return workspace, tools
 
 
-def _validate_task_link(db, task_id: Optional[str], owner: str) -> None:
-    if task_id and not db.query(ScheduledTask).filter(
+def _validate_task_link(db, task_id: Optional[str], owner: str,
+                        model: Optional[str] = None) -> None:
+    if not task_id:
+        return
+    task = db.query(ScheduledTask).filter(
         ScheduledTask.id == task_id, ScheduledTask.owner == owner,
         ScheduledTask.task_type == "llm",
-    ).first():
+    ).first()
+    if not task:
         raise HTTPException(400, "Task must be an owned LLM task")
+    # Zero cost (D1): an agent may not be pointed at a paid route. Checked on
+    # the linked task's endpoint, which is what its steps will actually call.
+    # A task with no endpoint yet has no route to price, and no run can start
+    # from it either: ``_snapshot`` refuses it with its own 400. Refusing it
+    # here as "not provably free" would block linking a task still being set up.
+    if not task.endpoint_url:
+        return
+    try:
+        assert_zero_cost_url(db, task.endpoint_url, model, owner)
+    except ZeroCostViolation as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _recent_runs(db, agents: list[CMHAgent]) -> list[dict]:
@@ -251,7 +267,7 @@ def setup_cmh_control_routes() -> APIRouter:
         _admin(owner)
         workspace, tools = _validated_input(body, owner)
         with SessionLocal() as db:
-            _validate_task_link(db, body.task_id, owner)
+            _validate_task_link(db, body.task_id, owner, body.model)
             agent = CMHAgent(
                 id=uuid.uuid4().hex, owner=owner, name=body.name.strip(),
                 project_id=body.project_id, role=body.role.strip(),
@@ -272,7 +288,7 @@ def setup_cmh_control_routes() -> APIRouter:
         _admin(owner)
         workspace, tools = _validated_input(body, owner)
         with SessionLocal() as db:
-            _validate_task_link(db, body.task_id, owner)
+            _validate_task_link(db, body.task_id, owner, body.model)
             agent = db.query(CMHAgent).filter(CMHAgent.id == agent_id, CMHAgent.owner == owner).first()
             if not agent:
                 raise HTTPException(404, "Agent not found")

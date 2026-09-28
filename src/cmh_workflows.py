@@ -140,13 +140,50 @@ def _dependency_input(db, run_id, key, artifact):
             f"del artefacto {artifact.id}; el resto no fue visto por este paso]")
 
 
+def _zero_cost_candidates(config: dict, record) -> list[dict]:
+    """The step's candidates that are free to call, in order (D1).
+
+    Today a step freezes one route, so the list has one entry; §3.3 turns it
+    into the router's ordered candidate list without changing this contract.
+    Every rejected candidate emits ``zero_cost_blocked`` whether or not the
+    gate is enforcing, so ``CMH_ZERO_COST=false`` is diagnosable and not silent.
+    """
+    from src.cmh_cost_policy import endpoint_for_url, is_zero_cost_endpoint
+
+    candidates = config.get("candidates") or [
+        {"endpoint_url": config["endpoint_url"], "model": config["model"]}
+    ]
+    allowed = []
+    with SessionLocal() as db:
+        for candidate in candidates:
+            url, model = candidate.get("endpoint_url"), candidate.get("model")
+            endpoint = endpoint_for_url(db, url, config.get("owner"), model) or {
+                "base_url": url, "endpoint_kind": "auto", "id": "no registrado"}
+            if is_zero_cost_endpoint(endpoint, model):
+                allowed.append(candidate)
+            else:
+                record("zero_cost_blocked", endpoint_url=url, candidate_model=model)
+    return allowed
+
+
 async def call_model(config: dict, prompt: str) -> str:
     from src.task_scheduler import TaskScheduler
+    from src.cmh_cost_policy import ZeroCostViolation, enforced
     def record(kind, **payload):
         with SessionLocal() as db:
             event(db, config["run_id"], kind, config["step_key"],
                   agent_id=config["agent_id"], model=config["model"], **payload)
             db.commit()
+    allowed = _zero_cost_candidates(config, record)
+    if not allowed and enforced():
+        # No fallback: a step with no free route fails rather than reaching a
+        # paid one. The blocked candidates are already on the event stream.
+        raise ZeroCostViolation(
+            f"Costo cero (D1): el paso {config['step_key']} no tiene ningun "
+            f"candidato gratuito; no se usa respaldo de pago.")
+    if allowed:
+        config = {**config, "endpoint_url": allowed[0]["endpoint_url"],
+                  "model": allowed[0]["model"]}
     task = SimpleNamespace(
         owner=config["owner"], name=config["name"], prompt=prompt,
         workspace=config["workspace"], allowed_tools=json.dumps(config["allowed_tools"]),

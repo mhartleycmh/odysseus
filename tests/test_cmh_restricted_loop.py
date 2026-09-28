@@ -216,6 +216,6 @@ async def test_workflow_step_declares_itself_foreground_controlled(monkeypatch, 
     monkeypatch.setattr(TaskScheduler, "_run_agent_loop", fake_loop)
     config = {"run_id": "r", "step_key": "constructor", "agent_id": "a", "model": "m", "owner": "admin",
               "name": "constructor", "workspace": str(tmp_path), "allowed_tools": ["ls"],
-              "endpoint_url": "http://model.invalid", "instructions": "x"}
+              "endpoint_url": "http://127.0.0.1:59999/v1", "instructions": "x"}
     assert await cmh_workflows.call_model(config, "objetivo") == "artefacto"
     assert seen["foreground_controlled"] is True
