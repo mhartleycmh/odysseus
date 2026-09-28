@@ -401,3 +401,34 @@ A 4,2 tok/s una cadena de 5 pasos generando unos 5 500 tokens tarda **~22 minuto
 - Se corrió pytest, así que `core.database.init_db()` volvió a tocar la base activa. Esta vez **la copia se hizo antes**, no después.
 - La interfaz `/cmh/os` **sigue sin revisión de contenido con datos propios**, y el piloto y sus agentes **siguen pausados**. Nada en este punto los aprueba. `cmh_workflow_definitions` sigue en **0** y `cmh_agents` en **1**, con el único agente en `paused`: con un solo agente **no se puede crear ningún flujo**, porque `verificador` y `revisor` deben usar un agente distinto del `constructor` (`independent_of`, validado en servidor). Eso, y no un defecto, es lo que produce el mensaje «No hay flujos definidos» en `/cmh/os` a Nueva ejecución.
 - **La barra izquierda de Odysseus no está fallando.** El riel es un gestor de ventanas flotantes: `modalManager.js` documenta «closed → open, minimized → restore, open → minimize», con acople (`modalSnap.js`), mosaico (`tileManager.js`) y orden de apilado (`toolWindowZOrder.js`). La única ventana real del navegador en todo el código es `codeRunner.js:363`, que no es un botón del riel.
+
+### Cierre del hallazgo abierto y segunda revisión (2026-09-28)
+
+Dos commits más sobre los tres del punto 9: **`27754585`** (`Stop background work queueing while a foreground caller generates`) y **`f17af6aa`** (`Bound the module's own waits and correct what defers a scheduled task`). HEAD queda **5 commits** por delante de `origin/dev`, sin push.
+
+**La inversión que el punto 9 dejó abierta está cerrada.** Reproducida primero de forma independiente, sin fiarse de la traza del revisor: con solo `/cmh/os` abierto —que no manda latido, así que `has_foreground_activity()` es falso y el contador es lo único que frena al fondo— el orden medido era `['C(bg task)', 'B(fg chat)']`. Un llamador de primer plano gasta su cuenta al adquirir, así que durante toda su generación el contador marca 0. El bucle de espera de la rama de fondo cede ahora también mientras un primer plano **tiene** el candado. Después del arreglo: `['B(fg chat)', 'C(bg task)']`, y el de fondo **ni siquiera entra a la cola**.
+
+**La cláusula del contador es defensa, no garantía de orden.** Al correr mutaciones apareció que la cláusula nueva volvía superviviente a M17. Medido en la única ventana donde la vieja es el único guardia (candado libre, primer plano contado pero sin reanudar de `acquire()`, `CURRENT` vacío): el orden es `['fg','bg']` **con y sin** la cláusula, porque `asyncio.Lock` es FIFO. Lo único observable es si el llamador de fondo entra o no en la cola: **1 esperador contra 2**. Eso es lo que fija la prueba, y con eso M17 quedó cerrado de verdad. El revisor lo confirmó con 8+8 ensayos, 16 de 16 consistentes.
+
+**Segunda revisión independiente, sobre `27754585`: veredicto DEVUELTO** — 0 críticos, 2 importantes, 2 menores, con 18 mutantes propios de los que 6 sobrevivieron y **3 se colgaron**. Confirmó el arreglo cargando ambos commits como módulos separados y reconstruyendo el escenario, y fuzzeó el candado **2 882 253 muestras en 40 rondas con 0 violaciones** del invariante «`CURRENT` poblado ⟹ candado tomado». No halló `CURRENT` obsoleto alcanzable, ni interbloqueo, ni inanición indefinida.
+
+Los dos importantes, ambos sobre afirmaciones y cobertura, no sobre el arreglo:
+
+1. **El módulo de prueba afirmaba en falso su propio invariante.** Su cabecera dice «Every wait in this module is bounded» y dos `gather` escritos en la ronda anterior no lo estaban. Tres mutantes **no daban veredicto**: cláusula del contador que siempre cede, no limpiar nunca `CURRENT`, y `CURRENT` registrando `task=None`. El del medio es justo la regresión que la cláusula nueva vuelve catastrófica —antes de `27754585` un `CURRENT` viejo era inocuo para la rama de fondo; ahora la hace ceder para siempre— y `pytest-timeout` **no está instalado** en este venv. Acotadas las dos esperas; re-medido: los tres **fallan en ~30 s** en vez de colgarse más allá de 600.
+2. **«La ruta de cancelación del planificador ya aterriza limpio» no aplica donde se ofreció.** Verificado en el código: `_cancel_if_foreground_active` (`task_scheduler.py:916-934`) solo dispara con `has_foreground_activity()` en cierto, y el caso para el que existe esta serie es el contrario. La tarea diferida gira en `llm_core.py:124` con su `TaskRun.status = "running"` (`:889`) y el único permiso de `_run_semaphore(1)` (`:376`, tomado en `:787`) retenido, así que **toda otra tarea programada espera detrás** mientras dure la cadena. Acotado por la cadena y sin interbloqueo, pero la mitigación invocada no existe en esa ventana. La afirmación fue **retirada** y sustituida por lo medido, en el comentario del código, con `TaskDeferred` nombrado como el arreglo y la razón de no tomarlo aquí: exige elegir un plazo, que es diseño nuevo.
+
+Los dos menores también cerrados, en una sola prueba: un mutante que blanquea `has_foreground_activity()` y otro que convierte el sondeo de 0,25 s en `sleep(0)` dejaban el módulo en verde. El segundo **no es equivalente**: quema un núcleo exactamente mientras la compuerta protege al primer plano. La prueba cuenta sondeos en una ventana fija, así que fija la cláusula y el sueño a la vez.
+
+**Los cinco mutantes que la revisión dejó abiertos ahora caen, ninguno cuelga:**
+
+| Mutante | Antes | Ahora |
+|---|---|---|
+| M5 · la cláusula del contador siempre cede | COLGABA | **CAUGHT** |
+| M9 · nunca limpiar `CURRENT` | COLGABA | **CAUGHT** |
+| M18 · `CURRENT` registra `task=None` | COLGABA | **CAUGHT** |
+| M4 · cláusula del navegador blanqueada | SOBREVIVÍA | **CAUGHT** |
+| M14 · el sondeo se vuelve bucle ocupado | SOBREVIVÍA | **CAUGHT** |
+
+**Pruebas:** 1 022 aprobadas, 9 omitidas en los 74 módulos que tocan `llm_core`; el módulo del candado 11 de 11. La única fallida sigue siendo la ambiental del puerto 1234, que el revisor volvió a confirmar con `netstat` (PID 24716 escuchando).
+
+**Queda abierto, registrado en `06_pendientes_abiertos.md`:** la tarea diferida que retiene el semáforo con su corrida en `running`, y la inversión residual con **dos** llamadores de fondo concurrentes —cuando `bg1` tiene el candado, `CURRENT` vale `"background"` y ninguna cláusula frena a `bg2`; el primer plano que llega cancela a `bg1` pero queda detrás de `bg2`—. Medida por el revisor, idéntica antes y después: `['bg1-in', 'bg1-cancelled', 'bg2', 'FG']`. Preexistente; cerrarla depende de si hay dos productores de fondo concurrentes en la práctica, que es decisión de operación.
