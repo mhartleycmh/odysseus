@@ -195,6 +195,17 @@ def _recent_runs(db, agents: list[CMHAgent]) -> list[dict]:
             for run in runs]
 
 
+def _window_reset(kind: str, window_start_iso: str) -> str:
+    """When this window turns over, so the interface can show a real hour.
+
+    Ours, not the provider's: their reset clock is not exposed, and presenting
+    our truncation as theirs would be a number that looks measured and is not.
+    """
+    from datetime import datetime, timedelta
+    span = timedelta(minutes=1) if kind == "minute" else timedelta(days=1)
+    return (datetime.fromisoformat(window_start_iso) + span).isoformat()
+
+
 def setup_cmh_control_routes() -> APIRouter:
     router = APIRouter(prefix="/api/cmh", tags=["cmh-control"])
 
@@ -250,6 +261,51 @@ def setup_cmh_control_routes() -> APIRouter:
             item["agents"] = [_agent_dict(agent) for agent in linked]
             item["recent_runs"] = _recent_runs(db, linked)
         return item
+
+    @router.get("/quotas")
+    def quotas(request: Request):
+        """Free-tier consumption per provider and window, for the interface.
+
+        Reports our own count, which is an estimate of the provider's: it sees
+        this installation's calls and nothing else. ``verified`` carries through
+        from the config so a limit nobody has confirmed is not displayed as if
+        somebody had, and a null limit is reported as unmeasured, not infinite.
+        """
+        from src.cmh_provider_router import (
+            load_quota_config, quota_exceeded, usage_snapshot, window_start,
+        )
+        owner = _owner(request)
+        _admin(owner)
+        config = load_quota_config()
+        threshold = float(config.get("threshold", 0.9))
+        from core.database import ModelEndpoint
+        from src.cmh_cost_policy import endpoint_host
+        result = []
+        with SessionLocal() as db:
+            rows = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True).all()  # noqa: E712
+            for provider in sorted(config.get("providers", []), key=lambda p: p.get("order", 99)):
+                host = str(provider.get("endpoint_host", "")).lower()
+                match = next((r for r in rows if endpoint_host(r.base_url) == host), None)
+                limits = provider.get("limits") or {}
+                entry = {
+                    "host": host, "model": provider.get("model"),
+                    "registered": match is not None,
+                    "endpoint_id": match.id if match else None,
+                    "limits": limits, "verified": bool(provider.get("verified")),
+                    "source_url": provider.get("source_url"),
+                    "source_date": provider.get("source_date"),
+                    "threshold": threshold, "blocked_by": None, "windows": {},
+                }
+                if match:
+                    entry["windows"] = usage_snapshot(db, match.id)
+                    entry["blocked_by"] = quota_exceeded(db, match.id, limits, threshold)
+                for kind in ("minute", "day"):
+                    entry["windows"].setdefault(kind, {"window_start": window_start(kind).isoformat(),
+                                                       "requests": 0, "tokens_in": 0, "tokens_out": 0})
+                    entry["windows"][kind]["resets_at"] = (
+                        _window_reset(kind, entry["windows"][kind]["window_start"]))
+                result.append(entry)
+        return {"threshold": threshold, "providers": result}
 
     @router.get("/agents")
     def agents(request: Request):

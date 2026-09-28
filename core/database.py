@@ -801,6 +801,28 @@ class CMHWorkflowArtifact(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow_naive)
 
 
+class CMHProviderQuota(Base):
+    """Free-tier consumption per endpoint and window (D3).
+
+    The window is explicit rather than rolling: one row per (endpoint, kind,
+    window_start), so "how much of today is spent" is a lookup, not a scan over
+    request history. A provider resets on its own clock, which we cannot see;
+    the row simply stops matching when the window turns over and the next call
+    opens a fresh one.
+    """
+    __tablename__ = "cmh_provider_quota"
+    __table_args__ = (UniqueConstraint("endpoint_id", "window_kind", "window_start",
+                                       name="uq_cmh_provider_quota_window"),)
+    id = Column(String, primary_key=True)
+    endpoint_id = Column(String, nullable=False, index=True)
+    window_kind = Column(String, nullable=False)  # "minute" | "day"
+    window_start = Column(DateTime, nullable=False)
+    requests = Column(Integer, nullable=False, default=0)
+    tokens_in = Column(Integer, nullable=False, default=0)
+    tokens_out = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, nullable=False, default=utcnow_naive, onupdate=utcnow_naive)
+
+
 class CMHWorkflowEvent(Base):
     __tablename__ = "cmh_workflow_events"
     # AUTOINCREMENT: SQLite must never reuse a seq, or a Last-Event-ID cursor could skip events.

@@ -140,60 +140,115 @@ def _dependency_input(db, run_id, key, artifact):
             f"del artefacto {artifact.id}; el resto no fue visto por este paso]")
 
 
-def _zero_cost_candidates(config: dict, record) -> list[dict]:
-    """The step's candidates that are free to call, in order (D1).
+def _frozen_candidates(config: dict) -> list[dict]:
+    """The step's candidate list, as the run froze it.
 
-    Today a step freezes one route, so the list has one entry; §3.3 turns it
-    into the router's ordered candidate list without changing this contract.
-    Every rejected candidate emits ``zero_cost_blocked`` whether or not the
-    gate is enforcing, so ``CMH_ZERO_COST=false`` is diagnosable and not silent.
+    A run created before the router existed froze a single ``endpoint_url`` and
+    ``model``; it is read as a one-entry list, so an old run still executes.
     """
-    from src.cmh_cost_policy import endpoint_for_url, is_zero_cost_endpoint
-
     candidates = config.get("candidates") or [
         {"endpoint_url": config["endpoint_url"], "model": config["model"]}
     ]
+    return [dict(candidate) for candidate in candidates]
+
+
+def _zero_cost_candidates(config: dict, record) -> list[dict]:
+    """The step's candidates that are free to call, in order (D1).
+
+    Every rejected candidate emits ``zero_cost_blocked`` whether or not the
+    gate is enforcing, so ``CMH_ZERO_COST=false`` is diagnosable and not silent.
+    Each survivor is completed with the endpoint id and host the quota
+    accounting needs, so the row we charge is the row we called.
+    """
+    from src.cmh_cost_policy import endpoint_for_url, endpoint_host, is_zero_cost_endpoint
+
     allowed = []
     with SessionLocal() as db:
-        for candidate in candidates:
+        for candidate in _frozen_candidates(config):
             url, model = candidate.get("endpoint_url"), candidate.get("model")
-            endpoint = endpoint_for_url(db, url, config.get("owner"), model) or {
-                "base_url": url, "endpoint_kind": "auto", "id": "no registrado"}
-            if is_zero_cost_endpoint(endpoint, model):
-                allowed.append(candidate)
-            else:
+            row = endpoint_for_url(db, url, config.get("owner"), model)
+            endpoint = row or {"base_url": url, "endpoint_kind": "auto", "id": "no registrado"}
+            if not is_zero_cost_endpoint(endpoint, model):
                 record("zero_cost_blocked", endpoint_url=url, candidate_model=model)
+                continue
+            candidate.setdefault("endpoint_id", getattr(row, "id", None) or url)
+            candidate.setdefault("host", endpoint_host(url))
+            allowed.append(candidate)
     return allowed
 
 
-async def call_model(config: dict, prompt: str) -> str:
+async def _run_one_candidate(config: dict, candidate: dict, prompt: str, record) -> str:
     from src.task_scheduler import TaskScheduler
+    task = SimpleNamespace(
+        owner=config["owner"], name=config["name"], prompt=prompt,
+        workspace=config["workspace"], allowed_tools=json.dumps(config["allowed_tools"]),
+        max_steps=config.get("max_rounds", 12),
+    )
+    return await TaskScheduler(None)._run_agent_loop(
+        candidate["endpoint_url"], candidate["model"], task, str(uuid.uuid4()),
+        system_prompt=config["instructions"], override_user_message=prompt,
+        foreground_controlled=True, event_sink=record,
+    )
+
+
+async def call_model(config: dict, prompt: str) -> str:
+    """Walk the step's frozen candidates until one answers (D1, D3).
+
+    Order of elimination is deliberate: cost first, because a paid route must
+    never be attempted even when everything else has failed; then quota, which
+    is checked before sending so the call that would cross the line is never
+    made; then reachability, which can only be learned by trying. A step whose
+    candidates are all gone fails. It never falls back to a paid endpoint.
+    """
     from src.cmh_cost_policy import ZeroCostViolation, enforced
+    from src.cmh_provider_router import is_fallback_error, record_usage, usable_candidates
+
     def record(kind, **payload):
         with SessionLocal() as db:
             event(db, config["run_id"], kind, config["step_key"],
                   agent_id=config["agent_id"], model=config["model"], **payload)
             db.commit()
-    allowed = _zero_cost_candidates(config, record)
-    if not allowed and enforced():
-        # No fallback: a step with no free route fails rather than reaching a
-        # paid one. The blocked candidates are already on the event stream.
-        raise ZeroCostViolation(
-            f"Costo cero (D1): el paso {config['step_key']} no tiene ningun "
-            f"candidato gratuito; no se usa respaldo de pago.")
-    if allowed:
-        config = {**config, "endpoint_url": allowed[0]["endpoint_url"],
-                  "model": allowed[0]["model"]}
-    task = SimpleNamespace(
-        owner=config["owner"], name=config["name"], prompt=prompt,
-        workspace=config["workspace"], allowed_tools=json.dumps(config["allowed_tools"]),
-        max_steps=12,
-    )
-    return await TaskScheduler(None)._run_agent_loop(
-        config["endpoint_url"], config["model"], task, str(uuid.uuid4()),
-        system_prompt=config["instructions"], override_user_message=prompt,
-        foreground_controlled=True, event_sink=record,
-    )
+
+    free = _zero_cost_candidates(config, record)
+    if not free:
+        if enforced():
+            raise ZeroCostViolation(
+                f"Costo cero (D1): el paso {config['step_key']} no tiene ningun "
+                f"candidato gratuito; no se usa respaldo de pago.")
+        free = _frozen_candidates(config)
+
+    with SessionLocal() as db:
+        ready, skipped = usable_candidates(db, free)
+    for candidate in skipped:
+        record("provider_fallback", **{"from": candidate.get("endpoint_id"),
+                                       "to": None, "reason": candidate["reason"]})
+    if not ready:
+        raise RuntimeError(
+            f"Todos los candidatos del paso {config['step_key']} estan sin cuota; "
+            f"no se usa respaldo de pago.")
+
+    last_error: Exception | None = None
+    for index, candidate in enumerate(ready):
+        try:
+            output = await _run_one_candidate(config, candidate, prompt, record)
+        except asyncio.CancelledError:
+            raise  # a stop is not a provider failure
+        except Exception as exc:
+            reason = is_fallback_error(exc)
+            if reason is None:
+                raise  # a configuration fault the next provider would hit too
+            following = ready[index + 1]["endpoint_id"] if index + 1 < len(ready) else None
+            record("provider_fallback", **{"from": candidate.get("endpoint_id"),
+                                           "to": following, "reason": reason})
+            last_error = exc
+            continue
+        with SessionLocal() as db:
+            record_usage(db, candidate["endpoint_id"], requests=1)
+            db.commit()
+        return output
+    raise RuntimeError(
+        f"Ningun candidato gratuito respondio en el paso {config['step_key']}: "
+        f"{type(last_error).__name__}: {last_error}")
 
 
 async def _one(run_id: str, step_id: str, model_call):
