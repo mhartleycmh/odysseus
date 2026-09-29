@@ -17,7 +17,9 @@ from src.cmh_cost_policy import (
     ZeroCostViolation, assert_zero_cost_url, endpoint_for_url, endpoint_host,
     is_local_endpoint,
 )
-from src.cmh_provider_router import LOCAL_ONLY, resolve_candidates, resolve_policy
+from src.cmh_provider_router import (
+    LOCAL_ONLY, discover_free_models, resolve_candidates, resolve_policy,
+)
 from src.cmh_workflows import (
     default_tool_evidence,
     READ_TOOLS, event, is_active, release_stranded_steps, start, stop, validate_dag,
@@ -136,7 +138,7 @@ def _assert_definition_zero_cost(db, owner, steps) -> None:
             raise HTTPException(400, f"Step {spec['key']}: {exc}") from exc
 
 
-def _snapshot(db, owner, project_id, spec):
+def _snapshot(db, owner, project_id, spec, discovered=None):
     agent = db.query(CMHAgent).filter(CMHAgent.id == spec["agent_id"],
                                       CMHAgent.owner == owner,
                                       CMHAgent.project_id == project_id).first()
@@ -188,7 +190,8 @@ def _snapshot(db, owner, project_id, spec):
     # The agent's own model for the local candidate too. Without it a local
     # endpoint inherited whatever it had cached, so a step could be produced
     # by a model the agent never chose and then labelled with the one it did.
-    candidates = resolve_candidates(db, policy, owner, local_model=agent.model)
+    candidates = resolve_candidates(db, policy, owner, local_model=agent.model,
+                                    discovered=discovered)
     task_row = endpoint_for_url(db, task.endpoint_url, owner, agent.model)
     task_host = endpoint_host(task.endpoint_url)
     # Same PROVIDER and same model, not the same URL string. A registered row
@@ -291,7 +294,14 @@ def setup_cmh_workflow_routes() -> APIRouter:
             if not definition:
                 raise HTTPException(404, "Workflow not found")
             specs = json.loads(definition.steps)
-            snapshots = [_snapshot(db, owner, definition.project_id, spec) for spec in specs]
+            # OpenRouter's model is picked from its own catalogue with the
+            # account's key, once per run, and frozen with the rest of the list.
+            # Its config entry says model=null because the free catalogue turns
+            # over; before this, nothing ever filled it in and the second link
+            # of the chain never entered any list.
+            discovered, discovery_notes = await discover_free_models(db, owner)
+            snapshots = [_snapshot(db, owner, definition.project_id, spec, discovered)
+                         for spec in specs]
             for spec, config in zip(specs, snapshots):
                 config["requires_approval"] = spec["requires_approval"]
                 # Falls back to the per-role default, not to a second True written
@@ -315,6 +325,10 @@ def setup_cmh_workflow_routes() -> APIRouter:
                                        dependencies=json.dumps(spec["depends_on"]),
                                        status="pending"))
             event(db, run.id, "run_created", definition_id=definition_id)
+            # One event per discovery attempt, failures included: a provider
+            # missing from the frozen lists must say why.
+            for note in discovery_notes:
+                event(db, run.id, "provider_discovery", **note)
             db.commit()
             run_id = run.id
         start(run_id)

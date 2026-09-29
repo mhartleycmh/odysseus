@@ -12,6 +12,8 @@
   ],
   "threshold": 0.9,
   "_threshold_nota": "El router no envia una peticion que llevaria a superar esta fraccion de cualquier ventana. 0,9 es valor inicial propuesto: deja 10% de margen para reintentos y para el desfase entre nuestro conteo y el del proveedor.",
+  "discovery": {"ttl_s": 21600, "timeout_s": 15},
+  "_discovery_nota": "Valores iniciales propuestos, parametrizables. Aplican a los proveedores con model=null que tienen una regla para elegirlo (hoy solo OpenRouter). ttl_s: cuanto se reutiliza el modelo descubierto antes de volver a preguntar al catalogo (6 h: el catalogo gratuito cambia despacio y cada consulta es una llamada mas a la cuenta). timeout_s: cuanto espera la creacion de un run a ese catalogo antes de dejar al proveedor fuera de la lista.",
   "providers": [
     {
       "endpoint_host": "api.groq.com",
@@ -35,7 +37,7 @@
       "order": 2,
       "model": null,
       "model_verified_at": null,
-      "_model_pendiente": "PENDIENTE: se descubre en ejecucion — el primer modelo ':free' de GET /models que declare 'tools' en supported_parameters, ordenado por longitud de contexto descendente. Exige la clave.",
+      "_model_pendiente": "PENDIENTE: no se fija aqui. Se descubre al crear cada run (src/cmh_provider_router.discover_free_models): el primer modelo ':free' que declare 'tools' en supported_parameters, por contexto descendente, del listado de la cuenta (GET /models/user) o, si ese no existe, de GET /models. Exige la clave registrada; sin ella, o si el listado no trae ninguno elegible, OpenRouter queda fuera de la lista y el run lo dice con un evento provider_discovery. VERIFICAR: que /models/user exista y traiga supported_parameters y context_length (la pagina de detalle de su documentacion respondio 404 el 2026-09-29).",
       "limits": {
         "rpm": null,
         "rpd": 50,

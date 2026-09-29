@@ -189,13 +189,18 @@ def _endpoint_rows(db, owner: Optional[str]) -> list:
 
 def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = None,
                        local_model: Optional[str] = None,
-                       config: Optional[dict] = None) -> list[dict]:
+                       config: Optional[dict] = None,
+                       discovered: Optional[dict] = None) -> list[dict]:
     """The ordered candidate list a step freezes, under this policy.
 
     ``free-cloud-first``: the free providers in the order the config declares,
     then every enabled local runtime. ``local-only``: local runtimes alone, so
     nothing leaves the machine. Every candidate is checked against the cost gate
     on the way out, so a misconfigured row cannot enter the list at all.
+
+    ``discovered`` maps a host to the model :func:`discover_free_models` picked
+    for it. The config wins: a model written there is never replaced by one
+    found at run time.
     """
     from src.cmh_cost_policy import endpoint_host, is_local_endpoint, is_zero_cost_endpoint
 
@@ -207,9 +212,9 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
         for provider in sorted(settings.get("providers", []),
                                key=lambda p: p.get("order", 99)):
             host = str(provider.get("endpoint_host", "")).lower()
-            model = provider.get("model")
+            model = provider.get("model") or (discovered or {}).get(host)
             if not model:
-                continue  # PENDIENTE in the config: nothing to freeze yet
+                continue  # PENDIENTE in the config and not discovered: nothing to freeze
             for row in rows:
                 if endpoint_host(getattr(row, "base_url", "")) != host:
                     continue
@@ -318,3 +323,117 @@ def pick_openrouter_free_model(models: Any) -> Optional[str]:
         usable.append((-context, model_id))
     usable.sort()
     return usable[0][1] if usable else None
+
+
+# --- model discovery --------------------------------------------------------
+
+#: Hosts whose model is not written in the config but picked, by a rule, from the
+#: provider's own catalogue. Any other host with a null model stays PENDIENTE.
+_DISCOVERY_RULES = {"openrouter.ai": pick_openrouter_free_model}
+
+#: Starting values, proposed and parametrizable under "discovery" in
+#: config/cmh_free_quotas.json. The catalogue changes slowly, so it is asked for
+#: at most once per TTL; the timeout bounds how long creating a run can wait.
+_DEFAULT_DISCOVERY = {"ttl_s": 21600, "timeout_s": 15}
+_DISCOVERY_CACHE: dict = {}
+
+
+def clear_discovery_cache() -> None:
+    _DISCOVERY_CACHE.clear()
+
+
+async def _discover_one(row, rule, knobs: dict) -> dict:
+    """Ask one endpoint for its catalogue and let ``rule`` pick a model.
+
+    The account's own list (``/models/user``) is asked first: it is filtered by
+    the account's provider preferences and privacy settings, which is what makes
+    the setting the user is asked to change in U2 decide which ``:free`` models
+    are eligible. It is a different route from ``/models``, so when it is not
+    there (any non-200) the general list is used.
+
+    A 200 with nothing eligible is NOT a reason to widen to the general list:
+    that answer is the account saying no, and asking the unfiltered catalogue
+    would pick a model the account's own settings exclude. Nothing here ever
+    reads the key: it goes into the request headers and nowhere else.
+    """
+    import httpx
+    from src import llm_core
+    from src.endpoint_resolver import build_headers, build_models_url, normalize_base
+
+    base = normalize_base(getattr(row, "base_url", ""))
+    models_url = build_models_url(base)
+    if not models_url:
+        return {"model": None, "source": None, "reason": "no models url"}
+    headers = build_headers(getattr(row, "api_key", None), base)
+    client = llm_core._get_http_client()
+    reason = "unreachable"
+    for suffix, source in (("/user", "models/user"), ("", "models")):
+        try:
+            response = await client.get(models_url + suffix, headers=headers,
+                                        timeout=knobs["timeout_s"])
+        except httpx.HTTPError as exc:
+            reason = f"connection:{type(exc).__name__}"
+            continue
+        if response.status_code != 200:
+            reason = f"http:{response.status_code}"
+            continue
+        try:
+            payload = response.json()
+        except ValueError:
+            reason = "invalid json"
+            continue
+        model = rule(payload)
+        if model:
+            return {"model": model, "source": source, "reason": None}
+        if suffix == "/user":
+            return {"model": None, "source": source,
+                    "reason": "no eligible model in the account's own list"}
+        reason = "no eligible model"
+    return {"model": None, "source": None, "reason": reason}
+
+
+async def discover_free_models(db, owner: Optional[str] = None,
+                               config: Optional[dict] = None,
+                               at: Optional[datetime] = None) -> tuple[dict, list[dict]]:
+    """Pick the model of every provider whose config entry leaves it PENDIENTE.
+
+    Returns ``({host: model}, notes)``. One note per attempt, safe to store and
+    stream: provider, outcome (ok | cached | failed), model, source, reason. A
+    failed discovery leaves that provider out of the list instead of failing the
+    run — the chain continues with what it has — but the note says why, so a
+    missing OpenRouter is never a silent one.
+    """
+    from src.cmh_cost_policy import endpoint_host
+
+    settings = config or load_quota_config()
+    knobs = {**_DEFAULT_DISCOVERY, **(settings.get("discovery") or {})}
+    moment = at or now()
+    found: dict = {}
+    notes: list[dict] = []
+    rows = None
+    for provider in sorted(settings.get("providers", []), key=lambda p: p.get("order", 99)):
+        host = str(provider.get("endpoint_host", "")).lower()
+        rule = _DISCOVERY_RULES.get(host)
+        if provider.get("model") or rule is None:
+            continue  # pinned in the config, or nothing to pick it with
+        if rows is None:
+            rows = _endpoint_rows(db, owner)
+        row = next((r for r in rows if endpoint_host(getattr(r, "base_url", "")) == host), None)
+        if row is None:
+            continue  # no account registered yet: absence is already visible
+        cached = _DISCOVERY_CACHE.get(row.id)
+        if cached and cached["expires"] > moment:
+            found[host] = cached["model"]
+            notes.append({"provider": host, "outcome": "cached", "model": cached["model"],
+                          "source": cached["source"], "reason": None})
+            continue
+        result = await _discover_one(row, rule, knobs)
+        if result["model"]:
+            found[host] = result["model"]
+            _DISCOVERY_CACHE[row.id] = {
+                "model": result["model"], "source": result["source"],
+                "expires": moment + timedelta(seconds=float(knobs["ttl_s"]))}
+        notes.append({"provider": host, "outcome": "ok" if result["model"] else "failed",
+                      "model": result["model"], "source": result["source"],
+                      "reason": result["reason"]})
+    return found, notes

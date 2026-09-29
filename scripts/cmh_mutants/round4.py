@@ -27,11 +27,13 @@ if not PY.exists() or "python" not in PY.name.lower():
 
 TARGET_TESTS = ["tests/test_cmh_mutant_target.py"]
 STEP_FAILURE_TESTS = ["tests/test_cmh_step_provider_failures.py"]
+DISCOVERY_TESTS = ["tests/test_cmh_provider_discovery.py"]
 
 TARGET = "scripts/cmh_mutants/_target.py"
 ROUND2 = "scripts/cmh_mutants/round2.py"
 SCHED = "src/task_scheduler.py"
 ROUTER = "src/cmh_provider_router.py"
+ROUTES = "routes/cmh_workflow_routes.py"
 
 #: (name, file, text to replace, replacement, test modules that must fall)
 MUTANTS = [
@@ -62,6 +64,49 @@ MUTANTS = [
      "    if status in FALLBACK_STATUS or (isinstance(status, int) and 500 <= status <= 599):",
      "    if isinstance(status, int):",
      STEP_FAILURE_TESTS),
+
+    # --- 3.3b.2 OpenRouter's model is discovered and frozen with the list ------
+    ("D01 create_run deja de descubrir el modelo", ROUTES,
+     "            discovered, discovery_notes = await discover_free_models(db, owner)",
+     "            discovered, discovery_notes = {}, []",
+     DISCOVERY_TESTS),
+    ("D02 _snapshot no pasa lo descubierto al router", ROUTES,
+     "    candidates = resolve_candidates(db, policy, owner, local_model=agent.model,\n"
+     "                                    discovered=discovered)",
+     "    candidates = resolve_candidates(db, policy, owner, local_model=agent.model)",
+     DISCOVERY_TESTS),
+    ("D03 el router ignora el modelo descubierto", ROUTER,
+     '            model = provider.get("model") or (discovered or {}).get(host)',
+     '            model = provider.get("model")',
+     DISCOVERY_TESTS),
+    ("D04 el modelo descubierto pisa al escrito en el config", ROUTER,
+     '            model = provider.get("model") or (discovered or {}).get(host)',
+     '            model = (discovered or {}).get(host) or provider.get("model")',
+     DISCOVERY_TESTS),
+    ("D05 se descubre aunque el config ya fije el modelo", ROUTER,
+     '        if provider.get("model") or rule is None:',
+     '        if rule is None:',
+     DISCOVERY_TESTS),
+    ("D06 una lista vacia de la cuenta se amplia al catalogo general", ROUTER,
+     '        if suffix == "/user":',
+     '        if False:',
+     DISCOVERY_TESTS),
+    ("D07 se pregunta primero al catalogo general", ROUTER,
+     '    for suffix, source in (("/user", "models/user"), ("", "models")):',
+     '    for suffix, source in (("", "models"), ("/user", "models/user")):',
+     DISCOVERY_TESTS),
+    ("D08 la consulta va sin la clave de la cuenta", ROUTER,
+     '    headers = build_headers(getattr(row, "api_key", None), base)',
+     '    headers = {}',
+     DISCOVERY_TESTS),
+    ("D09 la cache por TTL se ignora", ROUTER,
+     '        if cached and cached["expires"] > moment:',
+     '        if False:',
+     DISCOVERY_TESTS),
+    ("D10 el run no registra los eventos de descubrimiento", ROUTES,
+     "            for note in discovery_notes:",
+     "            for note in []:",
+     DISCOVERY_TESTS),
 ]
 
 
