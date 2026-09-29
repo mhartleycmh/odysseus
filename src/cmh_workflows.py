@@ -302,14 +302,59 @@ async def call_model(config: dict, prompt: str) -> str:
             f"Todos los candidatos del paso {config['step_key']} estan sin cuota; "
             f"no se usa respaldo de pago.")
 
+    def charge(candidate, **usage):
+        # Accounting must never take a step down with it. A write that fails
+        # after the model has answered would throw away the artifact (defect N1
+        # of an earlier round did exactly that with a NULL endpoint id), so it
+        # is logged and the step goes on.
+        try:
+            with SessionLocal() as db:
+                record_usage(db, candidate["endpoint_id"], **usage)
+                db.commit()
+        except Exception:
+            logger.exception("Could not charge quota to endpoint %s", candidate.get("endpoint_id"))
+
     last_error: Exception | None = None
     for index, candidate in enumerate(ready):
         active["model"] = candidate.get("model") or config["model"]
+        charged = {"any": False}
+
+        def charging(kind, _candidate=candidate, _charged=charged, **payload):
+            """Forward the event, and charge the quota when it reports usage.
+
+            Quota was charged once per SUCCESSFUL step, with requests=1 and no
+            tokens, so tpm/tpd could never fire and rpm/rpd counted steps, not
+            requests (a step makes up to max_rounds of them). The loop reports
+            its totals in one model_metrics event at the end of the attempt:
+            tokens summed over every round, and the number of rounds.
+            """
+            record(kind, **payload)
+            if kind == "model_metrics":
+                metrics = payload.get("metrics") or {}
+                tokens_in = int(metrics.get("input_tokens") or 0)
+                tokens_out = int(metrics.get("output_tokens") or 0)
+                if not (tokens_in or tokens_out):
+                    tokens_out = int(metrics.get("total_tokens") or 0)
+                charge(_candidate, requests=max(1, int(metrics.get("rounds") or 1)),
+                       tokens_in=tokens_in, tokens_out=tokens_out)
+                _charged["any"] = True
+
         try:
-            output = await _run_one_candidate(config, candidate, prompt, record)
+            output = await _run_one_candidate(config, candidate, prompt, charging)
         except asyncio.CancelledError:
             raise  # a stop is not a provider failure
         except Exception as exc:
+            # The call that failed is a request too. A refusal still spends the
+            # provider's capacity to answer it and may count against its limit;
+            # whether it does is not verified, so it is counted: over-estimating
+            # only makes the router leave a provider early, under-estimating
+            # makes it walk into a 429. Not when the attempt already reported
+            # its usage (the failure came after the loop finished): that would
+            # count the same call twice. A partial attempt that dies mid-loop is
+            # charged one request and no tokens, because the loop reports its
+            # totals only when it ends.
+            if not charged["any"]:
+                charge(candidate, requests=1)
             reason = is_fallback_error(exc)
             if reason is None:
                 raise  # a configuration fault the next provider would hit too
@@ -318,9 +363,6 @@ async def call_model(config: dict, prompt: str) -> str:
                                            "to": following, "reason": reason})
             last_error = exc
             continue
-        with SessionLocal() as db:
-            record_usage(db, candidate["endpoint_id"], requests=1)
-            db.commit()
         # Tell the caller which candidate produced this, so the artifact it
         # stores carries the model that wrote it rather than the first one on
         # the list. Mutating the step's live config is deliberate: `_one`

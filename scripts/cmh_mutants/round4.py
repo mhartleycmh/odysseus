@@ -34,6 +34,7 @@ ROUND2 = "scripts/cmh_mutants/round2.py"
 SCHED = "src/task_scheduler.py"
 ROUTER = "src/cmh_provider_router.py"
 ROUTES = "routes/cmh_workflow_routes.py"
+FLOW = "src/cmh_workflows.py"
 
 #: (name, file, text to replace, replacement, test modules that must fall)
 MUTANTS = [
@@ -126,6 +127,40 @@ MUTANTS = [
      "        model = local_model or configured_local or _first_cached_model(row)",
      "        model = configured_local or local_model or _first_cached_model(row)",
      DISCOVERY_TESTS),
+
+    # --- 3.3b.4 quota counts what the step spent: requests, tokens, refusals ----
+    ("Q01 el evento de metricas ya no carga la cuota", FLOW,
+     '            if kind == "model_metrics":',
+     '            if False:',
+     STEP_FAILURE_TESTS),
+    ("Q02 se cargan las peticiones pero no los tokens", FLOW,
+     "                       tokens_in=tokens_in, tokens_out=tokens_out)",
+     "                       tokens_in=0, tokens_out=0)",
+     STEP_FAILURE_TESTS),
+    ("Q03 un paso de varias rondas cuenta una sola peticion", FLOW,
+     '                charge(_candidate, requests=max(1, int(metrics.get("rounds") or 1)),',
+     '                charge(_candidate, requests=1,',
+     STEP_FAILURE_TESTS),
+    ("Q04 el intento rechazado deja de cobrarse", FLOW,
+     '            if not charged["any"]:',
+     '            if False:',
+     STEP_FAILURE_TESTS),
+    ("Q05 el intento que fallo despues de informar se cobra dos veces", FLOW,
+     '            if not charged["any"]:',
+     '            if True:',
+     STEP_FAILURE_TESTS),
+    ("Q06 un fallo al escribir la cuota vuelve a matar el paso", FLOW,
+     '        except Exception:\n            logger.exception("Could not charge quota',
+     '        except KeyError:\n            logger.exception("Could not charge quota',
+     STEP_FAILURE_TESTS),
+    ("Q07 el intento se ejecuta sin el canal que carga la cuota", FLOW,
+     "            output = await _run_one_candidate(config, candidate, prompt, charging)",
+     "            output = await _run_one_candidate(config, candidate, prompt, record)",
+     STEP_FAILURE_TESTS),
+    ("Q08 el planificador deja de reenviar cuantas rondas cubren los totales", SCHED,
+     '                            safe_metrics["rounds"] = len(buckets)',
+     '                            safe_metrics["rounds"] = 0',
+     STEP_FAILURE_TESTS),
 ]
 
 

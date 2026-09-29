@@ -547,6 +547,7 @@ async def test_a_step_whose_route_is_unregistered_still_records_its_quota(factor
 
     async def fake(config, candidate, prompt, record):
         produced.append(candidate["endpoint_id"])
+        record("model_metrics", metrics={"input_tokens": 1, "output_tokens": 1, "rounds": 1})
         return "artifact"
 
     monkeypatch.setattr(flow, "_run_one_candidate", fake)
@@ -709,6 +710,7 @@ async def test_the_quota_row_is_keyed_on_the_endpoint_id_not_the_url(factory, mo
     """P2 of round 2: the commit claimed charging a URL would split a provider's
     counter, and nothing measured it."""
     async def fake(config, candidate, prompt, record):
+        record("model_metrics", metrics={"input_tokens": 1, "output_tokens": 1, "rounds": 1})
         return "artifact"
 
     monkeypatch.setattr(flow, "_run_one_candidate", fake)

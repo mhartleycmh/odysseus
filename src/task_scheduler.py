@@ -2088,6 +2088,14 @@ class TaskScheduler:
                         safe_metrics = {k: raw_metrics[k] for k in ("model", "input_tokens", "output_tokens",
                                                                     "total_tokens", "response_time", "usage_source")
                                         if isinstance(raw_metrics, dict) and k in raw_metrics}
+                        buckets = raw_metrics.get("usage_buckets") if isinstance(raw_metrics, dict) else None
+                        if isinstance(buckets, list) and buckets:
+                            # How many HTTP rounds these totals cover. The loop emits ONE
+                            # metrics event at its end, with the tokens of every round summed
+                            # and one usage bucket per round; the buckets themselves are not
+                            # forwarded (per-route attribution has no business in an event).
+                            # Absent when the loop reported none: unknown is not zero.
+                            safe_metrics["rounds"] = len(buckets)
                         event_sink("model_metrics", metrics=safe_metrics)
                 except (ValueError, TypeError, KeyError, AttributeError):
                     pass

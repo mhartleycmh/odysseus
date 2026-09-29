@@ -153,3 +153,124 @@ async def test_a_configuration_fault_stops_the_step_where_it_happened(chain, fai
         await flow.call_model(_config(workspace), "p")
     assert set(net.hits) == {"api.groq.com"}
     assert _fallbacks(factory) == []
+
+
+# --- quota: what the step actually spent -------------------------------------
+#
+# Quota used to be charged once per SUCCESSFUL step, with requests=1 and no
+# tokens. tpm and tpd could never fire, rpm and rpd counted steps instead of
+# requests (a step makes up to max_rounds of them), and a refused call was never
+# counted at all. The loop reports its totals in ONE model_metrics event at the
+# end of an attempt: tokens summed over every round, and the number of rounds.
+
+from src.cmh_provider_router import usage_snapshot  # noqa: E402
+
+
+def _day(factory, endpoint_id):
+    with factory() as session:
+        return usage_snapshot(session, endpoint_id)["day"]
+
+
+async def test_a_successful_step_charges_the_tokens_and_requests_the_loop_reported(chain):
+    net, factory, workspace = chain
+    assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_GROQ"
+    day = _day(factory, "groq")
+    assert (day["requests"], day["tokens_in"], day["tokens_out"]) == (1, 3, 2)
+
+
+async def test_a_refused_attempt_costs_one_request_and_no_tokens_and_the_answer_is_charged(chain):
+    net, factory, workspace = chain
+    net.groq = "429"
+    assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_OPENROUTER"
+    refused, answered = _day(factory, "groq"), _day(factory, "openrouter")
+    assert (refused["requests"], refused["tokens_in"], refused["tokens_out"]) == (1, 0, 0)
+    assert (answered["requests"], answered["tokens_in"], answered["tokens_out"]) == (1, 3, 2)
+
+
+async def test_a_token_limit_now_takes_a_provider_out_of_the_list(chain, monkeypatch):
+    """tpd used to be dead: nothing ever wrote a token. Groq's limit here is 10
+    tokens at a 0.9 threshold, so it is usable at 0 and at 5 and gone at 10."""
+    net, factory, workspace = chain
+    limited = {"threshold": 0.9, "providers": [
+        {"endpoint_host": "api.groq.com", "order": 1, "model": "m-groq", "limits": {"tpd": 10}},
+        {"endpoint_host": "openrouter.ai", "order": 2, "model": "m-or:free", "limits": {}}]}
+    monkeypatch.setattr(router, "load_quota_config", lambda path=None: limited)
+    answers = [await flow.call_model(_config(workspace), "p") for _ in range(3)]
+    assert answers == ["RESPUESTA_DE_GROQ", "RESPUESTA_DE_GROQ", "RESPUESTA_DE_OPENROUTER"]
+    assert net.hits.count("api.groq.com") == 2  # the third never reached Groq
+    assert [e["reason"] for e in _fallbacks(factory)] == ["quota:tpd"]
+
+
+async def test_rounds_are_charged_as_requests_not_one_per_step(chain, monkeypatch):
+    net, factory, workspace = chain
+
+    async def fake(config, candidate, prompt, record):
+        record("model_metrics", metrics={"input_tokens": 100, "output_tokens": 40, "rounds": 3})
+        return "artifact"
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    await flow.call_model(_config(workspace), "p")
+    day = _day(factory, "groq")
+    assert (day["requests"], day["tokens_in"], day["tokens_out"]) == (3, 100, 40)
+
+
+async def test_an_attempt_that_fails_after_reporting_its_usage_is_not_charged_twice(
+        chain, monkeypatch):
+    """The evidence guard raises after the loop ended: the tokens were spent and
+    reported, and adding 'the failed call' on top would count that call twice."""
+    net, factory, workspace = chain
+
+    async def fake(config, candidate, prompt, record):
+        record("model_metrics", metrics={"input_tokens": 7, "output_tokens": 3, "rounds": 1})
+        raise ValueError("answered without any successful tool call")
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    with pytest.raises(ValueError):
+        await flow.call_model(_config(workspace), "p")
+    day = _day(factory, "groq")
+    assert (day["requests"], day["tokens_in"], day["tokens_out"]) == (1, 7, 3)
+
+
+async def test_a_failing_quota_write_does_not_take_the_step_down(chain, monkeypatch):
+    """N1 of an earlier round: a quota write that failed after the model had
+    answered threw the artifact away."""
+    net, factory, workspace = chain
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(router, "record_usage", broken)
+    assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_GROQ"
+
+
+async def test_the_scheduler_forwards_how_many_rounds_the_reported_totals_cover(
+        chain, monkeypatch):
+    """The loop emits one metrics event with tokens summed over every round and one
+    usage bucket per round. The buckets are not forwarded (per-route attribution has
+    no business in an event); their COUNT is, because it is the number of requests."""
+    import json as _json
+    from types import SimpleNamespace
+    from src.task_scheduler import TaskScheduler
+
+    net, factory, workspace = chain
+    metrics = {"input_tokens": 30, "output_tokens": 9, "total_tokens": 39,
+               "usage_buckets": [{"input_tokens": 10}, {"input_tokens": 10}, {"input_tokens": 10}]}
+
+    async def fake_stream(**kwargs):
+        yield f'data: {_json.dumps({"type": "metrics", "data": metrics})}\n\n'
+        yield 'data: {"delta": "hola"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr("src.agent_loop.stream_agent_loop", fake_stream)
+    seen = []
+    task = SimpleNamespace(owner="admin", name="t", prompt="p", workspace=str(workspace),
+                           allowed_tools=_json.dumps(["read_file"]), max_steps=3)
+    await TaskScheduler(None)._run_agent_loop(
+        GROQ, "m-groq", task, "sid", system_prompt="s", override_user_message="p",
+        foreground_controlled=True, require_tool_evidence=False,
+        event_sink=lambda kind, **payload: seen.append((kind, payload)))
+    forwarded = [payload["metrics"] for kind, payload in seen if kind == "model_metrics"]
+    assert len(forwarded) == 1
+    assert forwarded[0]["rounds"] == 3
+    assert (forwarded[0]["input_tokens"], forwarded[0]["output_tokens"]) == (30, 9)
+    assert "usage_buckets" not in forwarded[0]

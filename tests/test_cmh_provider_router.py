@@ -293,6 +293,8 @@ async def test_a_successful_call_is_charged_to_the_endpoint_it_used(flow_db, mon
                    "host": "api.groq.com"}]
 
     async def fake(config, candidate, prompt, record):
+        # Usage arrives the way the real loop reports it: one model_metrics event.
+        record("model_metrics", metrics={"input_tokens": 10, "output_tokens": 5, "rounds": 1})
         return "artifact"
 
     monkeypatch.setattr(flow, "_run_one_candidate", fake)
@@ -372,14 +374,23 @@ async def test_the_charge_lands_on_the_candidate_that_answered(flow_db, monkeypa
     async def fake(config, candidate, prompt, record):
         if candidate["endpoint_id"] == "groq":
             raise _HttpError(429)
+        record("model_metrics", metrics={"input_tokens": 10, "output_tokens": 5, "rounds": 1})
         return "artifact"
 
     monkeypatch.setattr(flow, "_run_one_candidate", fake)
     assert await flow.call_model(_config(candidates), "prompt") == "artifact"
     with flow_db() as session:
-        assert usage_snapshot(session, "openrouter")["day"]["requests"] == 1
-        # The one that refused is not charged: it never served a request.
-        assert usage_snapshot(session, "groq")["day"]["requests"] == 0
+        answered = usage_snapshot(session, "openrouter")["day"]
+        assert answered["requests"] == 1
+        assert (answered["tokens_in"], answered["tokens_out"]) == (10, 5)
+        # The one that refused IS charged, one request and no tokens. This used to
+        # say the opposite ("it never served a request"). A refusal still spends
+        # the provider's capacity and may count against its limit; that is not
+        # verified, so it is counted, because over-estimating only makes the router
+        # leave a provider early while under-estimating walks it into a 429.
+        refused = usage_snapshot(session, "groq")["day"]
+        assert refused["requests"] == 1
+        assert (refused["tokens_in"], refused["tokens_out"]) == (0, 0)
 
 
 # --- require_tool_evidence per role (canon 06 pending of 2026-09-24) ---------
