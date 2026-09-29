@@ -31,7 +31,13 @@ import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SOURCE = REPO.parent / ".claude" / "agents"
+#: Where the ORIGINALS live. Parametrisable like TARGET, and for the same
+#: reason the fourth review had to spell out twice: the default points outside
+#: the repository at a directory git does not track, so three tests that run
+#: this script failed on a clean export while the declared count said they
+#: passed. A count that needs untracked state is not a count.
+SOURCE = pathlib.Path(os.environ.get("CMH_AGENT_SOURCES")
+                      or REPO.parent / ".claude" / "agents")
 #: Where the derived instructions are written. CMH_AGENT_WORKSPACES lets a
 #: test point both scripts at a throwaway tree instead of the repo's data/,
 #: which git ignores.

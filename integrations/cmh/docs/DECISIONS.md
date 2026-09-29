@@ -474,8 +474,10 @@ que se corrigió.
   Condicionar la copia a `--apply` fue un error doble: el `import
   core.database` sigue ejecutando `init_db()` y migra lo que apunte
   `DATABASE_URL`, así que la simulación migraba **sin respaldo**. Ahora la
-  simulación trabaja sobre una copia desechable y la base real **no se abre**.
-- **La deduplicación de candidatos es por host, puerto y modelo.** Comparar
+  simulación trabaja sobre una copia desechable; la base real **solo se lee para
+  copiarla y nunca se migra** (decía «no se abre», y sí se abre en `mode=ro`).
+- **La deduplicación de candidatos es por host y puerto** (el modelo salió en
+  ADR-026: un 429 lo aplica el proveedor por cuenta y host, no por modelo). Comparar
   cadenas de URL listaba dos veces al mismo proveedor —una fila
   `https://api.groq.com` y una tarea en `.../openai/v1`—, de modo que un 429
   reintentaba el host que acababa de rechazar. Comparar solo por host tenía el
@@ -516,3 +518,64 @@ que se corrigió.
    disyunción que aceptaba la forma defectuosa, una aserción sobre el `config`
    en memoria en vez de sobre la fila almacenada, y una comparación entre dos
    cadenas que resultaron ser la misma.
+
+## ADR-026 · Qué es «local», y dónde vive una credencial (2026-09-29)
+
+Dos decisiones del usuario, tomadas sobre mediciones y no sobre preferencia,
+después de que la cuarta revisión independiente mostrara que ninguna de las dos
+estaba definida y que el vacío era un hueco técnico.
+
+### `local-only` significa loopback **o red privada**
+
+- **Medición que abrió la pregunta.** `is_local_endpoint` decidía por la
+  **etiqueta**: una fila `https://gpu.corp.example/v1` marcada
+  `endpoint_kind="local"` pasaba la compuerta de costo **y** encabezaba la lista
+  bajo `local-only`, una política cuyo docstring promete que nada sale de la
+  máquina.
+- **Decisión.** Decide el **host**: loopback, RFC1918 (10/8, 172.16/12,
+  192.168/16), link-local y `.local` cuentan; un host público no, lleve la
+  etiqueta que lleve. `api` y `proxy` siguen descalificando incluso sobre
+  loopback, porque quien los escribió declaró un túnel.
+- **Por qué no «solo loopback».** Una GPU en la LAN de CMH es infraestructura
+  propia y el tráfico no sale de la red. *Alternativa descartada:* que mandara
+  la etiqueta del administrador — obligaba a renombrar la política, porque el
+  tráfico sí saldría de la máquina.
+- **Efecto medido:** 9 casos, 9 correctos. Cierra además el mutante R16, que la
+  ronda 3 había retirado como «inalcanzable» con una razón que solo cubría una
+  de las dos direcciones.
+
+### Una credencial en la URL se traslada a `api_key` al registrar
+
+- **Medición que corrigió una afirmación falsa.** Un commit anterior declaraba
+  «verificado que nada pierde acceso: la autenticación sale de `api_key`, nunca
+  del userinfo». Es falso: con httpx 0.28.1, `Client._build_request_auth`
+  convierte el userinfo en `Authorization: Basic` **al enviar**, y
+  `llm_core` construye su `AsyncClient` sin `auth=`. Comprobar `build_request`
+  —la capa equivocada— fue lo que lo ocultó, dos veces.
+- **Decisión.** `split_url_credentials` la extrae al registrar el endpoint: pasa
+  a `api_key` cifrada como cabecera `Basic` y la URL se guarda limpia. Una sola
+  forma de la URL viaja, y la que se marca autentica igual.
+- **Y el paso de flujo la rechaza, no la recorta.** Una tarea cuya URL lleve
+  credenciales se refusa con 400 pidiendo re-registrar el endpoint. Recortarla
+  habría quitado autenticación que funciona; conservarla la habría persistido en
+  el config congelado y emitido por SSE. *Medido:* 0 endpoints con userinfo en
+  la base activa, así que nadie queda fuera hoy.
+
+### Correcciones de método de esta ronda
+
+- **La deduplicación de candidatos es por proveedor, sobre la lista entera.**
+  Depurar solo contra la clave de la tarea dejaba dos caminos para que un
+  proveedor apareciera dos veces: una fila de host gratuito registrada como
+  `local` la emiten **las dos** ramas de `resolve_candidates`, y dos filas
+  habilitadas pueden compartir `base_url`.
+- **La guarda de área protegida corre antes de todo import que toque la base.**
+  Las reglas se extrajeron a `src/cmh_protected_areas.py`, que no importa
+  `core.database`. Antes, rechazar una raíz prohibida imprimía «no se siembra
+  nada» **después** de que `init_db()` hubiera migrado el esquema vivo.
+  *Medido tras el cambio:* la base queda byte a byte idéntica.
+- **Los conteos se miden sobre un export aislado de verdad.** Las tres
+  afirmaciones anteriores de «clon limpio» eran falsas: dos por estado heredado
+  del scratchpad y una por un fixture sin `git add`. Los originales de los
+  agentes **no se versionan** —llevan nombres de archivos financieros—, así que
+  las pruebas usan un fixture sintético en `tests/fixtures/agent_sources` con la
+  misma forma y ningún dato real. Primer conteo reproducible: **295**.

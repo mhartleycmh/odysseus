@@ -18,38 +18,16 @@ from src.task_workspace import validate_task_tools, validate_task_workspace
 from src.tool_security import owner_is_admin_or_single_user
 
 
-CMH_ROOT = Path(__file__).resolve().parents[2].parent
+# The protected-area rules live in src/cmh_protected_areas so a script can
+# consult them without importing core.database. Re-exported here: every caller
+# and test keeps importing them from this module.
+from src.cmh_protected_areas import (  # noqa: F401,E402
+    CMH_ROOT, FINANCIAL_AREAS, PROTECTED_AREAS, in_financial_area, protected_area,
+)
+
 INDEX_PATH = CMH_ROOT / "_control" / "INDICE.md"
 MANAGED_PROJECTS = CMH_ROOT / "CMH_Claude" / "Proyectos"
 _ROW = re.compile(r"^\|\s*([^|]+?)\s*\|\s*\[Ficha[^]]*\]\(<([^>]+)>\)\s*\|\s*([^|]+?)\s*\|$")
-# Financial, production and canon folders stay outside every agent workspace
-# (integrations/cmh/README.md), as does any fuentes/ folder, which is read-only.
-FINANCIAL_AREAS = ("Base Matriz Nueva", "Modelo Financiero Nuevo", "Dashboard Financiero", "Producción")
-PROTECTED_AREAS = FINANCIAL_AREAS + ("CMH_Canon", "CMH_Claude/CMH_Canon")
-_FUENTES_SCAN_DEPTH = 3
-
-
-def in_financial_area(path) -> bool:
-    target = Path(path).resolve()
-    return any(target.is_relative_to((CMH_ROOT / name).resolve()) for name in FINANCIAL_AREAS)
-
-
-def protected_area(path) -> Optional[str]:
-    """Name the protected area a workspace lies in or contains, or None."""
-    target = Path(path).resolve()
-    if any(part.casefold() == "fuentes" for part in target.parts):
-        return "fuentes"
-    for name in PROTECTED_AREAS:
-        area = (CMH_ROOT / name).resolve()
-        if target.is_relative_to(area) or area.is_relative_to(target):
-            return name
-    base_depth = len(target.parts)
-    for current, dirs, _files in os.walk(target):
-        if any(d.casefold() == "fuentes" for d in dirs):
-            return "fuentes"
-        if len(Path(current).parts) - base_depth >= _FUENTES_SCAN_DEPTH:
-            dirs.clear()
-    return None
 
 
 def _card_title(card: Path) -> str:

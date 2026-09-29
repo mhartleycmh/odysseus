@@ -904,10 +904,20 @@ def test_no_credential_survives_into_a_candidate_id():
     assert "SECRETO" not in _canonical_route("https://k:SECRETO@api.groq.com/v1")
 
 
-async def test_a_credential_in_the_task_url_never_reaches_the_event_stream(
+async def test_a_task_url_with_an_embedded_credential_is_refused_outright(
         client, factory, monkeypatch):
-    """Measured by the third review: the raw URL became the candidate id, was
-    persisted in step.config and emitted over SSE in provider_fallback."""
+    """Decision of 2026-09-29: the credential belongs in the endpoint's
+    api_key, where registration now puts it.
+
+    The previous version of this test was wrong twice, as the fourth review
+    measured: it never touched the event stream its name promised, and it
+    asserted only on config["candidates"], so it could not see the credential
+    still sitting in the top-level endpoint_url of the same config. And the
+    fix it guarded was itself unsafe — httpx 0.28.1 turns URL userinfo into
+    Authorization: Basic at send time, so stripping the credential from the
+    dialled URL removed working authentication. Refusing is the answer; the
+    step no longer gets created at all.
+    """
     monkeypatch.setattr(flow, "start", lambda run_id: None)
     with factory() as db:
         db.query(cdb.ScheduledTask).filter(
@@ -915,12 +925,17 @@ async def test_a_credential_in_the_task_url_never_reaches_the_event_stream(
                 "http://usuario:SECRETO123@127.0.0.1:59998/v1")
         db.commit()
     async with client:
-        run_id = await _create_run(client, [{"key": "constructor",
-                                             "agent_id": "agent-constructor"}])
+        definition = await client.post("/api/cmh/workflows", json=_definition([
+            {"key": "constructor", "agent_id": "agent-constructor"}]))
+        assert definition.status_code == 201, definition.text
+        run = await client.post(f"/api/cmh/workflows/{definition.json()['id']}/runs",
+                                json={"initial_input": "x"})
+    assert run.status_code == 400
+    assert "credenciales embebidas" in run.json()["detail"]
+    assert "SECRETO123" not in run.json()["detail"], "el mensaje no repite el secreto"
     with factory() as db:
-        step = db.query(cdb.CMHWorkflowStep).filter(
-            cdb.CMHWorkflowStep.run_id == run_id).first()
-    assert "SECRETO123" not in json.dumps(json.loads(step.config)["candidates"])
+        steps = db.query(cdb.CMHWorkflowStep).all()
+    assert steps == [], "no se congela ningun paso con una URL con credencial"
 
 
 async def test_one_provider_appears_once_even_when_the_models_differ(
@@ -1046,3 +1061,171 @@ async def test_a_loopback_endpoint_labelled_as_external_is_refused_outright(
     assert refused.status_code == 400
     assert "Costo cero" in refused.json()["detail"]
     assert "tunnel" in refused.json()["detail"]
+
+
+# --- decisions of 2026-09-29 and findings of the FOURTH review ---------------
+
+@pytest.mark.parametrize("url, kind, expected", [
+    ("http://127.0.0.1:1234/v1", "auto", True),
+    ("http://127.0.0.1:1234/v1", "local", True),
+    ("http://localhost:1234/v1", "local", True),
+    ("http://[::1]:1234/v1", "local", True),
+    ("http://192.168.1.50:1234/v1", "local", True),     # CMH's own LAN
+    ("http://10.0.0.7:8000/v1", "auto", True),
+    ("http://172.16.4.2:8000/v1", "auto", True),
+    ("http://gpu.local:1234/v1", "auto", True),
+    ("https://gpu.corp.example/v1", "local", False),    # public, labelled local
+    ("https://api.groq.com/v1", "local", False),
+    ("http://127.0.0.1:1234/v1", "api", False),         # loopback, labelled a tunnel
+])
+def test_local_means_loopback_or_private_network_not_whatever_the_label_says(
+        url, kind, expected):
+    """User decision of 2026-09-29. Before it, the label alone decided: a row an
+    admin marked `local` on a public host passed both this and the cost gate,
+    and local-only — a policy whose docstring promises nothing leaves the
+    machine — froze it at the head of the list."""
+    from src.cmh_cost_policy import is_local_endpoint
+    assert is_local_endpoint({"id": "x", "base_url": url,
+                              "endpoint_kind": kind}) is expected
+
+
+def test_a_public_host_labelled_local_is_not_free_either():
+    """The label used to buy a free pass through the cost gate as well."""
+    from src.cmh_cost_policy import is_zero_cost_endpoint
+    assert is_zero_cost_endpoint({"id": "x", "base_url": "https://gpu.corp.example/v1",
+                                  "endpoint_kind": "local"}, "m") is False
+
+
+async def test_local_only_never_freezes_a_public_host_however_it_is_labelled(
+        client, factory, monkeypatch):
+    """R16 of the third review, which was retired as 'unreachable' on a reason
+    that covered only one of the two directions. This is the other one, and it
+    was reachable: the cost gate passed a public host labelled local, so
+    local-only froze it leading the list."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    remote = "https://gpu.corp.example/v1"
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="gpu", name="gpu", base_url=remote,
+                                 endpoint_kind="local", is_enabled=True,
+                                 cached_models=json.dumps(["model-a:free"])))
+        db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first().endpoint_url = remote
+        db.commit()
+    async with client:
+        definition = await client.post("/api/cmh/workflows", json=_definition([
+            {"key": "constructor", "agent_id": "agent-constructor",
+             "provider_policy": "local-only"}]))
+    assert definition.status_code == 400
+    assert "Costo cero" in definition.json()["detail"]
+
+
+async def test_one_entry_per_provider_when_a_free_host_is_labelled_local(
+        client, factory, monkeypatch):
+    """P1-3 of the fourth review, case A: a row for a free host registered as
+    `local` is emitted by BOTH branches of resolve_candidates, and the list was
+    only ever deduplicated against the task's key."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        db.query(cdb.ModelEndpoint).filter(
+            cdb.ModelEndpoint.id == "groq").first().endpoint_kind = "local"
+        db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first().endpoint_url = LOCAL
+        db.query(cdb.CMHAgent).filter(
+            cdb.CMHAgent.id == "agent-constructor").first().model = "model-a:free"
+        db.commit()
+    async with client:
+        run = await _create_run(client, [{"key": "constructor",
+                                          "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run).first()
+        candidates = json.loads(step.config)["candidates"]
+    from routes.cmh_workflow_routes import _provider_key
+    keys = [_provider_key(c["endpoint_url"]) for c in candidates]
+    assert len(keys) == len(set(keys)), f"proveedor repetido: {keys}"
+
+
+async def test_one_entry_per_provider_when_two_rows_share_a_base_url(
+        client, factory, monkeypatch):
+    """P1-3 case B: two enabled rows on one base URL."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="local-bis", name="local-bis", base_url=LOCAL,
+                                 endpoint_kind="local", is_enabled=True,
+                                 cached_models=json.dumps(["model-a:free"])))
+        db.commit()
+    async with client:
+        run = await _create_run(client, [{"key": "constructor",
+                                          "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run).first()
+        candidates = json.loads(step.config)["candidates"]
+    from routes.cmh_workflow_routes import _provider_key
+    keys = [_provider_key(c["endpoint_url"]) for c in candidates]
+    assert len(keys) == len(set(keys)), f"proveedor repetido: {keys}"
+
+
+def test_the_whole_stored_config_carries_no_credential(factory):
+    """P1-1: the previous test asserted on config["candidates"] only, so it
+    could not see the top-level endpoint_url of the same config."""
+    from routes.cmh_workflow_routes import _canonical_route
+    assert "SECRETO" not in _canonical_route("http://u:SECRETO@127.0.0.1:1/v1")
+
+
+@pytest.mark.parametrize("url, clean, has_key", [
+    ("https://usuario:SECRETO123@api.x.com/v1", "https://api.x.com/v1", True),
+    ("http://127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1", False),
+    ("http://u%40a:p%3Ab@[::1]:8080/v1", "http://[::1]:8080/v1", True),
+])
+def test_a_url_credential_is_lifted_into_an_api_key(url, clean, has_key):
+    """User decision of 2026-09-29: the credential moves to api_key at
+    registration, so the URL is clean from the start and one form travels."""
+    import base64
+    from src.endpoint_resolver import split_url_credentials
+    got_clean, key = split_url_credentials(url)
+    assert got_clean == clean
+    assert bool(key) is has_key
+    if key:
+        assert key.startswith("Basic ")
+        assert base64.b64decode(key.split()[1]).decode()  # decodes, round trips
+
+
+def test_the_url_credential_really_does_authenticate():
+    """Recorded because the opposite was asserted in a commit message and was
+    false: httpx turns userinfo into Authorization: Basic at SEND time, not at
+    build time, which is why checking build_request missed it."""
+    import httpx
+    client = httpx.Client()
+    try:
+        request = client.build_request("POST", "http://u:SECRETO123@127.0.0.1:1/v1")
+        sent = next(client._build_request_auth(request).auth_flow(request))
+        assert sent.headers.get("authorization", "").startswith("Basic ")
+    finally:
+        client.close()
+
+
+async def test_the_frozen_endpoint_url_is_canonical_too(client, factory, monkeypatch):
+    """R03b. It survived because _snapshot now REFUSES a URL with a credential
+    before this line runs, so reverting to the raw URL no longer leaks one. But
+    the canonical form does more than strip credentials: it collapses the
+    equivalent spellings that otherwise reach the wire and the stored config as
+    different strings. That property was unmeasured, so the mutant lived."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        db.query(cdb.ModelEndpoint).filter(cdb.ModelEndpoint.id == "groq").delete()
+        db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first().endpoint_url = (
+                "https://API.GROQ.COM.:443/openai/v1/")
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+        first = json.loads(step.config)["candidates"][0]
+    assert first["endpoint_url"] == "https://api.groq.com/openai/v1", (
+        "la URL que se marca y se guarda es la forma canonica")
+    assert first["endpoint_id"] == first["endpoint_url"], (
+        "sin fila registrada, id y URL son la misma forma canonica")

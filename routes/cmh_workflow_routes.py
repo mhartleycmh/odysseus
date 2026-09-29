@@ -167,6 +167,19 @@ def _snapshot(db, owner, project_id, spec):
         assert_zero_cost_url(db, task.endpoint_url, agent.model, owner)
     except ZeroCostViolation as exc:
         raise HTTPException(400, f"Step {spec['key']}: {exc}") from exc
+    # A credential embedded in the URL is refused loudly, not stripped
+    # silently. Decision of 2026-09-29: it belongs in the endpoint's api_key,
+    # where registration now puts it. Stripping it here would have removed
+    # working authentication — measured, httpx turns userinfo into
+    # Authorization: Basic at send time — and keeping it would persist the
+    # secret in the run's frozen config and stream it to the browser.
+    from src.endpoint_resolver import split_url_credentials
+    if split_url_credentials(task.endpoint_url or "")[1]:
+        raise HTTPException(400, f"Step {spec['key']}: la URL del endpoint lleva "
+                                 f"credenciales embebidas. Vuelve a registrar el "
+                                 f"endpoint para que la credencial pase a su api_key: "
+                                 f"aqui no se recorta en silencio.")
+
     # Freeze the ordered candidate list here, where the run is born. Resolving
     # it per attempt would let a step's route change under it mid-run, which is
     # the guarantee of clean point 3. The step's own policy wins over the
@@ -206,26 +219,30 @@ def _snapshot(db, owner, project_id, spec):
         # The task's route replaces the router's entry for the same provider
         # rather than joining it: the agent's own model is what the cost gate
         # cleared, and keeping both would put the same host in the list twice.
-        candidates = [c for c in candidates
-                      if _provider_key(c.get("endpoint_url")) != task_key]
-        # A real endpoint id when one resolves, and the URL as a stable
-        # fallback otherwise. Never None: quota rows key on it and the column
-        # is NOT NULL, so a None here kills the step AFTER it has produced its
-        # artifact — measured by the independent review of 2026-09-29.
-        # A redacted URL as the id when no row resolves: the raw one carried any
-        # embedded credential straight into step.config and into the event
-        # stream. Redacting also collapses equivalent spellings of the same
-        # route (an explicit :443, a trailing dot), which otherwise split the
-        # provider's quota counter in two and stopped the free-tier limit from
-        # biting.
+        # The id is a real endpoint id when one resolves and the canonical URL
+        # otherwise — never None, because quota rows key on it under a NOT NULL
+        # column and a None killed the step AFTER it had produced its artifact.
         candidates = [{"endpoint_id": (getattr(task_row, "id", None)
                                        or _canonical_route(task.endpoint_url)),
-                       # Canonical, so no credential embedded in a task URL is
-                       # persisted or streamed. Verified that nothing loses
-                       # access: auth headers come from the endpoint row's
-                       # api_key (`build_headers`), never from URL userinfo.
                        "endpoint_url": _canonical_route(task.endpoint_url),
-                       "model": agent.model, "host": task_host}] + candidates
+                       "model": agent.model, "host": task_host}] + [
+            c for c in candidates
+            if _provider_key(c.get("endpoint_url")) != task_key]
+
+    # One entry per provider across the WHOLE list, not just against the task's
+    # key. Filtering only against the task left two ways for a provider to
+    # appear twice: a row for a free host registered with endpoint_kind="local"
+    # is emitted by both branches of resolve_candidates, and two enabled rows
+    # can share a base URL. Measured by the fourth review; in both cases a 429
+    # made the step retry the host that had just refused it.
+    seen, unique = set(), []
+    for candidate in candidates:
+        key = _provider_key(candidate.get("endpoint_url"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    candidates = unique
     if not candidates:
         raise HTTPException(400, f"Step {spec['key']}: la politica '{policy}' no deja "
                                  f"ningun candidato gratuito disponible")

@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 import core.database as cdb
 from routes import cmh_control_routes as control
+import src.cmh_protected_areas as areas
 from routes import cmh_memory_routes as memory
 
 
@@ -147,6 +148,7 @@ def test_only_canon_and_cards_outside_financial_folders_are_writable(api, monkey
     endpoint, target, tmp_path = api
     vault = tmp_path / "vault"
     monkeypatch.setattr(control, "CMH_ROOT", vault)
+    monkeypatch.setattr(areas, "CMH_ROOT", vault)
     open_folder = vault / "Presentaciones"
     financial = vault / "Modelo Financiero Nuevo"
     (open_folder / "fuentes").mkdir(parents=True)

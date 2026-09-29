@@ -225,6 +225,18 @@ def _main() -> int:
         print("Un error de tecleo aqui apuntaria los cinco agentes a la nube.")
         return 2
 
+    # BEFORE anything that can touch the database. The rules now live in
+    # src.cmh_protected_areas, which imports no database, so refusing a
+    # forbidden workspace root costs nothing: the previous version imported
+    # routes.cmh_control_routes here and core.database's init_db() migrated the
+    # live schema before printing "nothing was seeded".
+    from src.cmh_protected_areas import protected_area
+    area = protected_area(WORKSPACES) if WORKSPACES.exists() else None
+    if area:
+        print(f"La raiz de workspaces '{WORKSPACES}' esta dentro de, o contiene, "
+              f"el area protegida '{area}'. No se siembra nada.")
+        return 2
+
     # Validate the inputs before touching anything. An earlier version copied
     # the database and then aborted for missing instructions, leaving a backup
     # behind under a banner that said nothing was written.
@@ -258,18 +270,6 @@ def _main() -> int:
         os.environ["DATABASE_URL"] = f"sqlite:///{scratch.as_posix()}"
         print(f"SIMULACION sobre una copia desechable: {scratch}")
         print(f"La base real ({db_path}) solo se lee para copiarla; no se migra.")
-
-    # AFTER the DATABASE_URL override above, never before: importing
-    # routes.cmh_control_routes pulls in core.database, whose init_db() migrates
-    # whatever DATABASE_URL points at. Placing this guard earlier reintroduced
-    # exactly the defect it sits next to — measured, the dry run modified the
-    # live file again.
-    from routes.cmh_control_routes import protected_area
-    area = protected_area(WORKSPACES) if WORKSPACES.exists() else None
-    if area:
-        print(f"La raiz de workspaces '{WORKSPACES}' esta dentro de, o contiene, "
-              f"el area protegida '{area}'. No se siembra nada.")
-        return 2
 
     from core.database import CMHAgent, SessionLocal
 

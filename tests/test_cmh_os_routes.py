@@ -20,6 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 import core.database as cdb
 from routes import cmh_control_routes as control
+import src.cmh_protected_areas as areas
 from routes import cmh_memory_routes as memory
 from routes import cmh_os_routes as os_routes
 from routes import cmh_workflow_routes as workflow_routes
@@ -275,6 +276,7 @@ def control_api(monkeypatch, tmp_path):
     (project / "00_Proyecto.md").write_text("# Canonical card\n", encoding="utf-8")
     (root / "_control" / "INDICE.md").write_text("| Project | [Ficha](<../Project/00_Proyecto.md>) | Activo |\n", encoding="utf-8")
     monkeypatch.setattr(control, "CMH_ROOT", root)
+    monkeypatch.setattr(areas, "CMH_ROOT", root)
     monkeypatch.setattr(control, "INDEX_PATH", root / "_control" / "INDICE.md")
     monkeypatch.setattr(control, "MANAGED_PROJECTS", root / "Managed")
     monkeypatch.setattr(control, "owner_is_admin_or_single_user", lambda owner: owner == "admin")

@@ -56,6 +56,13 @@ def test_operational_figures_are_not_treated_as_financial():
     assert [label for label, pattern in scrub.FORBIDDEN if re.search(pattern, clean)] == []
 
 
+#: Synthetic originals, versioned with the tests. The real ones live outside
+#: the repository and are deliberately not versioned: they carry financial file
+#: names, so committing them to make a count reproduce would be the leak the
+#: scrubber exists to prevent.
+SOURCES = REPO / "tests" / "fixtures" / "agent_sources"
+
+
 @pytest.fixture
 def derived(tmp_path, monkeypatch):
     """Generate the five files into a throwaway tree.
@@ -66,6 +73,7 @@ def derived(tmp_path, monkeypatch):
     which nothing did before.
     """
     monkeypatch.setattr(scrub, "TARGET", tmp_path)
+    monkeypatch.setattr(scrub, "SOURCE", SOURCES)
     monkeypatch.setattr("sys.argv", ["scrub_instructions.py"])
     assert scrub.main() == 0, "el guion debe terminar limpio"
     return tmp_path
@@ -214,7 +222,8 @@ def _derived_tree(tmp_path):
     root = tmp_path / "workspaces"
     subprocess.run([sys.executable, str(REPO / "scripts" / "cmh_seed" / "scrub_instructions.py")],
                    cwd=str(REPO), capture_output=True, text=True, check=True,
-                   env={**os.environ, "CMH_AGENT_WORKSPACES": str(root)})
+                   env={**os.environ, "CMH_AGENT_WORKSPACES": str(root),
+                        "CMH_AGENT_SOURCES": str(SOURCES)})
     return root
 
 
@@ -377,7 +386,8 @@ def test_a_workspace_root_inside_a_protected_area_is_refused(tmp_path):
     # thing left that can refuse is the guard under test.
     subprocess.run([sys.executable, str(REPO / "scripts" / "cmh_seed" / "scrub_instructions.py")],
                    cwd=str(REPO), capture_output=True, text=True, check=True,
-                   env={**os.environ, "CMH_AGENT_WORKSPACES": str(forbidden)})
+                   env={**os.environ, "CMH_AGENT_WORKSPACES": str(forbidden),
+                        "CMH_AGENT_SOURCES": str(SOURCES)})
     result = _run_script(["--apply", "--authorized-by", "prueba"],
                          {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
                           "LOCALAPPDATA": str(tmp_path / "local"),
@@ -406,3 +416,37 @@ def test_two_dry_runs_do_not_share_one_scratch_file(tmp_path):
         paths.append(line[0].split(":", 1)[1].strip())
     assert paths[0] != paths[1], (
         f"dos simulaciones comparten el mismo archivo temporal: {paths[0]}")
+
+
+def test_a_valid_but_unnormalised_policy_is_normalised_before_planning(tmp_path):
+    """M16 of the fourth review: the three typo tests only covered INVALID
+    values, so passing the raw string to plan() survived all 275 tests. A valid
+    spelling in the wrong case is the case that slips through — and its effect
+    is the same one the script is supposed to prevent: five agents on the cloud
+    under a banner that reads local-only."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    connection = sqlite3.connect(live)
+    connection.execute(
+        "CREATE TABLE model_endpoints (id TEXT PRIMARY KEY, name TEXT, base_url TEXT, "
+        "api_key TEXT, is_enabled BOOLEAN, hidden_models TEXT, cached_models TEXT, "
+        "pinned_models TEXT, model_type TEXT, endpoint_kind TEXT, "
+        "model_refresh_mode TEXT, model_refresh_interval INTEGER, "
+        "model_refresh_timeout INTEGER, supports_tools BOOLEAN, owner TEXT, "
+        "provider_auth_id TEXT, created_at TIMESTAMP, updated_at TIMESTAMP)")
+    connection.execute(
+        "INSERT INTO model_endpoints (id, name, base_url, is_enabled, endpoint_kind, "
+        "cached_models) VALUES ('groq', 'groq', 'https://api.groq.com/openai/v1', 1, "
+        "'api', '[\"openai/gpt-oss-120b\"]')")
+    connection.commit()
+    connection.close()
+
+    result = _run_script(["--policy", "LOCAL-ONLY"],
+                         {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                          "LOCALAPPDATA": str(tmp_path / "local"),
+                          "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path)),
+                          "CMH_AGENT_SOURCES": str(SOURCES)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "politica: local-only" in result.stdout
+    assert "'groq'" not in result.stdout, (
+        "una grafia valida sin normalizar no puede resolver candidatos de nube")

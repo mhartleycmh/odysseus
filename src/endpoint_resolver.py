@@ -10,7 +10,7 @@ import logging
 import socket
 import subprocess
 from typing import Optional, Tuple, Dict
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 from core.database import SessionLocal, ModelEndpoint
 from src.llm_core import _detect_provider, _host_match, _is_kimi_code_url, KIMI_CODE_USER_AGENT, _ollama_api_root
@@ -286,6 +286,43 @@ def select_endpoint_for_url(endpoints, endpoint_url: str, model: Optional[str] =
             len(ranked), ranked[0][4], [row[4] for row in ranked],
         )
     return ranked[0][5]
+
+
+def split_url_credentials(url: str) -> Tuple[str, Optional[str]]:
+    """Separate ``user:pass@`` from a base URL, returning (clean_url, api_key).
+
+    Decision of 2026-09-29. Credentials embedded in a base URL are not inert
+    decoration: measured with this environment's httpx 0.28.1, the client turns
+    the userinfo into ``Authorization: Basic …`` at send time, and
+    ``llm_core`` builds its ``AsyncClient`` without ``auth=``. So the URL both
+    authenticates and travels — it gets persisted into a run's frozen config
+    and streamed to the browser over SSE.
+
+    Rather than keep two spellings of one URL alive, the credential is lifted
+    out at registration: it becomes the endpoint's ``api_key`` (encrypted at
+    rest, never rendered) as a ready ``Basic`` header, and the stored URL is
+    clean from the start. Everything downstream then handles one form.
+
+    Returns the key already prefixed with ``Basic `` so callers can pass it
+    through unchanged; ``None`` when the URL carries no userinfo.
+    """
+    import base64
+
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return url or "", None
+    if not (parsed.username or parsed.password):
+        return url or "", None
+    host = parsed.hostname or ""
+    if ":" in host:                       # IPv6 literal
+        host = f"[{host}]"
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    clean = urlunparse((parsed.scheme, host, parsed.path,
+                        parsed.params, parsed.query, parsed.fragment))
+    raw = f"{unquote(parsed.username or '')}:{unquote(parsed.password or '')}"
+    return clean, "Basic " + base64.b64encode(raw.encode("utf-8")).decode("ascii")
 
 
 def _validated_endpoint_base(url: str) -> str:

@@ -2011,6 +2011,15 @@ def setup_model_routes(model_discovery):
         base_url = _normalize_base(base_url)
         if not base_url:
             raise HTTPException(400, "Base URL is required")
+        # Lift any user:pass@ out of the URL and into the (encrypted) api_key.
+        # Left in place it both authenticates — httpx turns userinfo into
+        # Authorization: Basic at send time — and travels, ending up in logs,
+        # in a workflow run's frozen config and on the event stream. An
+        # explicitly supplied key wins; the URL is cleaned either way.
+        from src.endpoint_resolver import split_url_credentials
+        base_url, url_key = split_url_credentials(base_url)
+        if url_key and not api_key.strip():
+            api_key = url_key
         # Resolve hostname via Tailscale if DNS fails
         from src.endpoint_resolver import resolve_url
         base_url = resolve_url(base_url)

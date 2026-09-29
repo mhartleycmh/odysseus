@@ -74,10 +74,12 @@ MUTANTS = [
      "    db.query(CMHAgent).filter(CMHAgent.name == PRESERVE).delete()\n"
      "    for row in rows:\n        agent = (db.query(CMHAgent)"),
 
+    # Repointed after the fourth round rewrote the deduplication: the old
+    # pattern matched code that no longer exists, and an obsolete pattern is
+    # reported as NO APLICABLE precisely so it cannot vanish from the count.
     ("R17 la deduplicacion por proveedor se retira", WF,
-     '        candidates = [c for c in candidates\n'
-     '                      if _provider_key(c.get("endpoint_url")) != task_key]',
-     '        pass'),
+     "    seen, unique = set(), []",
+     "    seen, unique = set(), []\n    candidates = list(candidates)\n    _skip = "),
     ("R18 --policy deja de validarse en el guion", SEED,
      '    policy = normalize_policy(args.policy)\n    if policy is None:',
      '    policy = args.policy\n    if False:'),

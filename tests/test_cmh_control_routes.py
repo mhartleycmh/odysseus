@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 import core.database as cdb
 from routes import cmh_control_routes as control
+import src.cmh_protected_areas as areas
 
 
 @pytest.fixture
@@ -23,6 +24,7 @@ def api(monkeypatch, tmp_path):
     card.write_text("# Canonical card\n", encoding="utf-8")
     index.write_text("| Project | [Ficha](<../Project/00_Proyecto.md>) | Activo |\n", encoding="utf-8")
     monkeypatch.setattr(control, "CMH_ROOT", root)
+    monkeypatch.setattr(areas, "CMH_ROOT", root)
     monkeypatch.setattr(control, "INDEX_PATH", index)
     monkeypatch.setattr(control, "MANAGED_PROJECTS", root / "Managed")
     monkeypatch.setattr(control, "owner_is_admin_or_single_user", lambda owner: owner == "admin")

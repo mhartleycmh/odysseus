@@ -83,24 +83,43 @@ def endpoint_host(base_url: Optional[str]) -> str:
     return host.strip().lower().rstrip(".")
 
 
+def is_reachable_without_leaving_the_network(host: str) -> bool:
+    """Whether a host is loopback or on a private network.
+
+    Decision of 2026-09-29: ``local-only`` means loopback **or** a private
+    network (RFC1918, link-local, ``.local``), so a GPU on CMH's own LAN counts
+    and a public host does not. Before this, the label alone decided: a row an
+    admin marked ``local`` on ``https://gpu.corp.example/v1`` passed both this
+    and the cost gate, and ``local-only`` — a policy whose docstring promises
+    nothing leaves the machine — froze it at the head of the list.
+    """
+    import ipaddress
+
+    name = (host or "").strip().lower().rstrip(".")
+    if not name:
+        return False
+    if name in _LOOPBACK_HOSTS or name.endswith(".local"):
+        return True
+    try:
+        address = ipaddress.ip_address(name.strip("[]"))
+    except ValueError:
+        return False
+    return bool(address.is_loopback or address.is_private or address.is_link_local)
+
+
 def is_local_endpoint(endpoint: Any) -> bool:
     """Whether this endpoint is a local runtime, and therefore free.
 
-    ``endpoint_kind`` defaults to ``"auto"`` in the database, so gating on the
-    literal string ``"local"`` alone would reject a loopback endpoint the admin
-    never relabelled. An ``auto`` endpoint counts as local only when its host is
-    itself loopback or link-local; ``auto`` plus a global host does not.
+    The HOST decides, not the label. ``endpoint_kind`` still disqualifies — an
+    admin who wrote ``api`` or ``proxy`` declared a tunnel — but writing
+    ``local`` on a public host no longer makes it local. ``auto`` is the
+    database default, so a loopback endpoint nobody relabelled still counts.
     """
     kind = (_field(endpoint, "endpoint_kind") or "auto").strip().lower()
     if kind in _EXTERNAL_KINDS:
         return False
-    if kind == "local":
-        return True
-    host = endpoint_host(_field(endpoint, "base_url"))
-    return bool(host) and (host in _LOOPBACK_HOSTS
-                           or host.startswith("127.")
-                           or host == "::1"
-                           or host.endswith(".local"))
+    return is_reachable_without_leaving_the_network(
+        endpoint_host(_field(endpoint, "base_url")))
 
 
 def is_zero_cost_endpoint(endpoint: Any, model: Optional[str] = None) -> bool:
