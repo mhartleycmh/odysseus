@@ -356,6 +356,43 @@ def _normalize_chat_endpoint(url: str) -> str:
         return url
 
 
+class RestrictedStreamError(RuntimeError):
+    """The model stream of a restricted task ended in an ``event: error`` chunk.
+
+    The provider's HTTP status is the one fact a caller needs to choose between
+    trying another provider (402, 408, 429, 5xx: a refusal to answer) and
+    stopping (400, 401, 403, 404: a fault the next provider would meet too).
+    ``llm_core`` already puts it in the chunk as an integer; this used to raise a
+    bare ``RuntimeError`` and throw it away, so a CMH workflow step died on its
+    first candidate whatever the provider said.
+
+    Only the integer is kept. The chunk's text is not: a provider's 401 can echo
+    part of the key it rejected, and this message ends up in a step's ``error``
+    column and in the SSE stream (ADR-011).
+    """
+
+    def __init__(self, status_code: "int | None" = None):
+        message = "Restricted task model stream failed"
+        if status_code is not None:
+            message += f" (HTTP {status_code})"
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _stream_error_status(event_str: str) -> "int | None":
+    """The integer ``status`` an SSE error chunk carries, or None when it has none."""
+    for line in event_str.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            data = json.loads(line[6:])
+        except ValueError:
+            return None
+        status = data.get("status") if isinstance(data, dict) else None
+        return status if isinstance(status, int) and not isinstance(status, bool) else None
+    return None
+
+
 class TaskScheduler:
     def __init__(self, session_manager):
         self._session_manager = session_manager
@@ -2058,7 +2095,7 @@ class TaskScheduler:
                 event_str.startswith("event: error")
                 or (event_str.startswith("data: ") and '"error"' in event_str)
             ):
-                raise RuntimeError("Restricted task model stream failed")
+                raise RestrictedStreamError(_stream_error_status(event_str))
             if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
                 try:
                     data = json.loads(event_str[6:])

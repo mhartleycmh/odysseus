@@ -26,9 +26,12 @@ if not PY.exists() or "python" not in PY.name.lower():
     PY = REPO.parent.parent / ".venv" / "Scripts" / "python.exe"
 
 TARGET_TESTS = ["tests/test_cmh_mutant_target.py"]
+STEP_FAILURE_TESTS = ["tests/test_cmh_step_provider_failures.py"]
 
 TARGET = "scripts/cmh_mutants/_target.py"
 ROUND2 = "scripts/cmh_mutants/round2.py"
+SCHED = "src/task_scheduler.py"
+ROUTER = "src/cmh_provider_router.py"
 
 #: (name, file, text to replace, replacement, test modules that must fall)
 MUTANTS = [
@@ -45,6 +48,20 @@ MUTANTS = [
      "REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])",
      "REPO = pathlib.Path(__file__).resolve().parents[2]",
      TARGET_TESTS),
+
+    # --- 3.3b.1 the provider's status survives the trip from stream to router ---
+    ("S01 el paso vuelve a lanzar un RuntimeError sin status", SCHED,
+     "                raise RestrictedStreamError(_stream_error_status(event_str))",
+     '                raise RuntimeError("Restricted task model stream failed")',
+     STEP_FAILURE_TESTS),
+    ("S02 el status del evento de error se descarta", SCHED,
+     "        return status if isinstance(status, int) and not isinstance(status, bool) else None",
+     "        return None",
+     STEP_FAILURE_TESTS),
+    ("S03 cualquier status cambia de proveedor, tambien un 401", ROUTER,
+     "    if status in FALLBACK_STATUS or (isinstance(status, int) and 500 <= status <= 599):",
+     "    if isinstance(status, int):",
+     STEP_FAILURE_TESTS),
 ]
 
 
