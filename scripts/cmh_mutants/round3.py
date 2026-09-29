@@ -16,8 +16,9 @@ import pathlib
 import subprocess
 import sys
 
-REPO = pathlib.Path(os.environ.get("CMH_MUTANT_REPO") or
-                    pathlib.Path(__file__).resolve().parents[2])
+from _target import resolve_repo
+
+REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])
 PY = pathlib.Path(sys.executable)
 if not PY.exists() or "python" not in PY.name.lower():
     PY = REPO.parent.parent / ".venv" / "Scripts" / "python.exe"

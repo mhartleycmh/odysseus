@@ -7,9 +7,17 @@ be reproduced.
 
 import pathlib
 import subprocess
+import sys
 
-REPO = pathlib.Path(r"c:\Users\mhartley\OneDrive - CMH S.R.L\Documentos\Claude\CMH_Claude\odysseus")
-PY = REPO.parent.parent / ".venv" / "Scripts" / "python.exe"
+from _target import resolve_repo
+
+# Was a hard-coded absolute path to the LIVE tree that ignored CMH_MUTANT_REPO:
+# a campaign launched on an export mutated the working tree instead. resolve_repo
+# takes the export from CMH_MUTANT_REPO and refuses any directory with a .git.
+REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])
+PY = pathlib.Path(sys.executable)
+if not PY.exists() or "python" not in PY.name.lower():
+    PY = REPO.parent.parent / ".venv" / "Scripts" / "python.exe"
 
 TESTS = ["tests/test_cmh_review_findings.py", "tests/test_cmh_provider_router.py",
          "tests/test_cmh_cost_policy.py", "tests/test_cmh_seed_scripts.py",
