@@ -16,6 +16,8 @@ instead of after a campaign of minutes. Nothing here writes a file.
 import ast
 import importlib.util
 import pathlib
+import shutil
+import subprocess
 
 import pytest
 
@@ -62,8 +64,34 @@ def test_the_runners_are_the_ones_this_module_covers():
     assert {"round2.py", "round3.py", "round4.py"} <= set(RUNNERS)
 
 
+def _syntax_problem(relative: str, mutated: str, workdir: pathlib.Path):
+    """Why the mutated source is not valid, or None. Python is compiled; a
+    PowerShell script goes through PowerShell's own parser (skipped when this
+    machine has none: the mutants are then unchecked, not passed)."""
+    if relative.endswith(".py"):
+        try:
+            compile(mutated, relative, "exec")
+        except SyntaxError as exc:
+            return f"no compila ({exc.msg}, linea {exc.lineno})"
+        return None
+    if relative.endswith(".ps1"):
+        powershell = shutil.which("powershell.exe")
+        if not powershell:
+            return None
+        target = workdir / "mutant.ps1"
+        target.write_text(mutated, encoding="ascii" if mutated.isascii() else "utf-8-sig")
+        script = ("$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
+                  f"'{target}', [ref]$null, [ref]$e); "
+                  "if ($e.Count) { $e | ForEach-Object { $_.Message + ' (linea ' + "
+                  "$_.Extent.StartLineNumber + ')' }; exit 1 }")
+        result = subprocess.run([powershell, "-NoProfile", "-Command", script],
+                                capture_output=True, text=True)
+        return None if result.returncode == 0 else "no compila: " + result.stdout.strip()[:200]
+    return f"tipo de archivo sin comprobacion de sintaxis: {relative}"
+
+
 @pytest.mark.parametrize("runner", RUNNERS)
-def test_every_mutant_is_applicable_and_compiles(runner):
+def test_every_mutant_is_applicable_and_compiles(runner, tmp_path):
     broken = []
     mutants = _mutants(runner)
     assert mutants, runner
@@ -76,10 +104,9 @@ def test_every_mutant_is_applicable_and_compiles(runner):
         if mutated == source:
             broken.append(f"{name}: el mutante no cambia nada")
             continue
-        try:
-            compile(mutated, relative, "exec")
-        except SyntaxError as exc:
-            broken.append(f"{name}: no compila ({exc.msg}, linea {exc.lineno})")
+        problem = _syntax_problem(relative, mutated, tmp_path)
+        if problem:
+            broken.append(f"{name}: {problem}")
     assert not broken, "\n".join(broken)
 
 
