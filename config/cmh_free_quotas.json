@@ -7,7 +7,8 @@
     "muestra al registrar la clave (§3.1.1); al dictarlo se reemplaza el numero,",
     "se pone verified=true y se actualizan source_url y source_date.",
     "Mientras verified sea false el router los aplica igual: un limite supuesto",
-    "y conservador frena antes que ningun limite."
+    "y conservador frena antes que ningun limite.",
+    "Cerebras salio el 2026-09-29: no tiene nivel gratuito permanente. Su prueba son 5 USD de credito que vencen a los 30 dias y la API queda inactiva sin metodo de pago verificado, asi que falla la condicion en la que se apoya D1 (cuentas sin tarjeta). Canon 05, filas del 2026-09-29. La cadena queda Groq -> OpenRouter :free -> LM Studio."
   ],
   "threshold": 0.9,
   "_threshold_nota": "El router no envia una peticion que llevaria a superar esta fraccion de cualquier ventana. 0,9 es valor inicial propuesto: deja 10% de margen para reintentos y para el desfase entre nuestro conteo y el del proveedor.",
@@ -18,31 +19,29 @@
       "model": "openai/gpt-oss-120b",
       "model_verified_at": null,
       "_model_pendiente": "PENDIENTE: confirmar con una llamada real, tool calling incluido, y anotar la fecha en model_verified_at",
-      "limits": {"rpm": null, "rpd": 1000, "tpm": null, "tpd": 200000},
+      "limits": {
+        "rpm": null,
+        "rpd": 1000,
+        "tpm": null,
+        "tpd": 200000
+      },
       "verified": false,
       "source_url": "https://console.groq.com/docs/rate-limits",
       "source_date": "2026-09-28",
       "_limits_pendiente": "PENDIENTE: rpd y tpd varian por modelo; rpm y tpm sin dato. Leer el panel de Groq al registrar la clave."
     },
     {
-      "endpoint_host": "api.cerebras.ai",
-      "order": 2,
-      "model": "gpt-oss-120b",
-      "model_verified_at": null,
-      "_model_pendiente": "PENDIENTE: confirmar con una llamada real, tool calling incluido",
-      "limits": {"rpm": 5, "rpd": null, "tpm": null, "tpd": 1000000},
-      "verified": false,
-      "source_url": "https://inference-docs.cerebras.ai/support/rate-limits",
-      "source_date": "2026-09-28",
-      "_limits_pendiente": "PENDIENTE: rpd y tpm sin dato. Leer el panel de Cerebras al registrar la clave."
-    },
-    {
       "endpoint_host": "openrouter.ai",
-      "order": 3,
+      "order": 2,
       "model": null,
       "model_verified_at": null,
       "_model_pendiente": "PENDIENTE: se descubre en ejecucion — el primer modelo ':free' de GET /models que declare 'tools' en supported_parameters, ordenado por longitud de contexto descendente. Exige la clave.",
-      "limits": {"rpm": null, "rpd": 50, "tpm": null, "tpd": null},
+      "limits": {
+        "rpm": null,
+        "rpd": 50,
+        "tpm": null,
+        "tpd": null
+      },
       "verified": false,
       "source_url": "https://openrouter.ai/docs/api-reference/limits",
       "source_date": "2026-09-28",

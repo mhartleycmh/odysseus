@@ -20,8 +20,8 @@ from src.cmh_cost_policy import (
 
 LOCAL = "http://127.0.0.1:59999/v1"
 GROQ = "https://api.groq.com/openai/v1"
-CEREBRAS = "https://api.cerebras.ai/v1"
 OPENROUTER = "https://openrouter.ai/api/v1"
+CEREBRAS = "https://api.cerebras.ai/v1"
 ANTHROPIC = "https://api.anthropic.com"
 
 
@@ -36,7 +36,9 @@ def ep(base_url, kind="auto", id="e1"):
     (ep(LOCAL, "auto"), "cmh-local", True),            # unlabelled loopback is still local
     (ep("http://localhost:1234/v1", "auto"), "m", True),
     (ep(GROQ, "api"), "openai/gpt-oss-120b", True),
-    (ep(CEREBRAS, "api"), "gpt-oss-120b", True),
+    # Cerebras left FREE_HOSTS on 2026-09-29: no permanent free tier, the
+    # trial expires and the API needs a verified card. Canon 05 of that date.
+    (ep(CEREBRAS, "api"), "gpt-oss-120b", False),
     (ep(OPENROUTER, "api"), "some/model:free", True),
     (ep(OPENROUTER, "api"), "some/model", False),      # paid variant on a free host
     (ep(OPENROUTER, "api"), None, False),              # unknown model fails closed

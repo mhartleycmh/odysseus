@@ -323,7 +323,7 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
   `9a76d7a3` no se borra: sirve al chat personal y queda excluido de la cadena.
 - **Decisión.** `src/cmh_cost_policy.py` clasifica una ruta como gratuita si el
   endpoint es un runtime local o si su host está en `FREE_HOSTS`
-  (`api.groq.com`, `api.cerebras.ai`, `openrouter.ai`); en OpenRouter exige
+  (`api.groq.com`, `openrouter.ai`); en OpenRouter exige
   además que el modelo termine en `:free`, y un modelo desconocido **falla
   cerrado**. Coincidencia de host **exacta**, nunca por sufijo.
 - **Cuatro sitios de aplicación**, no tres: enlazar agente y tarea
@@ -350,6 +350,8 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
 
 - **Contexto.** Decisión D3: APIs gratuitas primero, local como respaldo. Un
   paso que congelaba un solo `endpoint_url` moría con su proveedor.
+- **Cadena vigente desde el 2026-09-29: Groq → OpenRouter `:free` → LM
+  Studio.** Cerebras salió (ADR-024).
 - **Decisión.** El run congela una **lista ordenada** de candidatos
   (`src/cmh_provider_router.resolve_candidates`) y el ejecutor la recorre. Se
   conserva la semántica de «congelado por paso» del punto limpio 3: lo que un
@@ -425,3 +427,30 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
 - **Un run congelado antes de que esto existiera se lee como `true`.** El valor
   laxo es el tentador y habría eximido en silencio a toda ejecución anterior.
   Fijado por prueba.
+
+## ADR-024 · Cerebras sale de la cadena de costo cero (2026-09-29)
+
+- **Contexto.** D3 (2026-09-28) ordenaba Groq → Cerebras → OpenRouter `:free` →
+  LM Studio, sobre la premisa —del autor del encargo, marcada VERIFICAR— de que
+  los tres tenían nivel gratuito y podían usarse sin método de pago.
+- **Medición.** Cerebras **no tiene nivel gratuito permanente**. Lo que ofrece
+  es una prueba de 5 USD en créditos que vence a los 30 días, y la API queda
+  inactiva sin un método de pago verificado. Eso contradice de frente la
+  condición sobre la que se apoya D1: cuentas sin tarjeta. Canon 05, filas
+  VERIFICACION y DECISION del 2026-09-29, con fuente primaria y confirmación
+  del refutador.
+- **Decisión.** `api.cerebras.ai` sale de `FREE_HOSTS` y del JSON de cuotas. La
+  cadena queda **Groq → OpenRouter `:free` → LM Studio**. Sacarlo del conjunto
+  no es cosmético: es lo que hace que la compuerta lo **rechace** en vez de
+  tratarlo como gratuito.
+- **Por qué además hay pruebas y no solo un borrado.** Tres pruebas fijan que
+  el host no está en `FREE_HOSTS`, que no está en el JSON, que un paso apuntado
+  ahí se rechaza y que ni escrito a mano en el JSON entra a la lista de
+  candidatos. Volver a meterlo exige una decisión contra una suite en rojo, no
+  un descuido.
+- **Efecto en las pruebas.** Cerebras era el segundo candidato gratuito de cada
+  prueba de fallback. Su lugar lo toma OpenRouter, lo que las vuelve más
+  estrictas: allí un modelo sin sufijo `:free` lo rechaza la compuerta.
+- **Descartado.** Conservarlo «para los 30 días de prueba»: una cadena que deja
+  de funcionar en una fecha, y que entre tanto exige una tarjeta registrada, no
+  es costo cero sino costo diferido.

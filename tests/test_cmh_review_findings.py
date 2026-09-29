@@ -22,15 +22,15 @@ from src import cmh_provider_router as router
 from src.cmh_cost_policy import endpoint_for_url, is_zero_cost_endpoint
 
 GROQ = "https://api.groq.com/openai/v1"
-CEREBRAS = "https://api.cerebras.ai/v1"
+OPENROUTER = "https://openrouter.ai/api/v1"
 LOCAL = "http://127.0.0.1:59999/v1"
 ANTHROPIC = "https://api.anthropic.com"
 LOOKALIKE = "https://api.groq.com.attacker.example/v1"
 
 CONFIG = {"threshold": 0.9, "providers": [
-    {"endpoint_host": "api.groq.com", "order": 1, "model": "model-a",
+    {"endpoint_host": "api.groq.com", "order": 1, "model": "model-a:free",
      "limits": {"rpd": 1000}},
-    {"endpoint_host": "api.cerebras.ai", "order": 2, "model": "model-a",
+    {"endpoint_host": "openrouter.ai", "order": 2, "model": "model-a:free",
      "limits": {"rpm": 5}},
 ]}
 
@@ -53,16 +53,16 @@ def factory(monkeypatch, tmp_path):
         monkeypatch.setattr(module, "protected_area", lambda path: None)
     monkeypatch.setattr(router, "load_quota_config", lambda path=None: CONFIG)
     with session_factory() as db:
-        for eid, url, kind in (("groq", GROQ, "api"), ("cerebras", CEREBRAS, "api"),
+        for eid, url, kind in (("groq", GROQ, "api"), ("openrouter", OPENROUTER, "api"),
                                ("local", LOCAL, "local"), ("anthropic", ANTHROPIC, "api")):
             db.add(cdb.ModelEndpoint(id=eid, name=eid, base_url=url, endpoint_kind=kind,
-                                     is_enabled=True, cached_models=json.dumps(["model-a"])))
+                                     is_enabled=True, cached_models=json.dumps(["model-a:free"])))
         for key in ("constructor", "revisor"):
             db.add(cdb.ScheduledTask(id=f"task-{key}", owner="admin", name=key, task_type="llm",
-                                     endpoint_url=GROQ, model="model-a", prompt="x",
+                                     endpoint_url=GROQ, model="model-a:free", prompt="x",
                                      status="paused"))
             db.add(cdb.CMHAgent(id=f"agent-{key}", owner="admin", name=key, project_id="project",
-                                role=key, instructions=key, model="model-a",
+                                role=key, instructions=key, model="model-a:free",
                                 allowed_tools=json.dumps(["read_file"]), workspace=str(tmp_path),
                                 status="active", task_id=f"task-{key}"))
         db.commit()
@@ -114,8 +114,8 @@ async def test_a_run_created_through_the_api_freezes_more_than_one_candidate(cli
         config = json.loads(step.config)
     candidates = config["candidates"]
     assert len(candidates) > 1, "a run must freeze a list, not a single route"
-    assert [c["endpoint_id"] for c in candidates][:2] == [None, "cerebras"] or \
-           [c["endpoint_id"] for c in candidates][:2] == ["groq", "cerebras"]
+    assert [c["endpoint_id"] for c in candidates][:2] == [None, "openrouter"] or \
+           [c["endpoint_id"] for c in candidates][:2] == ["groq", "openrouter"]
     assert all(is_zero_cost_endpoint({"base_url": c["endpoint_url"], "endpoint_kind": "auto"},
                                      c["model"]) for c in candidates)
 
@@ -141,7 +141,7 @@ async def test_a_step_policy_of_local_only_freezes_only_local(client, factory, m
         step = db.query(cdb.CMHWorkflowStep).filter(cdb.CMHWorkflowStep.run_id == run_id).first()
         config = json.loads(step.config)
     assert config["provider_policy"] == "local-only"
-    assert not any("groq" in (c["endpoint_url"] or "") or "cerebras" in (c["endpoint_url"] or "")
+    assert not any("groq" in (c["endpoint_url"] or "") or "openrouter" in (c["endpoint_url"] or "")
                    for c in config["candidates"])
 
 
@@ -164,7 +164,7 @@ async def test_the_agents_policy_survives_a_round_trip_through_the_api(client):
     async with client:
         created = await client.post("/api/cmh/agents", json={
             "name": "Con politica", "project_id": "project", "role": "r", "instructions": "i",
-            "model": "model-a", "allowed_tools": ["read_file"], "workspace": ".",
+            "model": "model-a:free", "allowed_tools": ["read_file"], "workspace": ".",
             "provider_policy": "local-only"})
         assert created.status_code == 201, created.text
         assert created.json()["provider_policy"] == "local-only"
@@ -266,7 +266,7 @@ async def test_a_step_pointed_at_a_lookalike_host_is_blocked(factory, monkeypatc
     from src.cmh_cost_policy import ZeroCostViolation
     config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
               "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
-              "instructions": "i", "endpoint_url": LOOKALIKE, "model": "model-a"}
+              "instructions": "i", "endpoint_url": LOOKALIKE, "model": "model-a:free"}
     with pytest.raises(ZeroCostViolation):
         await flow.call_model(config, "prompt")
     assert attempts == []
@@ -291,9 +291,9 @@ async def test_call_model_refuses_to_send_at_the_threshold(factory, monkeypatch)
         db.commit()
     config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
               "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
-              "instructions": "i", "endpoint_url": GROQ, "model": "model-a",
+              "instructions": "i", "endpoint_url": GROQ, "model": "model-a:free",
               "candidates": [{"endpoint_id": "groq", "endpoint_url": GROQ,
-                              "model": "model-a", "host": "api.groq.com"}]}
+                              "model": "model-a:free", "host": "api.groq.com"}]}
     with pytest.raises(RuntimeError, match="sin cuota"):
         await flow.call_model(config, "prompt")
     assert attempts == [], "the call that would cross the line must never be sent"
@@ -312,14 +312,14 @@ async def test_a_spent_candidate_is_skipped_and_the_next_one_answers(factory, mo
         db.commit()
     config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
               "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
-              "instructions": "i", "endpoint_url": GROQ, "model": "model-a",
+              "instructions": "i", "endpoint_url": GROQ, "model": "model-a:free",
               "candidates": [
-                  {"endpoint_id": "groq", "endpoint_url": GROQ, "model": "model-a",
+                  {"endpoint_id": "groq", "endpoint_url": GROQ, "model": "model-a:free",
                    "host": "api.groq.com"},
-                  {"endpoint_id": "cerebras", "endpoint_url": CEREBRAS, "model": "model-a",
-                   "host": "api.cerebras.ai"}]}
+                  {"endpoint_id": "openrouter", "endpoint_url": OPENROUTER, "model": "model-a:free",
+                   "host": "api.openrouter.ai"}]}
     assert await flow.call_model(config, "prompt") == "artifact"
-    assert attempts == ["cerebras"]
+    assert attempts == ["openrouter"]
 
 
 # --- P2 nº8: a paid host in the quota config could enter the candidate list --
@@ -330,7 +330,7 @@ def test_a_paid_host_written_into_the_quota_config_never_becomes_a_candidate(fac
     poisoned = {"threshold": 0.9, "providers": [
         {"endpoint_host": "api.anthropic.com", "order": 0, "model": "claude-opus-5",
          "limits": {}},
-        {"endpoint_host": "api.groq.com", "order": 1, "model": "model-a", "limits": {}}]}
+        {"endpoint_host": "api.groq.com", "order": 1, "model": "model-a:free", "limits": {}}]}
     with factory() as db:
         ids = [c["endpoint_id"] for c in router.resolve_candidates(
             db, router.FREE_CLOUD_FIRST, config=poisoned)]
@@ -366,17 +366,17 @@ async def test_the_fallback_event_names_the_model_that_actually_answered(factory
     monkeypatch.setattr(flow, "_run_one_candidate", fake)
     config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
               "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
-              "instructions": "i", "endpoint_url": GROQ, "model": "model-groq",
+              "instructions": "i", "endpoint_url": GROQ, "model": "model-groq:free",
               "candidates": [
-                  {"endpoint_id": "groq", "endpoint_url": GROQ, "model": "model-groq",
+                  {"endpoint_id": "groq", "endpoint_url": GROQ, "model": "model-groq:free",
                    "host": "api.groq.com"},
-                  {"endpoint_id": "cerebras", "endpoint_url": CEREBRAS, "model": "model-cerebras",
-                   "host": "api.cerebras.ai"}]}
+                  {"endpoint_id": "openrouter", "endpoint_url": OPENROUTER, "model": "model-openrouter:free",
+                   "host": "api.openrouter.ai"}]}
     assert await flow.call_model(config, "prompt") == "artifact"
     with factory() as db:
         events = [(e.kind, json.loads(e.payload)) for e in db.query(cdb.CMHWorkflowEvent).all()]
     fallback = [p for kind, p in events if kind == "provider_fallback"]
-    assert fallback and fallback[0]["model"] == "model-groq"   # the one that failed
+    assert fallback and fallback[0]["model"] == "model-groq:free"   # the one that failed
 
 
 @pytest.mark.parametrize("status", [500, 501, 502, 503, 504, 505, 529])
@@ -407,9 +407,9 @@ def test_a_bare_host_row_does_not_clear_a_lookalike(factory):
         db.commit()
         rows = db.query(cdb.ModelEndpoint).all()
         # The runner's own ranking picks it: the danger is real, not theoretical.
-        assert select_endpoint_for_url(rows, LOOKALIKE, "model-a") is not None
+        assert select_endpoint_for_url(rows, LOOKALIKE, "model-a:free") is not None
         # The gate must still refuse, because the host is not the same host.
-        assert endpoint_for_url(db, LOOKALIKE, model="model-a") is None
+        assert endpoint_for_url(db, LOOKALIKE, model="model-a:free") is None
 
 
 async def test_a_lookalike_is_blocked_even_with_a_bare_host_row_registered(factory, monkeypatch):
@@ -427,7 +427,7 @@ async def test_a_lookalike_is_blocked_even_with_a_bare_host_row_registered(facto
     monkeypatch.setattr(flow, "_run_one_candidate", fake)
     config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
               "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
-              "instructions": "i", "endpoint_url": LOOKALIKE, "model": "model-a"}
+              "instructions": "i", "endpoint_url": LOOKALIKE, "model": "model-a:free"}
     with pytest.raises(ZeroCostViolation):
         await flow.call_model(config, "prompt")
     assert attempts == []
@@ -462,13 +462,72 @@ async def test_a_successful_fallback_labels_its_event_with_the_failing_model(fac
               # from config instead of from the live candidate is visible.
               "model": "modelo-del-config",
               "candidates": [
-                  {"endpoint_id": "groq", "endpoint_url": GROQ, "model": "model-groq",
+                  {"endpoint_id": "groq", "endpoint_url": GROQ, "model": "model-groq:free",
                    "host": "api.groq.com"},
-                  {"endpoint_id": "cerebras", "endpoint_url": CEREBRAS, "model": "model-cerebras",
-                   "host": "api.cerebras.ai"}]}
+                  {"endpoint_id": "openrouter", "endpoint_url": OPENROUTER, "model": "model-openrouter:free",
+                   "host": "api.openrouter.ai"}]}
     assert await flow.call_model(config, "prompt") == "artifact"
     with factory() as db:
         events = {e.kind: json.loads(e.payload).get("model")
                   for e in db.query(cdb.CMHWorkflowEvent).all()}
-    assert events["provider_fallback"] == "model-groq"      # the one that failed
-    assert events["model_metrics"] == "model-cerebras"      # the one that answered
+    assert events["provider_fallback"] == "model-groq:free"      # the one that failed
+    assert events["model_metrics"] == "model-openrouter:free"      # the one that answered
+
+
+# --- Cerebras leaves the chain (canon 05, 2026-09-29) ------------------------
+
+CEREBRAS = "https://api.cerebras.ai/v1"
+
+
+def test_cerebras_is_no_longer_a_free_host():
+    """It has no permanent free tier: the trial is 5 USD of credit that expires
+    in 30 days and the API goes inactive without a verified card, which fails
+    the condition D1 rests on. Kept as a test rather than only a deletion, so
+    putting it back is a decision somebody has to make against a red suite."""
+    from src.cmh_cost_policy import FREE_HOSTS
+    assert "api.cerebras.ai" not in FREE_HOSTS
+    assert sorted(FREE_HOSTS) == ["api.groq.com", "openrouter.ai"]
+    assert is_zero_cost_endpoint({"base_url": CEREBRAS, "endpoint_kind": "api"},
+                                 "gpt-oss-120b") is False
+
+
+def test_the_shipped_quota_config_no_longer_lists_cerebras():
+    hosts = [p["endpoint_host"] for p in router.load_quota_config()["providers"]]
+    assert "api.cerebras.ai" not in hosts
+    assert hosts == ["api.groq.com", "openrouter.ai"], "el orden D3 es Groq -> OpenRouter"
+
+
+async def test_a_step_pointed_at_cerebras_is_refused(factory, monkeypatch):
+    from src.cmh_cost_policy import ZeroCostViolation
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="cerebras", name="cerebras", base_url=CEREBRAS,
+                                 endpoint_kind="api", is_enabled=True))
+        db.commit()
+    attempts = []
+
+    async def fake(config, candidate, prompt, record):
+        attempts.append(candidate["endpoint_url"])
+        return "artifact"
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
+              "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
+              "instructions": "i", "endpoint_url": CEREBRAS, "model": "gpt-oss-120b"}
+    with pytest.raises(ZeroCostViolation):
+        await flow.call_model(config, "prompt")
+    assert attempts == []
+
+
+def test_a_registered_cerebras_endpoint_never_becomes_a_candidate(factory):
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="cerebras", name="cerebras", base_url=CEREBRAS,
+                                 endpoint_kind="api", is_enabled=True))
+        db.commit()
+        poisoned = {"threshold": 0.9, "providers": [
+            {"endpoint_host": "api.cerebras.ai", "order": 0, "model": "gpt-oss-120b",
+             "limits": {}},
+            {"endpoint_host": "api.groq.com", "order": 1, "model": "model-a:free",
+             "limits": {}}]}
+        ids = [c["endpoint_id"] for c in router.resolve_candidates(
+            db, router.FREE_CLOUD_FIRST, config=poisoned)]
+    assert "cerebras" not in ids, "ni escrito a mano en el JSON de cuotas entra"

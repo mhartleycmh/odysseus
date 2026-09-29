@@ -17,8 +17,8 @@ from src.cmh_provider_router import (
 )
 
 GROQ = "https://api.groq.com/openai/v1"
-CEREBRAS = "https://api.cerebras.ai/v1"
 OPENROUTER = "https://openrouter.ai/api/v1"
+CEREBRAS = "https://api.cerebras.ai/v1"
 LOCAL = "http://127.0.0.1:59999/v1"
 ANTHROPIC = "https://api.anthropic.com"
 
@@ -27,9 +27,7 @@ CONFIG = {
     "providers": [
         {"endpoint_host": "api.groq.com", "order": 1, "model": "openai/gpt-oss-120b",
          "limits": {"rpd": 1000, "tpd": 200000}},
-        {"endpoint_host": "api.cerebras.ai", "order": 2, "model": "gpt-oss-120b",
-         "limits": {"rpm": 5, "tpd": 1000000}},
-        {"endpoint_host": "openrouter.ai", "order": 3, "model": "some/model:free",
+        {"endpoint_host": "openrouter.ai", "order": 2, "model": "some/model:free",
          "limits": {"rpd": 50}},
     ],
 }
@@ -75,10 +73,10 @@ def test_an_unknown_policy_name_is_not_honoured():
 
 # --- candidate order --------------------------------------------------------
 
-def test_free_cloud_first_orders_groq_cerebras_openrouter_then_local(db):
+def test_free_cloud_first_orders_groq_openrouter_then_local(db):
     order = [c["endpoint_id"] for c in
              resolve_candidates(db, FREE_CLOUD_FIRST, config=CONFIG)]
-    assert order == ["groq", "cerebras", "openrouter", "local"]
+    assert order == ["groq", "openrouter", "local"]
 
 
 def test_local_only_never_reaches_the_cloud(db):
@@ -87,19 +85,23 @@ def test_local_only_never_reaches_the_cloud(db):
 
 
 def test_a_paid_endpoint_never_enters_the_list(db):
-    """Anthropic is registered and enabled; no policy may surface it."""
+    """Anthropic AND Cerebras are registered and enabled; no policy may surface
+    either. Cerebras left FREE_HOSTS on 2026-09-29 because it has no permanent
+    free tier, so it is kept registered here precisely to prove the gate now
+    refuses a host that used to be allowed."""
     for policy in (FREE_CLOUD_FIRST, LOCAL_ONLY):
         ids = [c["endpoint_id"] for c in resolve_candidates(db, policy, config=CONFIG)]
         assert "anthropic" not in ids
+        assert "cerebras" not in ids
 
 
 def test_a_provider_whose_model_is_still_pendiente_is_skipped(db):
     config = {"threshold": 0.9, "providers": [
         {"endpoint_host": "api.groq.com", "order": 1, "model": None, "limits": {}},
-        {"endpoint_host": "api.cerebras.ai", "order": 2, "model": "gpt-oss-120b", "limits": {}},
+        {"endpoint_host": "openrouter.ai", "order": 2, "model": "x:free", "limits": {}},
     ]}
     ids = [c["endpoint_id"] for c in resolve_candidates(db, FREE_CLOUD_FIRST, config=config)]
-    assert ids == ["cerebras", "local"]
+    assert ids == ["openrouter", "local"]
 
 
 # --- quota windows ----------------------------------------------------------
@@ -134,12 +136,12 @@ def test_a_new_window_starts_from_zero(db):
 def test_the_minute_window_stops_a_candidate_at_the_threshold(db):
     at = datetime(2026, 9, 28, 14, 37)
     limits = {"rpm": 5}
-    record_usage(db, "cerebras", requests=4, at=at)  # 4 of 5 = 80 %, still under 90 %
+    record_usage(db, "openrouter", requests=4, at=at)  # 4 of 5 = 80 %, still under 90 %
     db.commit()
-    assert quota_exceeded(db, "cerebras", limits, 0.9, at) is None
-    record_usage(db, "cerebras", requests=1, at=at)  # 5 of 5 = 100 %
+    assert quota_exceeded(db, "openrouter", limits, 0.9, at) is None
+    record_usage(db, "openrouter", requests=1, at=at)  # 5 of 5 = 100 %
     db.commit()
-    assert quota_exceeded(db, "cerebras", limits, 0.9, at) == "rpm"
+    assert quota_exceeded(db, "openrouter", limits, 0.9, at) == "rpm"
 
 
 def test_the_day_window_stops_a_candidate_at_the_threshold(db):
@@ -176,7 +178,7 @@ def test_a_spent_candidate_is_split_out_with_its_reason(db):
     ready, skipped = usable_candidates(db, candidates, CONFIG, at)
     assert [c["endpoint_id"] for c in skipped] == ["groq"]
     assert skipped[0]["reason"] == "quota:rpd"
-    assert [c["endpoint_id"] for c in ready] == ["cerebras", "openrouter", "local"]
+    assert [c["endpoint_id"] for c in ready] == ["openrouter", "local"]
 
 
 # --- fallback classification ------------------------------------------------
@@ -226,20 +228,20 @@ def _config(candidates):
 
 async def test_a_429_falls_back_to_the_next_candidate_with_all_three_fields(flow_db, monkeypatch):
     candidates = [{"endpoint_id": "groq", "endpoint_url": GROQ, "model": "m", "host": "api.groq.com"},
-                  {"endpoint_id": "cerebras", "endpoint_url": CEREBRAS, "model": "m",
-                   "host": "api.cerebras.ai"}]
+                  {"endpoint_id": "openrouter", "endpoint_url": OPENROUTER, "model": "m:free",
+                   "host": "api.openrouter.ai"}]
     attempts = []
 
     async def fake(config, candidate, prompt, record):
         attempts.append(candidate["endpoint_id"])
         if candidate["endpoint_id"] == "groq":
             raise _HttpError(429)
-        return "artifact from cerebras"
+        return "artifact from openrouter"
 
     monkeypatch.setattr(flow, "_run_one_candidate", fake)
     output = await flow.call_model(_config(candidates), "prompt")
-    assert output == "artifact from cerebras"
-    assert attempts == ["groq", "cerebras"]
+    assert output == "artifact from openrouter"
+    assert attempts == ["groq", "openrouter"]
 
     with flow_db() as session:
         events = [(e.kind, json.loads(e.payload)) for e in
@@ -247,14 +249,14 @@ async def test_a_429_falls_back_to_the_next_candidate_with_all_three_fields(flow
                       cdb.CMHWorkflowEvent.kind == "provider_fallback").all()]
     assert len(events) == 1
     payload = events[0][1]
-    assert payload["from"] == "groq" and payload["to"] == "cerebras"
+    assert payload["from"] == "groq" and payload["to"] == "openrouter"
     assert payload["reason"] == "http:429"
 
 
 async def test_a_401_is_not_a_fallback_and_stops_the_step(flow_db, monkeypatch):
     candidates = [{"endpoint_id": "groq", "endpoint_url": GROQ, "model": "m", "host": "api.groq.com"},
-                  {"endpoint_id": "cerebras", "endpoint_url": CEREBRAS, "model": "m",
-                   "host": "api.cerebras.ai"}]
+                  {"endpoint_id": "openrouter", "endpoint_url": OPENROUTER, "model": "m:free",
+                   "host": "api.openrouter.ai"}]
     attempts = []
 
     async def fake(config, candidate, prompt, record):
@@ -328,8 +330,7 @@ async def test_the_quotas_endpoint_reports_windows_limits_and_provenance(db, mon
                                  base_url="http://test") as client:
         body = (await client.get("/api/cmh/quotas")).json()
 
-    assert [p["host"] for p in body["providers"]] == [
-        "api.groq.com", "api.cerebras.ai", "openrouter.ai"]
+    assert [p["host"] for p in body["providers"]] == ["api.groq.com", "openrouter.ai"]
     groq = body["providers"][0]
     assert groq["registered"] is True
     assert groq["windows"]["day"]["requests"] == 950
@@ -365,8 +366,8 @@ async def test_the_charge_lands_on_the_candidate_that_answered(flow_db, monkeypa
     """The gap M10 exposed: with one candidate, 'first' and 'answered' coincide."""
     candidates = [{"endpoint_id": "groq", "endpoint_url": GROQ, "model": "m",
                    "host": "api.groq.com"},
-                  {"endpoint_id": "cerebras", "endpoint_url": CEREBRAS, "model": "m",
-                   "host": "api.cerebras.ai"}]
+                  {"endpoint_id": "openrouter", "endpoint_url": OPENROUTER, "model": "m:free",
+                   "host": "api.openrouter.ai"}]
 
     async def fake(config, candidate, prompt, record):
         if candidate["endpoint_id"] == "groq":
@@ -376,7 +377,7 @@ async def test_the_charge_lands_on_the_candidate_that_answered(flow_db, monkeypa
     monkeypatch.setattr(flow, "_run_one_candidate", fake)
     assert await flow.call_model(_config(candidates), "prompt") == "artifact"
     with flow_db() as session:
-        assert usage_snapshot(session, "cerebras")["day"]["requests"] == 1
+        assert usage_snapshot(session, "openrouter")["day"]["requests"] == 1
         # The one that refused is not charged: it never served a request.
         assert usage_snapshot(session, "groq")["day"]["requests"] == 0
 

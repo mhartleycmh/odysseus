@@ -27,9 +27,16 @@ from urllib.parse import urlparse
 
 _TRUE = {"1", "true", "yes", "on"}
 
-#: Hosts whose free tier the CMH chain is allowed to use (D3). Exact host
-#: match, never a suffix match: ``api.groq.com.example.net`` is not Groq.
-FREE_HOSTS = frozenset({"api.groq.com", "api.cerebras.ai", "openrouter.ai"})
+#: Hosts whose free tier the CMH chain is allowed to use. Exact host match,
+#: never a suffix match: ``api.groq.com.example.net`` is not Groq.
+#:
+#: Cerebras was here until 2026-09-29 and was removed on measurement, not on
+#: preference: it has no permanent free tier. Its trial is 5 USD of credit that
+#: expires in 30 days, and the API goes inactive without a verified payment
+#: method, so it fails the very condition D1 rests on — accounts with no card.
+#: Canon 05, rows of 2026-09-29. Removing it from this set is what makes the
+#: gate refuse ``api.cerebras.ai`` instead of treating it as free.
+FREE_HOSTS = frozenset({"api.groq.com", "openrouter.ai"})
 
 #: On OpenRouter only the ``:free`` model variants cost nothing; every other
 #: model on the same host is billed against account credit.
