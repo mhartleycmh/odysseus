@@ -110,6 +110,36 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Próxima acción exacta
 
+### AVISO ANTES DE CERRAR LA FASE 1: el canon YA está escrito
+
+**No volver a escribir las filas D1–D7.** Verificado el 2026-09-29 en
+`CMH_Claude/CMH_Canon/05_decisiones_historicas.md`: las siete están en las
+líneas **359–365** (costo cero, Gemini excluido, APIs gratuitas con local de
+respaldo, REVERTIDA la de modelos locales solo en verificador, orden de fases,
+Ollama retirado, aprobación por conteos). Escribirlas de nuevo al cerrar la
+fase las **duplica**.
+
+Además, el canon ya tiene cinco filas del **2026-09-29** que el encargo pedía
+como VERIFICAR y que no hay que repetir (líneas 366–371):
+
+| Línea | Contenido |
+|---|---|
+| 366 | Groq nivel Free con Zero Data Retention activado en Data Controls (VERIFICACION) |
+| 367 | Cerebras NO califica como costo cero: sin nivel gratuito permanente (VERIFICACION) |
+| 368 | OpenRouter solo `:free` y cuenta configurada para no entrenar ni retener |
+| 369 | Gemini free excluido, motivo verificado (cierra el VERIFICAR de D2) |
+| 370 | **Cerebras sale de la cadena: D3 queda Groq → OpenRouter `:free` → LM Studio** |
+| 371 | Se permiten los `:free` de OpenRouter servidos por Google AI Studio |
+
+En `06_pendientes_abiertos.md`: las filas 417 y 418 ya están **RESUELTAS**; la
+**412** sigue abierta (confirmar que las cuentas no tengan método de pago).
+
+Lo que sí falta escribir al cerrar la Fase 1 es **solo** lo que esta fase
+produzca: el pendiente de evidencia de herramientas que quedó cerrado, el
+pendiente nuevo «constructor sin escritura de archivos», y los conteos del
+punto limpio 10.
+
+
 Actualizada el 2026-09-28 al cerrar el punto limpio 9. Los pasos 1 y 2
 **bloquean todo lo demás**: sin ellos no existe ningún flujo que ejecutar.
 
