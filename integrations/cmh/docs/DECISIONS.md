@@ -712,3 +712,117 @@ estaba definida y que el vacío era un hueco técnico.
   que ya estaba escrito en el encabezado de `round3` y no impidió el incidente.
 - **Pruebas.** `tests/test_cmh_mutant_target.py`, `tests/test_cmh_mutant_validity.py`;
   mutantes T01–T03 de `round4`.
+
+---
+
+## ADR-032 · La compuerta de costo cero nombra sus redes y tiene mutantes versionados (2026-09-29)
+
+- **Contexto.** La regla más importante del proyecto (nada que un agente, paso o
+  automatización de CMH llame puede costar) estaba respaldada por 17 pruebas y por
+  **ningún mutante versionado**: las campañas de las rondas 2 a 4 mutan el router, la
+  siembra y las rutas, y las dos menciones de `cmh_cost_policy` en ellas son nombres de
+  archivos de prueba. La primera campaña sobre la compuerta (`round5`, 20 mutantes)
+  capturó 18 y dejó vivos 2. CG07 («todo 172.x cuenta como red privada») sobrevivió
+  porque nada probaba el borde de 172.16/12. CG09 («link-local deja de contar») sobrevivió
+  porque no cambiaba nada: el código decidía con `ipaddress.is_private`, que ya contiene
+  link-local (medido en Python 3.13.14: `169.254.x` y `fe80::/10` son privadas).
+- **Decisión.** «Local» es loopback más redes **nombradas**: 10/8, 172.16/12, 192.168/16,
+  169.254/16, fe80::/10 y fc00::/7 (el análogo IPv6 de RFC1918), y los nombres `localhost`,
+  `0.0.0.0`, `host.docker.internal` y `*.local`. `is_private` deja de decidir: incluye
+  192.0.2.0/24 (documentación) y 240.0.0.0/4 (reservado), que ADR-026 no lista, y ha
+  cambiado entre versiones de Python. Solo estrecha: lo que deja de ser local es
+  inenrutable y no es una dirección realista de runtime. 45 casos de frontera, ambos lados
+  de cada borde, con las etiquetas `auto` y `local`, y `api`/`proxy` comprobadas como
+  nunca locales. `round5` cierra con **24 de 24** capturados, 0 sobrevivientes, 0 inválidos.
+- **Resuelve el VERIFICAR de §9.3.** `endpoint_kind=auto` sobre una red privada **sí** es
+  local (48 combinaciones de host y etiqueta ejecutadas, `core.database` sin importar). La
+  frase de ADR-019 («`auto` cuenta como local solo con host loopback») quedó reemplazada por
+  ADR-026.
+- **Límite declarado.** Los nombres `*.local` cuentan como locales **sin resolverse**: se
+  asume mDNS en la LAN, y no se verifica a qué dirección resuelve. 100.64/10 (CGNAT, donde
+  vive Tailscale) queda rechazado a propósito, y con él una GPU detrás de Tailscale.
+- **Descartado.** Conservar `is_private` y solo añadir pruebas: la definición seguiría
+  dependiendo de la versión de Python que corra.
+- **Pruebas.** `tests/test_cmh_cost_policy.py`; mutantes CG01–CG16 y SI01–SI08 de `round5`.
+
+## ADR-033 · Los guiones del banco local miden lo que dicen y no tocan lo que no cargaron (2026-09-29)
+
+- **Contexto.** El paso 3.4 estaba registrado como «guiones listos». No podían arrancar:
+  `bench.ps1` abortaba en su primera llamada a `lms.exe` bajo Windows PowerShell 5.1, el único
+  instalado, porque `2>&1` sobre un nativo con `ErrorActionPreference=Stop` vuelve error
+  terminal la primera línea de stderr. Detrás, medido con `lms ps` y `lms ls` reales: no medía
+  el primer token (`stream=false`); sus «3 rondas» eran 3 peticiones idénticas de un turno,
+  sin ejecutar nunca la herramienta; sin `-Models` medía los 9 LLM del disco; su
+  `lms unload --all` habría descargado el `qwen/qwen3.8-27b` (17,74 GB) que el usuario tenía
+  cargado; y `start.ps1` exigía más de 2 líneas de `lms ps`, que con un modelo cargado son 2.
+- **Decisión.** `bench.ps1` ejecuta una conversación real (cada herramienta pedida se
+  ejecuta y su resultado vuelve al modelo hasta que responde con texto), con streaming para
+  separar el primer token de la velocidad de generación (tokens sobre el tiempo posterior al
+  primer token, no sobre el total). Valida cada llamada (nombre conocido, argumentos JSON con
+  `path`), mide por nombre los tres candidatos del blueprint y dice cuáles no están en disco,
+  y **se niega a descargar lo que no cargó** salvo `-UnloadOthers`. Ambos guiones llaman a
+  `lms` por un ayudante que relaja `ErrorActionPreference` solo alrededor de la llamada. Se
+  encontró al ejecutarlo: las variables de PowerShell ignoran mayúsculas, y un `$rounds` local
+  sombreaba el parámetro `-Rounds`.
+- **Límite declarado.** **La velocidad real de LM Studio no está medida**: hace falta el
+  usuario (U4: modelos y LM Studio). Las pruebas usan un `lms` y un servidor falsos; miden que
+  el guion computa bien, no cuánto tarda un modelo real. Los tokens son los del servidor
+  cuando informa `usage` y una estimación marcada cuando no.
+- **Descartado.** Reparar solo la línea 92: el resto medía otra cosa de lo prometido. Ejecutar
+  la prueba con `-File`: no enlaza una lista a un `[string[]]` y solo sobrevive el primer
+  modelo; se usa `-Command`.
+- **Pruebas.** `tests/test_cmh_local_scripts.py` (16, bajo el PowerShell 5.1.26100 real);
+  mutantes B01–B12 y S01–S05 de `round6`.
+
+## ADR-034 · La siembra crea la definición, guarda la política y no siembra una cadena vacía (2026-09-29)
+
+- **Contexto.** El paso 3.5 es «cinco agentes y una definición». El guion creaba los
+  agentes y **ninguna definición**: esa mitad era un clic manual en `/cmh`, con otro nombre,
+  sin que nada registrara su id. Cuatro defectos más, medidos en el código: `--policy` se
+  validaba, resolvía los candidatos y se descartaba (con `local-only` quedaba `NULL` y el run
+  resolvía `free-cloud-first`); `live_database_path()` ignoraba `ODYSSEUS_DATA_DIR`, con lo
+  que tras mover `data/` (22.1) la copia previa sería de la base vieja; sembraba cinco agentes
+  sin modelo cuando no había ningún endpoint gratuito; y la copia previa llevaba resolución de
+  minuto y no comprobaba si el nombre estaba libre.
+- **Decisión.** `ensure_definition` crea una vez la definición con la forma que arma `/cmh`
+  (cinco pasos, independencia para verificador y revisor, evidencia de herramientas salvo
+  revisor y documentador, compuerta humana antes del revisor hasta el paso 5.4) y escribe una
+  **versión nueva**, nunca una edición, cuando la guardada difiere; una idéntica se deja
+  quieta, así que sembrar dos veces no cambia nada. La política se guarda en cada agente.
+  `--apply` se detiene si no hay candidato gratuito (`--allow-pending` lo permite). La ruta
+  sigue `ODYSSEUS_DATA_DIR` y resuelve las rutas relativas contra la raíz, como
+  `core.database`. La copia previa lleva segundos y nunca reutiliza un nombre. El nombre de la
+  definición no lleva flecha: imprimir U+2192 en una consola cp1252 lanzaba
+  `UnicodeEncodeError` **después** de escribir en la base; además `main()` reconfigura sus
+  flujos para reemplazar lo que no pueda imprimir.
+- **Límite declarado.** La negativa a sembrar sin candidatos llega **después** de la copia
+  previa: los candidatos exigen abrir la base y abrirla es lo que la migra, así que la copia
+  tiene que existir antes (el mensaje dice que puede borrarse). **El guion no se ejecutó
+  nunca contra la base activa**: exige la autorización U6.
+- **Descartado.** Planificar sobre una réplica y aplicar sobre la real en dos fases: el motor
+  de `core.database` se ata al archivo en la importación, así que exigiría dos procesos.
+- **Pruebas.** `tests/test_cmh_seed_scripts.py` (9 nuevas, sobre bases desechables construidas
+  por el `core.database` real); mutantes SD01–SD13 de `round7`.
+
+## ADR-035 · El registro de una ejecución sale de sus filas, no de la memoria del agente (2026-09-29)
+
+- **Contexto.** El encargo pide registrar, por paso, agente, proveedor y modelo resueltos,
+  fallbacks, tokens, segundos, **exit de cada herramienta** y tamaño del artefacto. ESTADO y
+  blueprint 7.3 decían que los eventos llevaban `exit_code` y el tamaño; la auditoría midió
+  que no. El detalle `GET /runs/{id}` tampoco expone tokens, fallbacks ni tamaño.
+- **Decisión.** `tool_finished` lleva el `exit_code` numérico y `step_completed` lleva
+  `artifact_chars` (ambos aditivos). `scripts/cmh_ops/run_report.py` arma el registro completo
+  desde la base y evalúa el criterio de cierre de la Fase 1: run `completed`, 5 artefactos,
+  ningún paso en error, evidencia de herramientas donde se exige (una llamada con exit
+  distinto de cero no cuenta), aprobación humana registrada como `approved` con quién y
+  cuándo, y ningún paso resuelto a una ruta que la compuerta de costo rechace. Su código de
+  salida dice si se cumplió todo. Abre el archivo con `mode=ro`, no importa `core.database` y
+  nunca selecciona `api_key`.
+- **Límite declarado.** La marca `synthetic` no se puede leer en un artefacto: un texto
+  escrito por Odysseus **falla el paso** y no se guarda, así que «0 artefactos synthetic»
+  equivale a «run `completed`»; el informe lo dice en vez de fingir una cuenta. Los tokens de
+  un intento que muere a media ejecución no se registran (ADR-030).
+- **Descartado.** Ampliar `GET /runs/{id}` ahora: es superficie de API para la Fase 2 (4.4);
+  aquí basta un guion de solo lectura.
+- **Pruebas.** `tests/test_cmh_run_report.py`, más una prueba de cada evento; mutantes
+  RR01–RR12 de `round8`.
