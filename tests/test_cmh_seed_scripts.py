@@ -10,6 +10,7 @@ import importlib.util
 import json
 import pathlib
 import sqlite3
+import tempfile
 import sys
 
 import pytest
@@ -171,10 +172,9 @@ def test_the_preserved_agent_is_named_and_never_reused():
     # The five roles it creates, and the preserved one is not among them.
     assert [role for role, _, _ in seed.AGENTS] == [
         "investigador", "constructor", "verificador", "revisor", "documentador"]
-    # The preserved agent is matched by name and never written to: the seeding
-    # loop only ever touches rows whose name is one of the five.
+    # Behaviour is measured by test_the_preserved_agent_survives_a_real_apply;
+    # this only pins the name the guarantee is written against.
     assert "PRESERVE" in source
-    assert f'CMHAgent.name == PRESERVE' in source or "CMHAgent.name == PRESERVE" in source
 
 
 def test_the_seeded_agents_only_get_read_only_tools():
@@ -306,3 +306,103 @@ def test_the_script_refuses_before_writing_when_the_instructions_are_missing(tmp
     assert result.returncode != 0
     assert "scrub_instructions.py" in (result.stdout + result.stderr)
     assert live.read_bytes() == before, "no se escribe nada si faltan las instrucciones"
+
+
+# --- findings of the THIRD independent review (2026-09-29) -------------------
+
+def test_the_preserved_agent_survives_a_real_apply(tmp_path):
+    """The previous commit REPLACED the only measurement of this guarantee with
+    `assert X in source or X in source` - the same string twice, so the
+    disjunction was dead letter. A mutant that deletes the preserved row at the
+    top of apply() survived all 251 tests. Measured behaviour now."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    connection = sqlite3.connect(live)
+    connection.execute(
+        "INSERT INTO cmh_agents (id, owner, name, role, instructions, "
+        "instructions_version, status) VALUES "
+        "('preservado', 'admin', 'CMH Researcher', 'piloto', 'x', 1, 'paused')")
+    connection.commit()
+    connection.close()
+
+    result = _run_script(["--apply", "--authorized-by", "prueba"],
+                         {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                          "LOCALAPPDATA": str(tmp_path / "local"),
+                          "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
+    assert result.returncode == 0, result.stdout + result.stderr
+    rows = sqlite3.connect(live).execute(
+        "SELECT id, status FROM cmh_agents WHERE name = 'CMH Researcher'").fetchall()
+    assert rows == [("preservado", "paused")], (
+        "CMH Researcher no se borra, no se reutiliza y no se reactiva")
+
+
+def test_a_dry_run_leaves_no_replica_behind(tmp_path):
+    """118 full replicas of the database had accumulated in %TEMP%, one holding
+    an encrypted provider key: `scratch` was created and never removed."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    before = set(pathlib.Path(tempfile.gettempdir()).glob("cmh-seed-dryrun-*.db"))
+    result = _run_script([], {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                              "LOCALAPPDATA": str(tmp_path / "local"),
+                              "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
+    assert "SIMULACION" in result.stdout, result.stdout + result.stderr
+    after = set(pathlib.Path(tempfile.gettempdir()).glob("cmh-seed-dryrun-*.db"))
+    assert after <= before, f"copias huerfanas: {sorted(after - before)}"
+
+
+@pytest.mark.parametrize("bad", ["local_only", "nube-total", "FREE-CLOUD-FIRST-ISH"])
+def test_a_mistyped_policy_stops_the_script_instead_of_routing_to_the_cloud(tmp_path, bad):
+    """The 400 for an unknown policy went into validate_dag and the agent API,
+    never into the script that configures the five chain agents. Measured by the
+    third review: `--policy local_only` resolved Groq as a candidate."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    result = _run_script(["--policy", bad],
+                         {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                          "LOCALAPPDATA": str(tmp_path / "local"),
+                          "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
+    assert result.returncode != 0, result.stdout
+    assert "no existe" in result.stdout
+
+
+def test_a_workspace_root_inside_a_protected_area_is_refused(tmp_path):
+    """CMH_AGENT_WORKSPACES was introduced as a test affordance and shipped
+    without the guard the API applies to the same field: with it pointed at a
+    `fuentes` path, --apply wrote five active agents there."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    forbidden = tmp_path / "proyecto" / "fuentes"
+    forbidden.mkdir(parents=True)
+    # With the derived instructions present at the forbidden root, the only
+    # thing left that can refuse is the guard under test.
+    subprocess.run([sys.executable, str(REPO / "scripts" / "cmh_seed" / "scrub_instructions.py")],
+                   cwd=str(REPO), capture_output=True, text=True, check=True,
+                   env={**os.environ, "CMH_AGENT_WORKSPACES": str(forbidden)})
+    result = _run_script(["--apply", "--authorized-by", "prueba"],
+                         {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                          "LOCALAPPDATA": str(tmp_path / "local"),
+                          "CMH_AGENT_WORKSPACES": str(forbidden)})
+    assert result.returncode != 0, result.stdout
+    assert "protegida" in result.stdout
+    count = sqlite3.connect(live).execute(
+        "SELECT COUNT(*) FROM cmh_agents").fetchone()[0]
+    assert count == 0, "no se escribe ninguna fila si la raiz esta protegida"
+
+
+def test_two_dry_runs_do_not_share_one_scratch_file(tmp_path):
+    """R14. A fixed name makes two concurrent dry runs fight over one file, and
+    the loser's finally deletes the winner's copy mid-read. The script prints
+    the path, so the process id in it is observable."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    derived = str(_derived_tree(tmp_path))
+    paths = []
+    for _ in range(2):
+        result = _run_script([], {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                                  "LOCALAPPDATA": str(tmp_path / "local"),
+                                  "CMH_AGENT_WORKSPACES": derived})
+        line = [l for l in result.stdout.splitlines() if "copia desechable" in l]
+        assert line, result.stdout + result.stderr
+        paths.append(line[0].split(":", 1)[1].strip())
+    assert paths[0] != paths[1], (
+        f"dos simulaciones comparten el mismo archivo temporal: {paths[0]}")

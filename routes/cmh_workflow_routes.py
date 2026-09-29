@@ -64,13 +64,52 @@ def _provider_key(url) -> str:
     ``endpoint_host`` drops the port because the quota config keys on the host,
     which is right for a provider's limits and wrong for telling two local
     runtimes apart.
+
+    Built from ``redact_url``, the repository's own helper, rather than from raw
+    ``netloc``: netloc carries any ``user:password@`` embedded in the URL, so
+    the key differed per credential and — worse — that credential was persisted
+    as a candidate id and emitted over SSE. ``redact_url`` also brackets IPv6
+    literals and normalises the port, which a hand-rolled split does not.
     """
     from urllib.parse import urlparse
     try:
-        parsed = urlparse(url or "")
+        parsed = urlparse(_canonical_route(url))
     except ValueError:
         return ""
-    return (parsed.netloc or "").strip().lower().rstrip(".")
+    # No .lower() here: _canonical_route already lowered the host, so it
+    # would be unreachable. Measured, not assumed.
+    return (parsed.netloc or "").strip()
+
+
+#: The port a scheme implies, so an explicit one does not look like a different
+#: server. `https://api.groq.com:443/v1` and `https://api.groq.com/v1` are one
+#: route; keying quota on the spelling split one provider's counter in two and
+#: the free-tier limit stopped biting.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _canonical_route(url) -> str:
+    """One spelling per route: no credentials, no default port, no trailing dot.
+
+    Built on ``redact_url`` (the repository's own helper, which also brackets
+    IPv6 literals) and then normalised further, because two spellings of the
+    same endpoint must produce the same quota counter and the same candidate id.
+    """
+    from core.log_safety import redact_url
+    from urllib.parse import urlparse, urlunparse
+
+    try:
+        parsed = urlparse(redact_url(url or ""))
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"                      # IPv6 literal
+    port = parsed.port
+    if port is not None and port != _DEFAULT_PORTS.get((parsed.scheme or "").lower()):
+        host = f"{host}:{port}"
+    return urlunparse(((parsed.scheme or "").lower(), host,
+                       (parsed.path or "").rstrip("/"), "", "", ""))
 
 
 def _assert_definition_zero_cost(db, owner, steps) -> None:
@@ -149,8 +188,12 @@ def _snapshot(db, owner, project_id, spec):
     # 127.0.0.1:59998 and 127.0.0.1:59999 are different servers; deduplicating
     # on the bare host silently dropped one of them. For a cloud provider there
     # is no port, so the key is the host and nothing changes.
-    already_listed = any(_provider_key(c.get("endpoint_url")) == _provider_key(task.endpoint_url)
-                         and c.get("model") == agent.model for c in candidates)
+    # By PROVIDER alone, not provider + model. A 429 is applied by the provider
+    # to the account and host, not to the model, so two entries on one host are
+    # two attempts at a door that just closed — the very failure the frozen list
+    # exists to prevent. Measured by the third review: with the agent on one
+    # model and the quota config naming another, api.groq.com appeared twice.
+    task_key = _provider_key(task.endpoint_url)
     # The task's own route leads when the policy allows it: it is what the
     # agent was configured with and what the cost gate just cleared, and the
     # router's list is what the step falls back TO, not a silent replacement.
@@ -159,13 +202,29 @@ def _snapshot(db, owner, project_id, spec):
     # local-only exists to prevent.
     allowed_by_policy = policy != LOCAL_ONLY or is_local_endpoint(
         task_row or {"base_url": task.endpoint_url, "endpoint_kind": "auto"})
-    if not already_listed and allowed_by_policy:
+    if allowed_by_policy:
+        # The task's route replaces the router's entry for the same provider
+        # rather than joining it: the agent's own model is what the cost gate
+        # cleared, and keeping both would put the same host in the list twice.
+        candidates = [c for c in candidates
+                      if _provider_key(c.get("endpoint_url")) != task_key]
         # A real endpoint id when one resolves, and the URL as a stable
         # fallback otherwise. Never None: quota rows key on it and the column
         # is NOT NULL, so a None here kills the step AFTER it has produced its
         # artifact — measured by the independent review of 2026-09-29.
-        candidates = [{"endpoint_id": getattr(task_row, "id", None) or task.endpoint_url,
-                       "endpoint_url": task.endpoint_url,
+        # A redacted URL as the id when no row resolves: the raw one carried any
+        # embedded credential straight into step.config and into the event
+        # stream. Redacting also collapses equivalent spellings of the same
+        # route (an explicit :443, a trailing dot), which otherwise split the
+        # provider's quota counter in two and stopped the free-tier limit from
+        # biting.
+        candidates = [{"endpoint_id": (getattr(task_row, "id", None)
+                                       or _canonical_route(task.endpoint_url)),
+                       # Canonical, so no credential embedded in a task URL is
+                       # persisted or streamed. Verified that nothing loses
+                       # access: auth headers come from the endpoint row's
+                       # api_key (`build_headers`), never from URL userinfo.
+                       "endpoint_url": _canonical_route(task.endpoint_url),
                        "model": agent.model, "host": task_host}] + candidates
     if not candidates:
         raise HTTPException(400, f"Step {spec['key']}: la politica '{policy}' no deja "

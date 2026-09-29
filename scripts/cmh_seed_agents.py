@@ -175,6 +175,34 @@ def apply(db, rows: list[dict], owner: str) -> None:
 
 
 def main() -> int:
+    try:
+        return _main()
+    finally:
+        if _SCRATCH[0] is not None:
+            # Windows refuses to delete a file the engine still holds open, and
+            # a failed unlink here is how 118 replicas of the database piled up
+            # in %TEMP%. Close the pool first, then report loudly if the file
+            # still survives rather than leaving it there in silence.
+            try:
+                import sys as _sys
+                engine = getattr(_sys.modules.get("core.database"), "engine", None)
+                if engine is not None:
+                    engine.dispose()
+            except Exception:
+                pass
+            try:
+                _SCRATCH[0].unlink(missing_ok=True)
+            except OSError as exc:
+                print(f"AVISO: no se pudo borrar la copia de simulacion "
+                      f"{_SCRATCH[0]}: {exc}. Borrala a mano: es una replica "
+                      f"completa de la base.")
+            _SCRATCH[0] = None
+
+
+_SCRATCH = [None]
+
+
+def _main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true",
                         help="write to the live database (needs --authorized-by)")
@@ -187,6 +215,14 @@ def main() -> int:
 
     if args.apply and not args.authorized_by.strip():
         print("Escribir en la base activa exige --authorized-by (decision §6.4).")
+        return 2
+
+    from src.cmh_provider_router import PROVIDER_POLICIES, normalize_policy
+    policy = normalize_policy(args.policy)
+    if policy is None:
+        print(f"--policy '{args.policy}' no existe. "
+              f"Validas: {', '.join(sorted(PROVIDER_POLICIES))}.")
+        print("Un error de tecleo aqui apuntaria los cinco agentes a la nube.")
         return 2
 
     # Validate the inputs before touching anything. An earlier version copied
@@ -209,6 +245,11 @@ def main() -> int:
             backup_database(db_path, "before-seed-agents")
     elif db_path.is_file():
         scratch = pathlib.Path(tempfile.gettempdir()) / f"cmh-seed-dryrun-{os.getpid()}.db"
+        _SCRATCH[0] = scratch   # removed in main()'s finally, however this ends
+        # mode=ro is defence, not a measurable guarantee: SQLite happily opens a
+        # read-only file read-write until something writes, so a mutant that
+        # drops it has no observable effect here. Kept, and declared as
+        # unmeasured rather than covered by a test that cannot fail.
         source = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
         destination = sqlite3.connect(str(scratch))
         source.backup(destination)
@@ -216,17 +257,29 @@ def main() -> int:
         source.close()
         os.environ["DATABASE_URL"] = f"sqlite:///{scratch.as_posix()}"
         print(f"SIMULACION sobre una copia desechable: {scratch}")
-        print(f"La base real ({db_path}) no se abre.")
+        print(f"La base real ({db_path}) solo se lee para copiarla; no se migra.")
+
+    # AFTER the DATABASE_URL override above, never before: importing
+    # routes.cmh_control_routes pulls in core.database, whose init_db() migrates
+    # whatever DATABASE_URL points at. Placing this guard earlier reintroduced
+    # exactly the defect it sits next to — measured, the dry run modified the
+    # live file again.
+    from routes.cmh_control_routes import protected_area
+    area = protected_area(WORKSPACES) if WORKSPACES.exists() else None
+    if area:
+        print(f"La raiz de workspaces '{WORKSPACES}' esta dentro de, o contiene, "
+              f"el area protegida '{area}'. No se siembra nada.")
+        return 2
 
     from core.database import CMHAgent, SessionLocal
 
     with SessionLocal() as db:
         owner = args.owner or (db.query(CMHAgent.owner).first() or ("mijhael hartley",))[0]
-        rows = plan(db, owner, args.project, args.policy)
+        rows = plan(db, owner, args.project, policy)
         preserved = db.query(CMHAgent).filter(CMHAgent.name == PRESERVE).first()
 
     print(f"Base: {db_path}")
-    print(f"Owner: {owner} · proyecto: {args.project} · politica: {args.policy}")
+    print(f"Owner: {owner} · proyecto: {args.project} · politica: {policy}")
     print(f"Candidatos resueltos: "
           f"{[c['endpoint_id'] for c in rows[0]['candidates']] or 'NINGUNO'}")
     if not rows[0]["candidates"]:

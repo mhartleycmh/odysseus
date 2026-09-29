@@ -871,3 +871,178 @@ async def test_the_stored_artifact_row_carries_the_answering_model(client, facto
         "el artefacto se rotula con el modelo que lo escribio")
     assert detail["steps"][0]["model"] == "model-que-respondio:free", (
         "el detalle del run y el artefacto deben coincidir")
+
+
+# --- findings of the THIRD independent review (2026-09-29) -------------------
+
+@pytest.mark.parametrize("url", [
+    "https://api.groq.com/openai/v1",
+    "https://api.groq.com:443/openai/v1",          # explicit default port
+    "https://API.GROQ.COM./openai/v1/",            # case, trailing dot, trailing slash
+    "https://clave:SECRETO@api.groq.com/openai/v1",  # embedded credential
+])
+def test_equivalent_spellings_of_one_route_share_one_key(url):
+    """Each spelling used to be a different provider: the quota counter split
+    and the free-tier limit stopped biting."""
+    from routes.cmh_workflow_routes import _canonical_route, _provider_key
+    assert _provider_key(url) == "api.groq.com"
+    assert _canonical_route(url) == "https://api.groq.com/openai/v1"
+
+
+def test_two_local_runtimes_on_different_ports_stay_different():
+    from routes.cmh_workflow_routes import _provider_key
+    assert _provider_key("http://127.0.0.1:59998/v1") != _provider_key("http://127.0.0.1:59999/v1")
+
+
+def test_an_ipv6_literal_keeps_its_brackets():
+    from routes.cmh_workflow_routes import _provider_key
+    assert _provider_key("http://[::1]:1234/v1") == "[::1]:1234"
+
+
+def test_no_credential_survives_into_a_candidate_id():
+    from routes.cmh_workflow_routes import _canonical_route
+    assert "SECRETO" not in _canonical_route("https://k:SECRETO@api.groq.com/v1")
+
+
+async def test_a_credential_in_the_task_url_never_reaches_the_event_stream(
+        client, factory, monkeypatch):
+    """Measured by the third review: the raw URL became the candidate id, was
+    persisted in step.config and emitted over SSE in provider_fallback."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first().endpoint_url = (
+                "http://usuario:SECRETO123@127.0.0.1:59998/v1")
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+    assert "SECRETO123" not in json.dumps(json.loads(step.config)["candidates"])
+
+
+async def test_one_provider_appears_once_even_when_the_models_differ(
+        client, factory, monkeypatch):
+    """A 429 is applied by the provider to the account and host, not to the
+    model. Deduplicating on provider+model listed api.groq.com twice whenever
+    the agent's model differed from the one the quota config names."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        agent = db.query(cdb.CMHAgent).filter(
+            cdb.CMHAgent.id == "agent-constructor").first()
+        task = db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first()
+        agent.model = task.model = "otro-modelo:free"
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+        candidates = json.loads(step.config)["candidates"]
+    from routes.cmh_workflow_routes import _provider_key
+    keys = [_provider_key(c["endpoint_url"]) for c in candidates]
+    assert len(keys) == len(set(keys)), f"proveedor repetido: {keys}"
+    assert candidates[0]["model"] == "otro-modelo:free", "manda el modelo del agente"
+
+
+async def test_the_quota_counter_does_not_split_on_an_equivalent_spelling(
+        client, factory, monkeypatch):
+    """R03 of the third review: with :443 explicit the row keyed on the raw URL
+    while the limit was looked up by host, so the free-tier cap stopped biting."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        db.query(cdb.ModelEndpoint).filter(cdb.ModelEndpoint.id == "groq").delete()
+        db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first().endpoint_url = (
+                "https://api.groq.com:443/openai/v1")
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+        first = json.loads(step.config)["candidates"][0]
+    assert first["endpoint_id"] == "https://api.groq.com/openai/v1", (
+        "una grafia equivalente no puede abrir un contador distinto")
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("", None), (None, None), ("  local-only  ", "local-only"),
+    ("LOCAL-ONLY", "local-only"),
+])
+def test_an_empty_policy_is_absence_and_a_valid_one_is_normalised(value, expected):
+    """R09 and R10 of the third review: neither the empty string nor the
+    normalisation of a valid value was measured."""
+    assert flow._checked_policy(value, "uno") == expected
+
+
+def test_local_only_judges_the_registered_row_not_the_bare_url(factory):
+    """R16 of the third review: judging the URL alone would let a loopback
+    endpoint an admin labelled `api` - a tunnel - lead the list under a policy
+    whose whole point is that nothing leaves the machine."""
+    from src.cmh_cost_policy import is_local_endpoint
+    tunnel = {"id": "t", "base_url": "http://127.0.0.1:59998/v1", "endpoint_kind": "api"}
+    assert is_local_endpoint(tunnel) is False
+    assert is_local_endpoint({"id": "l", "base_url": "http://127.0.0.1:59998/v1",
+                              "endpoint_kind": "local"}) is True
+
+
+# --- closing the survivors of the round-3 campaign ---------------------------
+
+async def test_the_local_candidate_carries_the_agents_model_through_the_api(
+        client, factory, monkeypatch):
+    """R12. The existing test called resolve_candidates directly, so dropping
+    local_model at the call site changed nothing it could see."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        # The local runtime has a different model cached than the agent chose.
+        db.query(cdb.ModelEndpoint).filter(
+            cdb.ModelEndpoint.id == "local").first().cached_models = json.dumps(
+                ["lo-que-tenga-el-runtime:free"])
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+        candidates = json.loads(step.config)["candidates"]
+    local = [c for c in candidates if "127.0.0.1" in (c["endpoint_url"] or "")]
+    assert local, "el respaldo local debe estar en la lista"
+    assert local[0]["model"] == "model-a:free", (
+        "el respaldo local usa el modelo del agente, no el que el runtime cachea")
+
+
+async def test_a_loopback_endpoint_labelled_as_external_is_refused_outright(
+        client, factory, monkeypatch):
+    """R16, and why it is an equivalent mutant.
+
+    An admin who labels a loopback row `api` has declared a tunnel to somewhere
+    else. The mutant makes local-only judge the bare URL instead of the row,
+    which would let the tunnel lead the list — but it is unreachable: the cost
+    gate refuses the tunnel at definition time, because is_local_endpoint is
+    False for an api-labelled row and 127.0.0.1 is in no FREE_HOSTS. Measured
+    here rather than argued: this is the guard that actually protects us, so it
+    is the one pinned.
+    """
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    tunnel = "http://127.0.0.1:59997/v1"
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="tunnel", name="tunnel", base_url=tunnel,
+                                 endpoint_kind="api", is_enabled=True,
+                                 cached_models=json.dumps(["model-a:free"])))
+        db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first().endpoint_url = tunnel
+        db.commit()
+    async with client:
+        refused = await client.post("/api/cmh/workflows", json=_definition([
+            {"key": "constructor", "agent_id": "agent-constructor",
+             "provider_policy": "local-only"}]))
+    assert refused.status_code == 400
+    assert "Costo cero" in refused.json()["detail"]
+    assert "tunnel" in refused.json()["detail"]
