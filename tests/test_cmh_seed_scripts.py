@@ -269,7 +269,7 @@ def test_applying_migrates_the_schema_of_an_existing_installation(tmp_path):
     columns = lambda: {r[1] for r in sqlite3.connect(live).execute(
         "PRAGMA table_info(cmh_agents)")}
     assert "provider_policy" not in columns()
-    result = _run_script(["--apply", "--authorized-by", "prueba"],
+    result = _run_script(["--apply", "--authorized-by", "prueba", "--allow-pending"],
                          {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
                           "LOCALAPPDATA": str(tmp_path / "local"),
                           "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
@@ -281,7 +281,7 @@ def test_applying_backs_up_before_it_writes(tmp_path):
     live = tmp_path / "app.db"
     _legacy_database(live)
     backups = tmp_path / "local"
-    result = _run_script(["--apply", "--authorized-by", "prueba"],
+    result = _run_script(["--apply", "--authorized-by", "prueba", "--allow-pending"],
                          {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
                           "LOCALAPPDATA": str(backups),
                           "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
@@ -334,7 +334,7 @@ def test_the_preserved_agent_survives_a_real_apply(tmp_path):
     connection.commit()
     connection.close()
 
-    result = _run_script(["--apply", "--authorized-by", "prueba"],
+    result = _run_script(["--apply", "--authorized-by", "prueba", "--allow-pending"],
                          {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
                           "LOCALAPPDATA": str(tmp_path / "local"),
                           "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
@@ -450,3 +450,214 @@ def test_a_valid_but_unnormalised_policy_is_normalised_before_planning(tmp_path)
     assert "politica: local-only" in result.stdout
     assert "'groq'" not in result.stdout, (
         "una grafia valida sin normalizar no puede resolver candidatos de nube")
+
+
+# --- step 3.5: the definition, the stored policy, the empty chain, the backup name ---
+#
+# Found by the audit of 2026-09-29. Until then the script created five agents and
+# NO definition (that half of 3.5 was a manual click with a different name), did not
+# store the policy it was given, would seed five agents with no model, ignored
+# ODYSSEUS_DATA_DIR when locating the database it backs up, and named its backup with
+# minute resolution and no check that the name was free.
+
+GROQ_URL = "https://api.groq.com/openai/v1"
+LM_STUDIO_URL = "http://127.0.0.1:1234/v1"
+
+
+def _database_with_endpoints(path, endpoints):
+    """A full-schema database with the given (url, kind) endpoints, made by the real
+    core.database in a subprocess: importing it in-process would point it at the
+    test session's database."""
+    script = (
+        "import json, sys\n"
+        "import core.database as c\n"
+        "with c.SessionLocal() as db:\n"
+        "    for i, (url, kind) in enumerate(json.loads(sys.argv[1])):\n"
+        "        db.add(c.ModelEndpoint(id=f'e{i}', name=f'e{i}', base_url=url,\n"
+        "                               endpoint_kind=kind, is_enabled=True))\n"
+        "    db.commit()\n")
+    subprocess.run([sys.executable, "-c", script, json.dumps(endpoints)], cwd=str(REPO),
+                   check=True, capture_output=True, text=True,
+                   env={**os.environ, "DATABASE_URL": f"sqlite:///{path.as_posix()}"})
+
+
+def _seed_env(tmp_path, live, **extra):
+    return {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+            "LOCALAPPDATA": str(tmp_path / "local"),
+            "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path)),
+            "CMH_AGENT_SOURCES": str(SOURCES), **extra}
+
+
+def _stored(live):
+    con = sqlite3.connect(live)
+    try:
+        return {
+            "agents": con.execute(
+                "SELECT id, name, status, instructions_version, provider_policy, model, task_id "
+                "FROM cmh_agents ORDER BY name").fetchall(),
+            "tasks": con.execute("SELECT COUNT(*) FROM scheduled_tasks").fetchone()[0],
+            "definitions": con.execute(
+                "SELECT id, version, name, steps FROM cmh_workflow_definitions "
+                "ORDER BY version").fetchall(),
+        }
+    finally:
+        con.close()
+
+
+APPLY = ["--apply", "--authorized-by", "prueba"]
+
+
+def test_seeding_twice_gives_five_agents_and_one_definition_and_the_second_run_changes_nothing(
+        tmp_path):
+    """H16 of the audit: the docstring promised idempotence and no test ran --apply
+    twice and counted. Rows, ids and versions must be byte-for-byte what they were."""
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [(GROQ_URL, "api")])
+    env = _seed_env(tmp_path, live)
+    first = _run_script(APPLY, env)
+    assert first.returncode == 0, first.stdout + first.stderr
+    once = _stored(live)
+    assert len(once["agents"]) == 5 and once["tasks"] == 5 and len(once["definitions"]) == 1
+    second = _run_script(APPLY, env)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert _stored(live) == once
+    assert "igual" in second.stdout
+
+
+def test_the_definition_has_the_shape_the_control_view_builds(tmp_path):
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [(GROQ_URL, "api")])
+    result = _run_script(APPLY, _seed_env(tmp_path, live))
+    assert result.returncode == 0, result.stdout + result.stderr
+    stored = _stored(live)
+    (_, version, name, steps_json), = stored["definitions"]
+    steps = json.loads(steps_json)
+    assert (version, name) == (1, seed.DEFINITION_NAME)
+    assert [s["key"] for s in steps] == ["investigador", "constructor", "verificador",
+                                         "revisor", "documentador"]
+    assert {s["key"]: s["depends_on"] for s in steps} == {
+        "investigador": [], "constructor": ["investigador"], "verificador": ["constructor"],
+        "revisor": ["constructor", "verificador"], "documentador": ["constructor", "revisor"]}
+    assert {s["key"]: s["independent_of"] for s in steps} == {
+        "investigador": [], "constructor": [], "verificador": ["constructor"],
+        "revisor": ["constructor"], "documentador": []}
+    assert {s["key"]: s["requires_approval"] for s in steps} == {
+        "investigador": False, "constructor": False, "verificador": False,
+        "revisor": True, "documentador": False}
+    assert {s["key"]: s["require_tool_evidence"] for s in steps} == {
+        "investigador": True, "constructor": True, "verificador": True,
+        "revisor": False, "documentador": False}
+    by_name = {row[1]: row[0] for row in stored["agents"]}
+    assert {s["key"]: s["agent_id"] for s in steps} == {
+        "investigador": by_name["Investigador"], "constructor": by_name["Constructor"],
+        "verificador": by_name["Verificador"], "revisor": by_name["Revisor"],
+        "documentador": by_name["Documentador"]}
+    assert len({s["agent_id"] for s in steps}) == 5   # independent_of needs distinct agents
+
+
+def test_a_stored_definition_that_differs_gets_a_new_version_and_the_old_one_is_left_alone(
+        tmp_path):
+    """Definitions are never edited in place: a run freezes the steps it started from."""
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [(GROQ_URL, "api")])
+    env = _seed_env(tmp_path, live)
+    assert _run_script(APPLY, env).returncode == 0
+    (definition_id, _, _, original), = _stored(live)["definitions"]
+    tampered = json.loads(original)
+    tampered[3]["requires_approval"] = False          # someone removed the human gate
+    con = sqlite3.connect(live)
+    con.execute("UPDATE cmh_workflow_definitions SET steps = ? WHERE id = ?",
+                (json.dumps(tampered), definition_id))
+    con.commit()
+    con.close()
+    second = _run_script(APPLY, env)
+    assert second.returncode == 0, second.stdout + second.stderr
+    rows = _stored(live)["definitions"]
+    assert [row[1] for row in rows] == [1, 2]
+    assert json.loads(rows[0][3]) == tampered            # the old version is untouched
+    assert json.loads(rows[1][3]) == json.loads(original)  # the new one is the real shape
+    assert "nueva version" in second.stdout
+
+
+def test_it_refuses_to_seed_an_empty_chain_and_writes_nothing(tmp_path):
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [])
+    env = _seed_env(tmp_path, live)
+    refused = _run_script(APPLY, env)
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "No se escribio nada" in refused.stdout and "--allow-pending" in refused.stdout
+    stored = _stored(live)
+    assert stored["agents"] == [] and stored["definitions"] == [] and stored["tasks"] == 0
+
+
+def test_allow_pending_seeds_anyway_and_the_agents_have_no_model_until_it_is_run_again(tmp_path):
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [])
+    env = _seed_env(tmp_path, live)
+    assert _run_script(APPLY + ["--allow-pending"], env).returncode == 0
+    assert [row[5] for row in _stored(live)["agents"]] == [None] * 5
+
+
+def test_the_policy_is_stored_on_every_agent(tmp_path):
+    """--policy used to be validated, used to resolve candidates and dropped, so
+    local-only left NULL and the run resolved free-cloud-first."""
+    for policy, model in (("free-cloud-first", "openai/gpt-oss-120b"),
+                          ("local-only", "cmh-local")):
+        live = tmp_path / f"{policy}.db"
+        _database_with_endpoints(live, [(GROQ_URL, "api"), (LM_STUDIO_URL, "local")])
+        result = _run_script(APPLY + ["--policy", policy],
+                             _seed_env(tmp_path / policy, live))
+        assert result.returncode == 0, result.stdout + result.stderr
+        agents = _stored(live)["agents"]
+        assert [row[4] for row in agents] == [policy] * 5, policy
+        assert [row[5] for row in agents] == [model] * 5, policy
+
+
+def test_the_live_path_follows_odysseus_data_dir_like_core_database_does(tmp_path, monkeypatch):
+    """After the data folder moves out of OneDrive (22.1) the backup must be taken of
+    the NEW file. Ignoring the variable backed up the old one, or none, and then wrote
+    to the new one with no copy."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path / "datos"))
+    assert seed.live_database_path() == tmp_path / "datos" / "app.db"
+    monkeypatch.delenv("ODYSSEUS_DATA_DIR")
+    assert seed.live_database_path() == seed.REPO / "data" / "app.db"
+    # a relative DATABASE_URL is resolved against the app root, as core.database does
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./data/otra.db")
+    assert seed.live_database_path() == seed.REPO / pathlib.Path("./data/otra.db")
+
+
+def test_a_second_backup_in_the_same_second_does_not_overwrite_the_first(tmp_path, monkeypatch):
+    import datetime as real
+    import types
+
+    class Frozen(real.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 29, 12, 0, 0)
+
+    monkeypatch.setattr(seed, "datetime", types.SimpleNamespace(datetime=Frozen))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    source = tmp_path / "app.db"
+    con = sqlite3.connect(source)
+    con.execute("CREATE TABLE t (a TEXT)")
+    con.execute("INSERT INTO t VALUES ('antes')")
+    con.commit()
+    first = seed.backup_database(source, "prueba")
+    con.execute("UPDATE t SET a = 'despues'")
+    con.commit()
+    con.close()
+    second = seed.backup_database(source, "prueba")
+    assert first != second and first.exists() and second.exists()
+    read = lambda p: sqlite3.connect(p).execute("SELECT a FROM t").fetchone()[0]
+    assert (read(first), read(second)) == ("antes", "despues")
+
+
+def test_a_console_that_cannot_print_the_names_does_not_end_the_script(tmp_path):
+    """The summary comes after the database write. A print that raised
+    UnicodeEncodeError ended the script with a traceback where a report was owed."""
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [(GROQ_URL, "api")])
+    result = _run_script(APPLY, _seed_env(tmp_path, live, PYTHONIOENCODING="ascii"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Definicion" in result.stdout
