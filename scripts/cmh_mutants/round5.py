@@ -65,18 +65,21 @@ MUTANTS = [
      "    return kind == \"local\" or is_reachable_without_leaving_the_network(\n"
      '        endpoint_host(_field(endpoint, "base_url")))',
      GATE_TESTS),
-    ("CG07 todo 172.x cuenta como red privada", POLICY,
-     "    return bool(address.is_loopback or address.is_private or address.is_link_local)",
-     "    return bool(address.is_loopback or address.is_private or address.is_link_local\n"
-     '                or name.startswith("172."))',
+    # CG07 and CG09 SURVIVED the first campaign (2026-09-29): nothing pinned the
+    # 172.16/12 boundary, and dropping link-local changed nothing at all because
+    # the code leaned on ipaddress.is_private, which already contains it. The gate
+    # now names its networks and both are valid mutants.
+    ("CG07 todo 172.x cuenta como red privada (172.16/12 se ensancha a 172/8)", POLICY,
+     '    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",',
+     '    "10.0.0.0/8", "172.0.0.0/8", "192.168.0.0/16",',
      GATE_TESTS),
     ("CG08 los nombres .local dejan de contar", POLICY,
      '    if name in _LOOPBACK_HOSTS or name.endswith(".local"):',
      "    if name in _LOOPBACK_HOSTS:",
      GATE_TESTS),
     ("CG09 link-local deja de contar", POLICY,
-     "    return bool(address.is_loopback or address.is_private or address.is_link_local)",
-     "    return bool(address.is_loopback or address.is_private)",
+     '    "169.254.0.0/16", "fe80::/10",\n    "fc00::/7",',
+     '    "fc00::/7",',
      GATE_TESTS),
     ("CG10 CMH_ZERO_COST vale falso por defecto", POLICY,
      'os.environ.get("CMH_ZERO_COST", "true")',
@@ -90,6 +93,22 @@ MUTANTS = [
      '    if row is not None and endpoint_host(getattr(row, "base_url", "")) != endpoint_host(endpoint_url):\n'
      "        return None",
      "    if False:\n        return None",
+     GATE_TESTS),
+    ("CG13 10.0.0.0/8 deja de ser red privada", POLICY,
+     '    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",',
+     '    "172.16.0.0/12", "192.168.0.0/16",',
+     GATE_TESTS),
+    ("CG14 192.168.0.0/16 deja de ser red privada", POLICY,
+     '    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",',
+     '    "10.0.0.0/8", "172.16.0.0/12",',
+     GATE_TESTS),
+    ("CG15 el rango unique-local de IPv6 deja de contar", POLICY,
+     '    "169.254.0.0/16", "fe80::/10",\n    "fc00::/7",\n))',
+     '    "169.254.0.0/16", "fe80::/10",\n))',
+     GATE_TESTS),
+    ("CG16 loopback deja de ser local", POLICY,
+     "    return bool(address.is_loopback or any(",
+     "    return bool(any(",
      GATE_TESTS),
 
     # --- every site where the gate is applied ----------------------------------

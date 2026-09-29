@@ -21,6 +21,7 @@ free of charge for us", which is an allowlist, not a heuristic. Reusing the
 heuristic would block every free provider.
 """
 
+import ipaddress
 import os
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -48,6 +49,16 @@ _FREE_SUFFIX = ":free"
 #: never treated as a local runtime.
 _EXTERNAL_KINDS = frozenset({"api", "proxy"})
 _LOOPBACK_HOSTS = frozenset({"localhost", "0.0.0.0", "host.docker.internal"})
+
+#: What "a private network" means for ``local-only`` (ADR-026): RFC1918, link-local,
+#: and the IPv6 unique-local range, which is RFC1918's analogue. Loopback is judged
+#: separately. Not 100.64.0.0/10 (carrier-grade NAT, where Tailscale lives): a GPU
+#: there is rejected on purpose, as ADR-026 says.
+_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+    "169.254.0.0/16", "fe80::/10",
+    "fc00::/7",
+))
 
 
 class ZeroCostViolation(Exception):
@@ -93,8 +104,6 @@ def is_reachable_without_leaving_the_network(host: str) -> bool:
     and the cost gate, and ``local-only`` — a policy whose docstring promises
     nothing leaves the machine — froze it at the head of the list.
     """
-    import ipaddress
-
     name = (host or "").strip().lower().rstrip(".")
     if not name:
         return False
@@ -104,7 +113,16 @@ def is_reachable_without_leaving_the_network(host: str) -> bool:
         address = ipaddress.ip_address(name.strip("[]"))
     except ValueError:
         return False
-    return bool(address.is_loopback or address.is_private or address.is_link_local)
+    # Named networks, not ``address.is_private``. That property is whatever the
+    # running Python says it is: it includes 192.0.2.0/24 (documentation),
+    # 240.0.0.0/4 (reserved) and more than the decision lists, and it has moved
+    # between releases. It also made ``is_link_local`` redundant, which is how a
+    # mutant dropping link-local survived: the measured 2026-09-29 result was that
+    # nothing distinguished the two. This gate is where "costs nothing" is decided,
+    # so it says exactly what ADR-026 says.
+    return bool(address.is_loopback or any(
+        address.version == network.version and address in network
+        for network in _PRIVATE_NETWORKS))
 
 
 def is_local_endpoint(endpoint: Any) -> bool:

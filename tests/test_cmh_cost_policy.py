@@ -55,6 +55,43 @@ def test_a_lookalike_host_is_not_the_free_host():
     assert is_zero_cost_endpoint(ep("https://notapi.groq.com/v1", "api"), "m") is False
 
 
+@pytest.mark.parametrize("host, expected", [
+    # loopback and the names that mean "this machine or its own network"
+    ("127.0.0.1", True), ("127.255.255.254", True), ("[::1]", True), ("localhost", True),
+    ("gpu.local", True),
+    # RFC1918, edge to edge: 10/8, 172.16/12, 192.168/16
+    ("10.0.0.1", True), ("10.255.255.254", True),
+    ("172.16.0.1", True), ("172.31.255.254", True),
+    ("192.168.0.1", True), ("192.168.255.254", True),
+    # link-local, IPv4 and IPv6, and the IPv6 unique-local range
+    ("169.254.0.1", True), ("169.254.255.254", True), ("[fe80::1]", True), ("[fd00::1]", True),
+    # one address outside each edge: a PUBLIC host must never be local
+    ("9.255.255.255", False), ("11.0.0.1", False),
+    ("172.15.255.255", False), ("172.32.0.1", False),
+    ("192.167.255.255", False), ("192.169.0.1", False),
+    ("169.253.255.255", False), ("169.255.0.1", False),
+    ("[fe7f::1]", False), ("[fec0::1]", False), ("[fbff::1]", False), ("[fe00::1]", False),
+    # carrier-grade NAT (Tailscale) is rejected on purpose (ADR-026); reserved and
+    # documentation ranges are not "a private network" even though Python calls
+    # some of them private
+    ("100.64.0.1", False), ("192.0.2.1", False), ("240.0.0.1", False), ("198.18.0.1", False),
+    # names
+    ("8.8.8.8", False), ("gpu.corp.example", False), ("api.groq.com", False),
+    ("gpu.local.example.com", False), ("notlocal", False),
+])
+def test_local_is_exactly_loopback_rfc1918_link_local_and_unique_local(host, expected):
+    """The boundary of every range, both sides. The audit's cost-gate mutants showed
+    nothing pinned it: 'any 172.x counts as private' survived, and so did dropping
+    link-local, because the code leaned on ``ipaddress.is_private`` and the two
+    could not be told apart."""
+    for kind in ("auto", "local"):
+        endpoint = ep(f"http://{host}:1234/v1", kind)
+        assert is_local_endpoint(endpoint) is expected, (host, kind)
+    for kind in ("api", "proxy"):
+        # a label of "api" or "proxy" declares a tunnel: never local, whatever the host
+        assert is_local_endpoint(ep(f"http://{host}:1234/v1", kind)) is False, (host, kind)
+
+
 def test_an_api_labelled_loopback_is_not_local():
     """An admin who labels a route external has declared it a tunnel."""
     assert is_local_endpoint(ep(LOCAL, "api")) is False
