@@ -444,7 +444,10 @@ async def _one(run_id: str, step_id: str, model_call):
                 step.config = json.dumps(config)
             step.status = "completed"
             step.finished_at = now()
+            # artifact_chars: the size of what the step produced, which step 3.6
+            # must record and the event did not carry.
             event(db, run_id, "step_completed", step.step_key, artifact_id=artifact.id,
+                  artifact_chars=len(output),
                   duration_seconds=(step.finished_at-step.started_at).total_seconds())
             db.commit()
     except Exception as exc:

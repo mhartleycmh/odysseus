@@ -265,3 +265,18 @@ async def test_a_restart_never_revives_a_rejected_run(db):
     assert step.status == "rejected"
     assert step.decision and "Sin evidencia." in step.decision
     assert calls == [], f"the rejected run executed {calls}"
+
+
+async def test_step_completed_records_the_size_of_the_artifact(db):
+    """Blueprint 7.3 said step_completed carried the artifact size and the code
+    never emitted it. Step 3.6 must record the size of what each step produced."""
+    run_id = seed(db, [("solo", [])])
+
+    async def fake(config, prompt):
+        return "seis!!"
+
+    await flow.execute(run_id, model_call=fake)
+    with db() as session:
+        completed = session.query(cdb.CMHWorkflowEvent).filter_by(
+            run_id=run_id, kind="step_completed").one()
+    assert json.loads(completed.payload)["artifact_chars"] == 6

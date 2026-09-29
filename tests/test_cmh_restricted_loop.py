@@ -219,3 +219,21 @@ async def test_workflow_step_declares_itself_foreground_controlled(monkeypatch, 
               "endpoint_url": "http://127.0.0.1:59999/v1", "instructions": "x"}
     assert await cmh_workflows.call_model(config, "objetivo") == "artefacto"
     assert seen["foreground_controlled"] is True
+
+
+async def test_tool_finished_carries_the_numeric_exit_code(run):
+    """ESTADO and blueprint 7.3 both said the events carry exit_code; only a boolean
+    `error` was emitted. Step 3.6 records the exit of every tool call."""
+    _, events = await run([
+        chunk({"type": "tool_start", "tool": "read_file"}),
+        chunk({"type": "tool_start", "tool": "ls"}),
+        chunk({"type": "tool_start", "tool": "grep"}),
+        chunk({"type": "tool_output", "tool": "read_file", "output": "Error: not found", "exit_code": 1}),
+        chunk({"type": "tool_output", "tool": "ls", "output": "ok", "exit_code": 0}),
+        chunk({"type": "tool_output", "tool": "grep", "output": "ok"}),
+        chunk({"delta": "Listo."}),
+        "data: [DONE]\n\n",
+    ])
+    finished = [payload for kind, payload in events if kind == "tool_finished"]
+    assert [(p["tool"], p["exit_code"]) for p in finished] == [
+        ("read_file", 1), ("ls", 0), ("grep", None)]

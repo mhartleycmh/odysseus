@@ -2080,8 +2080,12 @@ class TaskScheduler:
                         name = observed.get("tool") or "unknown"
                         pending_starts = tool_started.get(name) or []
                         started = pending_starts.pop(0) if pending_starts else None
+                        # exit_code is the number itself, not just "was it non-zero":
+                        # ESTADO and blueprint 7.3 both said events carry it, and they
+                        # never did. Step 3.6 must record the exit of every tool call.
                         event_sink("tool_finished", tool=name,
                                    error=observed.get("exit_code") not in (None, 0),
+                                   exit_code=observed.get("exit_code"),
                                    duration_seconds=round(time.monotonic()-started, 3) if started else None)
                     elif kind == "metrics":
                         raw_metrics = observed.get("data") or {}
