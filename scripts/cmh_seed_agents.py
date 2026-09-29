@@ -30,12 +30,14 @@ import os
 import pathlib
 import sqlite3
 import sys
+import tempfile
 import uuid
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-WORKSPACES = REPO / "data" / "agent_workspace"
+WORKSPACES = pathlib.Path(os.environ.get("CMH_AGENT_WORKSPACES")
+                          or REPO / "data" / "agent_workspace")
 READ_TOOLS = ["glob", "grep", "ls", "read_file"]
 PRESERVE = "CMH Researcher"
 
@@ -190,13 +192,31 @@ def main() -> int:
     # Validate the inputs before touching anything. An earlier version copied
     # the database and then aborted for missing instructions, leaving a backup
     # behind under a banner that said nothing was written.
-    for _, role in ((name, role) for role, name, _ in AGENTS):
+    for role, _, _ in AGENTS:
         instructions_for(role)
 
-    # Before the import, not after: importing core.database migrates the file.
+    # Before the import, not after: importing core.database runs init_db(),
+    # which MIGRATES whatever DATABASE_URL points at. Skipping the copy for a
+    # dry run was wrong twice over — the import still migrated the live file,
+    # and now without a backup. A dry run works on a throwaway copy instead, so
+    # the live database is never opened at all and the plan is still computed
+    # against real data. Measured on 2026-09-29: before this, a dry run
+    # recreated cmh_provider_quota and left no copy behind.
     db_path = live_database_path()
-    if args.apply and db_path.is_file():
-        backup_database(db_path, "before-seed-agents")
+    scratch = None
+    if args.apply:
+        if db_path.is_file():
+            backup_database(db_path, "before-seed-agents")
+    elif db_path.is_file():
+        scratch = pathlib.Path(tempfile.gettempdir()) / f"cmh-seed-dryrun-{os.getpid()}.db"
+        source = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        destination = sqlite3.connect(str(scratch))
+        source.backup(destination)
+        destination.close()
+        source.close()
+        os.environ["DATABASE_URL"] = f"sqlite:///{scratch.as_posix()}"
+        print(f"SIMULACION sobre una copia desechable: {scratch}")
+        print(f"La base real ({db_path}) no se abre.")
 
     from core.database import CMHAgent, SessionLocal
 

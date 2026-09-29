@@ -19,6 +19,7 @@ from src.cmh_cost_policy import (
 )
 from src.cmh_provider_router import LOCAL_ONLY, resolve_candidates, resolve_policy
 from src.cmh_workflows import (
+    default_tool_evidence,
     READ_TOOLS, event, is_active, release_stranded_steps, start, stop, validate_dag,
 )
 
@@ -55,6 +56,21 @@ def _owned_run(db, run_id, owner):
     if not run:
         raise HTTPException(404, "Workflow run not found")
     return run
+
+
+def _provider_key(url) -> str:
+    """Host and port: what makes two routes the same server, for deduplication.
+
+    ``endpoint_host`` drops the port because the quota config keys on the host,
+    which is right for a provider's limits and wrong for telling two local
+    runtimes apart.
+    """
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return ""
+    return (parsed.netloc or "").strip().lower().rstrip(".")
 
 
 def _assert_definition_zero_cost(db, owner, steps) -> None:
@@ -117,9 +133,24 @@ def _snapshot(db, owner, project_id, spec):
     # the guarantee of clean point 3. The step's own policy wins over the
     # agent's; both may be silent and the default applies.
     policy = resolve_policy(spec, {"provider_policy": agent.provider_policy})
-    candidates = resolve_candidates(db, policy, owner)
-    already_listed = any(c["endpoint_url"] == task.endpoint_url and c["model"] == agent.model
-                         for c in candidates)
+    # The agent's own model for the local candidate too. Without it a local
+    # endpoint inherited whatever it had cached, so a step could be produced
+    # by a model the agent never chose and then labelled with the one it did.
+    candidates = resolve_candidates(db, policy, owner, local_model=agent.model)
+    task_row = endpoint_for_url(db, task.endpoint_url, owner, agent.model)
+    task_host = endpoint_host(task.endpoint_url)
+    # Same PROVIDER and same model, not the same URL string. A registered row
+    # for `https://api.groq.com` and a task pointed at
+    # `https://api.groq.com/openai/v1` are the same provider, and comparing the
+    # strings listed it twice — so a 429 retried the host that had just
+    # refused, which is the exact failure the frozen list exists to avoid.
+    #
+    # The key carries the PORT, not just the host. Two local runtimes on
+    # 127.0.0.1:59998 and 127.0.0.1:59999 are different servers; deduplicating
+    # on the bare host silently dropped one of them. For a cloud provider there
+    # is no port, so the key is the host and nothing changes.
+    already_listed = any(_provider_key(c.get("endpoint_url")) == _provider_key(task.endpoint_url)
+                         and c.get("model") == agent.model for c in candidates)
     # The task's own route leads when the policy allows it: it is what the
     # agent was configured with and what the cost gate just cleared, and the
     # router's list is what the step falls back TO, not a silent replacement.
@@ -127,12 +158,15 @@ def _snapshot(db, owner, project_id, spec):
     # send the first attempt to the cloud anyway — which is the whole thing
     # local-only exists to prevent.
     allowed_by_policy = policy != LOCAL_ONLY or is_local_endpoint(
-        endpoint_for_url(db, task.endpoint_url, owner, agent.model)
-        or {"base_url": task.endpoint_url, "endpoint_kind": "auto"})
+        task_row or {"base_url": task.endpoint_url, "endpoint_kind": "auto"})
     if not already_listed and allowed_by_policy:
-        candidates = [{"endpoint_id": None, "endpoint_url": task.endpoint_url,
-                       "model": agent.model,
-                       "host": endpoint_host(task.endpoint_url)}] + candidates
+        # A real endpoint id when one resolves, and the URL as a stable
+        # fallback otherwise. Never None: quota rows key on it and the column
+        # is NOT NULL, so a None here kills the step AFTER it has produced its
+        # artifact — measured by the independent review of 2026-09-29.
+        candidates = [{"endpoint_id": getattr(task_row, "id", None) or task.endpoint_url,
+                       "endpoint_url": task.endpoint_url,
+                       "model": agent.model, "host": task_host}] + candidates
     if not candidates:
         raise HTTPException(400, f"Step {spec['key']}: la politica '{policy}' no deja "
                                  f"ningun candidato gratuito disponible")
@@ -184,7 +218,15 @@ def setup_cmh_workflow_routes() -> APIRouter:
             snapshots = [_snapshot(db, owner, definition.project_id, spec) for spec in specs]
             for spec, config in zip(specs, snapshots):
                 config["requires_approval"] = spec["requires_approval"]
-                config["require_tool_evidence"] = spec.get("require_tool_evidence", True)
+                # Falls back to the per-role default, not to a second True written
+                # here. A definition stored before that default existed carries
+                # no field, or carries the old blanket True, and either way the
+                # reviewer and the documenter would be asked for tool evidence
+                # they cannot produce. The default has ONE home.
+                stated = spec.get("require_tool_evidence")
+                config["require_tool_evidence"] = (
+                    bool(stated) if stated is not None
+                    else default_tool_evidence(spec["key"]))
                 config["approved"] = False
             run = CMHWorkflowRun(id=str(uuid.uuid4()), owner=owner,
                                  definition_id=definition_id, project_id=definition.project_id,
@@ -224,7 +266,11 @@ def setup_cmh_workflow_routes() -> APIRouter:
             artifacts = db.query(CMHWorkflowArtifact).filter(CMHWorkflowArtifact.run_id == run_id).all()
             return {"id": run.id, "status": run.status, "project_id": run.project_id,
                     "steps": [{"key": s.step_key, "status": s.status, "agent_id": s.agent_id,
-                               "model": json.loads(s.config)["model"], "dependencies": json.loads(s.dependencies),
+                               # The candidate that answered when one did, so the run detail and
+                               # the artifact agree on which model produced the step.
+                               "model": (json.loads(s.config).get("resolved_model")
+                                         or json.loads(s.config)["model"]),
+                               "dependencies": json.loads(s.dependencies),
                                "error": s.error,
                                "decision": json.loads(s.decision) if s.decision else None} for s in steps],
                     "artifacts": [{"id": a.id, "step_key": a.step_key, "model": a.model,

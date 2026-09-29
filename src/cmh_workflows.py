@@ -72,8 +72,27 @@ def validate_dag(steps: list[dict]) -> list[dict]:
              "require_tool_evidence": bool(s["require_tool_evidence"])
              if s.get("require_tool_evidence") is not None
              else default_tool_evidence(s["key"]),
-             "provider_policy": s.get("provider_policy")}
+             "provider_policy": _checked_policy(s.get("provider_policy"), s["key"])}
             for s in steps]
+
+
+def _checked_policy(value, step_key: str):
+    """A recognised policy name, None, or a refusal.
+
+    `local_only` with an underscore used to be accepted, degraded to None and
+    silently routed to the cloud. The one setting whose whole purpose is that
+    nothing leaves the machine cannot fail open on a typo.
+    """
+    from src.cmh_provider_router import PROVIDER_POLICIES, normalize_policy
+
+    if value in (None, ""):
+        return None
+    policy = normalize_policy(value)
+    if policy is None:
+        raise ValueError(
+            f"Step {step_key}: provider_policy '{value}' no existe. "
+            f"Validos: {', '.join(sorted(PROVIDER_POLICIES))}")
+    return policy
 
 
 #: Steps that work on the artifacts they were handed rather than on files, so
@@ -182,8 +201,14 @@ def _frozen_candidates(config: dict) -> list[dict]:
     complete = []
     for candidate in candidates:
         entry = dict(candidate)
-        entry.setdefault("endpoint_id", entry.get("endpoint_url"))
-        entry.setdefault("host", endpoint_host(entry.get("endpoint_url")))
+        # Assignment, not setdefault. A frozen candidate can carry the key with
+        # value None, and setdefault leaves None in place — which then reaches
+        # record_usage and violates cmh_provider_quota.endpoint_id NOT NULL
+        # AFTER the step has already produced its artifact, losing the work.
+        if not entry.get("endpoint_id"):
+            entry["endpoint_id"] = entry.get("endpoint_url")
+        if not entry.get("host"):
+            entry["host"] = endpoint_host(entry.get("endpoint_url"))
         complete.append(entry)
     return complete
 
@@ -296,6 +321,12 @@ async def call_model(config: dict, prompt: str) -> str:
         with SessionLocal() as db:
             record_usage(db, candidate["endpoint_id"], requests=1)
             db.commit()
+        # Tell the caller which candidate produced this, so the artifact it
+        # stores carries the model that wrote it rather than the first one on
+        # the list. Mutating the step's live config is deliberate: `_one`
+        # already holds it and reads it back when it writes the artifact.
+        config["resolved_model"] = candidate.get("model") or config["model"]
+        config["resolved_endpoint_id"] = candidate.get("endpoint_id")
         return output
     raise RuntimeError(
         f"Ningun candidato gratuito respondio en el paso {config['step_key']}: "
@@ -357,10 +388,18 @@ async def _one(run_id: str, step_id: str, model_call):
             step = db.get(CMHWorkflowStep, step_id)
             artifact = CMHWorkflowArtifact(
                 id=str(uuid.uuid4()), run_id=run_id, step_key=step.step_key,
-                agent_id=step.agent_id, model=config["model"],
+                agent_id=step.agent_id,
+                # The candidate that answered, not the first one frozen. With a
+                # fallback these differ, and the artifact is what a person opens.
+                model=config.get("resolved_model") or config["model"],
                 instructions_version=config["instructions_version"], content=output,
             )
             db.add(artifact)
+            # Persist which candidate answered, or the run detail keeps showing
+            # the first one frozen: call_model mutates the in-memory config and
+            # `/runs/{id}` re-reads step.config from the database.
+            if config.get("resolved_model"):
+                step.config = json.dumps(config)
             step.status = "completed"
             step.finished_at = now()
             event(db, run_id, "step_completed", step.step_key, artifact_id=artifact.id,

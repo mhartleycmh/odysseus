@@ -454,3 +454,65 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
 - **Descartado.** Conservarlo «para los 30 días de prueba»: una cadena que deja
   de funcionar en una fecha, y que entre tanto exige una tarjeta registrada, no
   es costo cero sino costo diferido.
+
+## ADR-025 · Correcciones de la segunda revisión independiente (2026-09-29)
+
+La ronda 2 midió sobre la etiqueta congelada `revision-fase1-r2` y devolvió
+DEVUELTO: **dos de los tres arreglos centrales de la ronda 1 introdujeron
+defectos nuevos**. Lo que sigue es lo que cambió y por qué, no un registro de
+que se corrigió.
+
+- **Un identificador de endpoint nulo destruía el trabajo que contabilizaba.**
+  `_snapshot` congelaba `endpoint_id: None` y `_frozen_candidates` usaba
+  `setdefault`, que **no reemplaza una clave presente con valor `None`**. Como
+  `cmh_provider_quota.endpoint_id` es `NOT NULL`, el paso llamaba al modelo,
+  producía su artefacto y **lo perdía** al contabilizar la cuota. El caso se
+  alcanza cuando la URL de la tarea no resuelve a una fila registrada del mismo
+  host, que es un caso que el propio módulo declara soportado. Ahora el id se
+  resuelve en `_snapshot` y, a falta de fila, se usa la URL; nunca `None`.
+- **La simulación del guion de siembra escribía en la base y ya no copiaba.**
+  Condicionar la copia a `--apply` fue un error doble: el `import
+  core.database` sigue ejecutando `init_db()` y migra lo que apunte
+  `DATABASE_URL`, así que la simulación migraba **sin respaldo**. Ahora la
+  simulación trabaja sobre una copia desechable y la base real **no se abre**.
+- **La deduplicación de candidatos es por host, puerto y modelo.** Comparar
+  cadenas de URL listaba dos veces al mismo proveedor —una fila
+  `https://api.groq.com` y una tarea en `.../openai/v1`—, de modo que un 429
+  reintentaba el host que acababa de rechazar. Comparar solo por host tenía el
+  defecto opuesto: dos runtimes locales en puertos distintos se fundían en uno
+  y uno desaparecía de la lista. Para la nube el host **es** el proveedor; para
+  loopback hace falta el puerto.
+- **El default por rol tiene una sola casa.** `create_run` mantenía un `True`
+  propio, así que toda definición ya almacenada seguía exigiendo evidencia de
+  herramientas al revisor y al documentador. Ahora baja a
+  `default_tool_evidence`. **Un valor explícito se honra**: no se distingue de
+  una elección deliberada, y sobreescribirlo dejaría el campo inservible para
+  esos dos roles. Medido antes de decidir: 0 definiciones y 0 ejecuciones
+  almacenadas, así que no hay nada que migrar.
+- **Una política no reconocida se rechaza con 400.** `local_only` con guion
+  bajo se degradaba a `None` y enrutaba a la nube. El único ajuste cuyo
+  propósito es que nada salga de la máquina no puede fallar abierto ante un
+  error de tecleo.
+- **El artefacto lleva el modelo que lo escribió.** La ronda 1 corrigió solo la
+  etiqueta del evento; el artefacto —lo que abre una persona— y el detalle de
+  la ejecución seguían rotulados con el primer candidato congelado. `call_model`
+  devuelve cuál respondió y el paso lo persiste.
+
+### Lecciones de método, registradas porque se repitieron
+
+1. **Los conteos deben reproducirse desde un clon limpio.** Tres pruebas leían
+   `data/agent_workspace`, que `.gitignore` excluye: en la etiqueta exportada
+   eran 222 aprobadas y 3 fallidas, no 225. Ahora generan sus archivos en un
+   `tmp_path`, lo que además ejercita `main()`, que nada ejercitaba.
+2. **Una prueba en proceso no puede observar un `import` ya hecho.** La prueba
+   del `dry run` pasaba bajo el mutante porque `core.database` ya estaba
+   importado por la sesión de pytest. Las dos garantías del guion se miden en
+   **subproceso**, que es como el guion se usa.
+3. **Los mutantes se versionan.** La cifra «12 de 12» de la ronda 1 no era
+   reproducible: vivían en un archivo temporal. `scripts/cmh_mutants/round2.py`
+   está en el repositorio.
+4. **Una prueba escrita junto a su arreglo comparte sus suposiciones.** Tres
+   veces una prueba nueva no podía distinguir el mutante del original: una
+   disyunción que aceptaba la forma defectuosa, una aserción sobre el `config`
+   en memoria en vez de sobre la fila almacenada, y una comparación entre dos
+   cadenas que resultaron ser la misma.

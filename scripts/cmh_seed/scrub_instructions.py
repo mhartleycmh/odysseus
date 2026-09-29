@@ -25,13 +25,18 @@ Run: python scripts/cmh_seed/scrub_instructions.py [--check]
 """
 
 import argparse
+import os
 import pathlib
 import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SOURCE = REPO.parent / ".claude" / "agents"
-TARGET = REPO / "data" / "agent_workspace"
+#: Where the derived instructions are written. CMH_AGENT_WORKSPACES lets a
+#: test point both scripts at a throwaway tree instead of the repo's data/,
+#: which git ignores.
+TARGET = pathlib.Path(os.environ.get("CMH_AGENT_WORKSPACES")
+                      or REPO / "data" / "agent_workspace")
 
 ROLES = {"investigador": "investigador", "constructor": "constructor",
          "verificador": "verificador", "revisor-cmh": "revisor",

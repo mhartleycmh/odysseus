@@ -153,6 +153,10 @@ class ProjectInput(BaseModel):
 def _validated_input(body: AgentInput, owner: str):
     if not body.name.strip() or not body.role.strip() or not body.instructions.strip():
         raise HTTPException(400, "Name, role and instructions cannot be blank")
+    if body.provider_policy and normalize_policy(body.provider_policy) is None:
+        from src.cmh_provider_router import PROVIDER_POLICIES
+        raise HTTPException(400, f"provider_policy '{body.provider_policy}' no existe. "
+                                 f"Validos: {', '.join(sorted(PROVIDER_POLICIES))}")
     if body.project_id and body.project_id not in {p["id"] for p in catalog()}:
         raise HTTPException(400, "Unknown project")
     try:
@@ -205,7 +209,8 @@ def _create_twin_task(db, body: AgentInput, workspace, tools, owner: str) -> str
     from src.cmh_cost_policy import ZeroCostViolation, assert_zero_cost_url
     from src.cmh_provider_router import resolve_candidates
 
-    candidates = resolve_candidates(db, body.provider_policy or "free-cloud-first", owner)
+    candidates = resolve_candidates(
+        db, normalize_policy(body.provider_policy) or "free-cloud-first", owner)
     endpoint_url = candidates[0]["endpoint_url"] if candidates else None
     model = body.model or (candidates[0]["model"] if candidates else None)
     if endpoint_url:

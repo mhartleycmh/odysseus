@@ -5,6 +5,7 @@ code was measured and found false. Named after what the reviewer measured, so
 a future reader can tell which of these are load-bearing.
 """
 
+import asyncio
 import json
 
 import httpx
@@ -114,8 +115,10 @@ async def test_a_run_created_through_the_api_freezes_more_than_one_candidate(cli
         config = json.loads(step.config)
     candidates = config["candidates"]
     assert len(candidates) > 1, "a run must freeze a list, not a single route"
-    assert [c["endpoint_id"] for c in candidates][:2] == [None, "openrouter"] or \
-           [c["endpoint_id"] for c in candidates][:2] == ["groq", "openrouter"]
+    # No disjunction: the earlier version accepted `endpoint_id: None`, which is
+    # exactly the shape that later killed a step after it had already answered.
+    assert all(c["endpoint_id"] for c in candidates), "ningun candidato sin id"
+    assert [c["endpoint_id"] for c in candidates][:2] == ["groq", "openrouter"]
     assert all(is_zero_cost_endpoint({"base_url": c["endpoint_url"], "endpoint_kind": "auto"},
                                      c["model"]) for c in candidates)
 
@@ -531,3 +534,340 @@ def test_a_registered_cerebras_endpoint_never_becomes_a_candidate(factory):
         ids = [c["endpoint_id"] for c in router.resolve_candidates(
             db, router.FREE_CLOUD_FIRST, config=poisoned)]
     assert "cerebras" not in ids, "ni escrito a mano en el JSON de cuotas entra"
+
+
+# --- findings of the SECOND independent review (2026-09-29) -------------------
+
+async def test_a_step_whose_route_is_unregistered_still_records_its_quota(factory, monkeypatch):
+    """P1 of round 2: _snapshot froze endpoint_id None, _frozen_candidates used
+    setdefault (which keeps a present None) and record_usage then violated
+    cmh_provider_quota.endpoint_id NOT NULL - AFTER the step had produced its
+    artifact, so the work was thrown away."""
+    produced = []
+
+    async def fake(config, candidate, prompt, record):
+        produced.append(candidate["endpoint_id"])
+        return "artifact"
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    unregistered = "http://127.0.0.1:59998/v1"      # local, free, and in no row
+    config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
+              "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
+              "instructions": "i", "endpoint_url": unregistered, "model": "m",
+              "candidates": [{"endpoint_id": None, "endpoint_url": unregistered,
+                              "model": "m", "host": "127.0.0.1"}]}
+    assert await flow.call_model(config, "prompt") == "artifact"
+    assert produced and produced[0] is not None, "un candidato sin id no llega al modelo"
+    with factory() as db:
+        rows = db.query(cdb.CMHProviderQuota).all()
+    assert rows and all(r.endpoint_id for r in rows)
+
+
+async def test_the_frozen_list_never_repeats_a_provider(client, factory, monkeypatch):
+    """P2 of round 2: the prepend compared URL strings, so a row registered as
+    the bare host and a task pointed at host+path listed the same provider
+    twice - and a 429 then retried the host that had just refused."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        db.query(cdb.ModelEndpoint).filter(
+            cdb.ModelEndpoint.id == "groq").first().base_url = "https://api.groq.com"
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+        candidates = json.loads(step.config)["candidates"]
+    pairs = [(c["host"], c["model"]) for c in candidates]
+    assert len(pairs) == len(set(pairs)), f"proveedor repetido: {pairs}"
+
+
+async def test_an_explicit_value_in_a_stored_definition_is_honoured(
+        client, factory, monkeypatch):
+    """Decision on the P2 of round 2 that the reviewer sent to human criterion.
+
+    An explicit value in a stored definition is HONOURED, whatever wrote it;
+    the per-role default applies only when the field is absent. A stored `True`
+    on the reviewer cannot be told apart from a deliberate choice by someone who
+    does want that step to read files, and overriding it would make the field
+    unusable for those two roles forever.
+
+    Measured on 2026-09-29 before deciding: the live database holds **0**
+    workflow definitions and 0 runs, so nothing out there carries the old
+    blanket True and there is nothing to migrate. Alternative discarded:
+    treating a stored True on revisor/documentador as the old bug."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    async with client:
+        created = await client.post("/api/cmh/workflows", json=_definition([
+            {"key": "constructor", "agent_id": "agent-constructor"},
+            {"key": "revisor", "agent_id": "agent-revisor", "depends_on": ["constructor"],
+             "independent_of": ["constructor"]}]))
+        definition_id = created.json()["id"]
+        # Rewrite the stored steps into the shape validate_dag produced before
+        # the per-role default existed: a blanket True on every step.
+        with factory() as db:
+            row = db.query(cdb.CMHWorkflowDefinition).filter(
+                cdb.CMHWorkflowDefinition.id == definition_id).first()
+            steps = json.loads(row.steps)
+            for step in steps:
+                step["require_tool_evidence"] = True
+            row.steps = json.dumps(steps)
+            db.commit()
+        run = await client.post(f"/api/cmh/workflows/{definition_id}/runs",
+                                json={"initial_input": "x"})
+        assert run.status_code == 201, run.text
+    with factory() as db:
+        frozen = {s.step_key: json.loads(s.config)["require_tool_evidence"]
+                  for s in db.query(cdb.CMHWorkflowStep).filter(
+                      cdb.CMHWorkflowStep.run_id == run.json()["id"]).all()}
+    assert frozen["constructor"] is True
+    assert frozen["revisor"] is True, "un valor explicito manda sobre el default por rol"
+
+
+async def test_a_definition_with_no_field_at_all_also_exempts_the_reviewer(
+        client, factory, monkeypatch):
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    async with client:
+        created = await client.post("/api/cmh/workflows", json=_definition([
+            {"key": "revisor", "agent_id": "agent-revisor"}]))
+        with factory() as db:
+            row = db.query(cdb.CMHWorkflowDefinition).filter(
+                cdb.CMHWorkflowDefinition.id == created.json()["id"]).first()
+            steps = json.loads(row.steps)
+            for step in steps:
+                step.pop("require_tool_evidence", None)
+            row.steps = json.dumps(steps)
+            db.commit()
+        run = await client.post(f"/api/cmh/workflows/{created.json()['id']}/runs",
+                                json={"initial_input": "x"})
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run.json()["id"]).first()
+    assert json.loads(step.config)["require_tool_evidence"] is False
+
+
+async def test_the_artifact_carries_the_model_that_wrote_it(factory, monkeypatch):
+    """P2 of round 2: only the EVENT label was fixed. The artifact - the thing a
+    person opens - was still stamped with the first candidate."""
+    async def fake(config, candidate, prompt, record):
+        if candidate["endpoint_id"] == "groq":
+            raise TimeoutError()
+        return "ARTIFACT from openrouter"
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
+              "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
+              "instructions": "i", "endpoint_url": GROQ, "model": "model-groq:free",
+              "candidates": [
+                  {"endpoint_id": "groq", "endpoint_url": GROQ,
+                   "model": "model-groq:free", "host": "api.groq.com"},
+                  {"endpoint_id": "openrouter", "endpoint_url": OPENROUTER,
+                   "model": "model-openrouter:free", "host": "openrouter.ai"}]}
+    await flow.call_model(config, "prompt")
+    assert config["resolved_model"] == "model-openrouter:free"
+
+
+@pytest.mark.parametrize("bad", ["local_only", "solo-local", "free_cloud_first"])
+async def test_an_unrecognised_provider_policy_is_refused_not_ignored(client, bad):
+    """P2 of round 2: a typo degraded to None and routed to the cloud. The one
+    setting whose purpose is that nothing leaves the machine cannot fail open."""
+    async with client:
+        refused = await client.post("/api/cmh/workflows", json=_definition([
+            {"key": "constructor", "agent_id": "agent-constructor",
+             "provider_policy": bad}]))
+        assert refused.status_code == 400, refused.text
+        assert "provider_policy" in refused.json()["detail"]
+        agent = await client.post("/api/cmh/agents", json={
+            "name": "x", "project_id": "project", "role": "r", "instructions": "i",
+            "model": "model-a:free", "allowed_tools": ["read_file"], "workspace": ".",
+            "provider_policy": bad})
+    assert agent.status_code == 400
+
+
+async def test_updating_an_agent_persists_its_policy_too(client):
+    """P2 of round 2: only the create path was covered, so deleting the line in
+    update_agent survived all 225 tests."""
+    async with client:
+        created = await client.post("/api/cmh/agents", json={
+            "name": "Actualizable", "project_id": "project", "role": "r",
+            "instructions": "i", "model": "model-a:free",
+            "allowed_tools": ["read_file"], "workspace": "."})
+        agent_id = created.json()["id"]
+        updated = await client.put(f"/api/cmh/agents/{agent_id}", json={
+            "name": "Actualizable", "project_id": "project", "role": "r",
+            "instructions": "i", "model": "model-a:free",
+            "allowed_tools": ["read_file"], "workspace": ".",
+            "provider_policy": "local-only"})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["provider_policy"] == "local-only"
+        listed = (await client.get("/api/cmh/agents")).json()["agents"]
+    assert [a for a in listed if a["id"] == agent_id][0]["provider_policy"] == "local-only"
+
+
+async def test_the_quota_row_is_keyed_on_the_endpoint_id_not_the_url(factory, monkeypatch):
+    """P2 of round 2: the commit claimed charging a URL would split a provider's
+    counter, and nothing measured it."""
+    async def fake(config, candidate, prompt, record):
+        return "artifact"
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    base = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
+            "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
+            "instructions": "i", "model": "model-a:free"}
+    # One registered provider, reached by two spellings of its URL.
+    for url in (GROQ, "https://api.groq.com/openai/v1/"):
+        await flow.call_model({**base, "endpoint_url": url}, "prompt")
+    with factory() as db:
+        ids = {r.endpoint_id for r in db.query(cdb.CMHProviderQuota).filter(
+            cdb.CMHProviderQuota.window_kind == "day").all()}
+    assert ids == {"groq"}, f"el contador del proveedor se partio: {ids}"
+
+
+def test_the_local_candidate_uses_the_model_the_agent_chose(factory):
+    """Observation 3 of round 2: resolve_candidates was called without
+    local_model, so a local candidate inherited whatever model the endpoint had
+    cached - one the agent never chose."""
+    with factory() as db:
+        candidates = router.resolve_candidates(db, router.LOCAL_ONLY, "admin",
+                                               local_model="elegido-por-el-agente")
+    assert candidates and candidates[0]["model"] == "elegido-por-el-agente"
+
+
+# --- closing the nine mutants that survived round 2 --------------------------
+
+async def test_the_frozen_list_never_carries_a_null_endpoint_id(client, factory, monkeypatch):
+    """N1. The earlier test could not catch it: its fixture made `already_listed`
+    true, so the prepend never ran and the None was never produced. Point the
+    task at a route the router does NOT list, which is when the prepend fires."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    unlisted = "http://127.0.0.1:59998/v1"          # local, free, in no row
+    with factory() as db:
+        task = db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first()
+        task.endpoint_url = unlisted
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+        candidates = json.loads(step.config)["candidates"]
+    assert candidates[0]["endpoint_url"] == unlisted, "la ruta de la tarea encabeza"
+    assert all(c["endpoint_id"] for c in candidates), (
+        f"un id nulo mata el paso al contabilizar la cuota: {candidates}")
+
+
+async def test_a_policy_that_leaves_no_candidate_refuses_the_run(client, factory, monkeypatch):
+    """M13. Nothing exercised the empty-list guard."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        # No local endpoint left, and the step asks for local-only.
+        db.query(cdb.ModelEndpoint).filter(cdb.ModelEndpoint.id == "local").delete()
+        db.commit()
+    async with client:
+        definition = await client.post("/api/cmh/workflows", json=_definition([
+            {"key": "constructor", "agent_id": "agent-constructor",
+             "provider_policy": "local-only"}]))
+        assert definition.status_code == 201, definition.text
+        run = await client.post(f"/api/cmh/workflows/{definition.json()['id']}/runs",
+                                json={"initial_input": "x"})
+    assert run.status_code == 400
+    assert "local-only" in run.json()["detail"]
+
+
+def test_a_frozen_candidate_without_a_host_still_gets_one(factory):
+    """M05b. The host keys the quota limits: an empty one silently means "no
+    limits known", so a spent provider would keep being sent requests."""
+    config = {"endpoint_url": "https://api.groq.com/openai/v1", "model": "m:free",
+              "candidates": [{"endpoint_id": "groq",
+                              "endpoint_url": "https://api.groq.com/openai/v1",
+                              "model": "m:free"}]}
+    completed = flow._frozen_candidates(config)
+    assert completed[0]["host"] == "api.groq.com"
+
+
+async def test_a_spent_provider_is_skipped_even_when_the_host_was_not_frozen(
+        factory, monkeypatch):
+    """M05b, measured through the executor rather than the helper."""
+    attempts = []
+
+    async def fake(config, candidate, prompt, record):
+        attempts.append(candidate["endpoint_id"])
+        return "artifact"
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    with factory() as db:
+        router.record_usage(db, "groq", requests=900)      # the 0.9 threshold of rpd 1000
+        db.commit()
+    config = {"run_id": "r1", "step_key": "uno", "agent_id": "a", "owner": "admin",
+              "name": "n", "workspace": ".", "allowed_tools": ["read_file"],
+              "instructions": "i", "endpoint_url": GROQ, "model": "model-a:free",
+              "candidates": [{"endpoint_id": "groq", "endpoint_url": GROQ,
+                              "model": "model-a:free"}]}   # no host frozen
+    with pytest.raises(RuntimeError, match="sin cuota"):
+        await flow.call_model(config, "prompt")
+    assert attempts == []
+
+
+async def test_the_prepend_compares_the_model_too(client, factory, monkeypatch):
+    """M25. With `or` instead of `and`, a task on a listed host but a DIFFERENT
+    model is treated as already listed and its own route is dropped."""
+    monkeypatch.setattr(flow, "start", lambda run_id: None)
+    with factory() as db:
+        agent = db.query(cdb.CMHAgent).filter(
+            cdb.CMHAgent.id == "agent-constructor").first()
+        task = db.query(cdb.ScheduledTask).filter(
+            cdb.ScheduledTask.id == "task-constructor").first()
+        agent.model = task.model = "otro-modelo:free"       # same host, other model
+        db.commit()
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+    with factory() as db:
+        step = db.query(cdb.CMHWorkflowStep).filter(
+            cdb.CMHWorkflowStep.run_id == run_id).first()
+        candidates = json.loads(step.config)["candidates"]
+    assert candidates[0]["model"] == "otro-modelo:free", (
+        "la ruta de la tarea debe encabezar: su modelo no estaba en la lista")
+
+
+def test_the_role_default_is_case_insensitive():
+    """M24. The step-key regex forbids uppercase today, so the .lower() is only
+    reachable through a direct call - which is exactly how a future caller
+    would reach it."""
+    assert flow.default_tool_evidence("REVISOR") is False
+    assert flow.default_tool_evidence("Documentador") is False
+    assert flow.default_tool_evidence("  revisor  ") is False
+    assert flow.default_tool_evidence("CONSTRUCTOR") is True
+
+
+async def test_the_stored_artifact_row_carries_the_answering_model(client, factory, monkeypatch):
+    """N3. The earlier test asserted on config["resolved_model"], which the
+    mutant did not touch: it changed what `_one` writes into the artifact ROW.
+    Read the row."""
+    async def fake(config, prompt):
+        # Simulate a fallback having happened inside call_model.
+        config["resolved_model"] = "model-que-respondio:free"
+        return "ARTIFACT"
+
+    monkeypatch.setattr(flow, "call_model", fake)
+    async with client:
+        run_id = await _create_run(client, [{"key": "constructor",
+                                             "agent_id": "agent-constructor"}])
+        for _ in range(200):
+            if run_id not in flow._ACTIVE:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("la ejecucion no termino")
+        detail = (await client.get(f"/api/cmh/runs/{run_id}")).json()
+    with factory() as db:
+        artifact = db.query(cdb.CMHWorkflowArtifact).filter(
+            cdb.CMHWorkflowArtifact.run_id == run_id).first()
+    assert artifact is not None, "el paso debe haber producido artefacto"
+    assert artifact.model == "model-que-respondio:free", (
+        "el artefacto se rotula con el modelo que lo escribio")
+    assert detail["steps"][0]["model"] == "model-que-respondio:free", (
+        "el detalle del run y el artefacto deben coincidir")

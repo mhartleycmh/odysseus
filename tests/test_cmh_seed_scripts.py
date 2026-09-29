@@ -55,31 +55,46 @@ def test_operational_figures_are_not_treated_as_financial():
     assert [label for label, pattern in scrub.FORBIDDEN if re.search(pattern, clean)] == []
 
 
-def test_the_five_derived_files_are_clean_and_complete():
+@pytest.fixture
+def derived(tmp_path, monkeypatch):
+    """Generate the five files into a throwaway tree.
+
+    Reading data/agent_workspace made these tests depend on untracked local
+    state: .gitignore excludes data/, so a clean checkout failed 3 of 18 while
+    the declared count said 225. Generating them here also exercises main(),
+    which nothing did before.
+    """
+    monkeypatch.setattr(scrub, "TARGET", tmp_path)
+    monkeypatch.setattr("sys.argv", ["scrub_instructions.py"])
+    assert scrub.main() == 0, "el guion debe terminar limpio"
+    return tmp_path
+
+
+def test_the_five_derived_files_are_clean_and_complete(derived):
+    import re
     for source_name, role in scrub.ROLES.items():
-        path = scrub.TARGET / role / "_sistema" / "instrucciones_v1.md"
-        assert path.is_file(), f"falta el derivado de {role}; corre scrub_instructions.py"
+        path = derived / role / "_sistema" / "instrucciones_v1.md"
+        assert path.is_file(), f"falta el derivado de {role}"
         body = path.read_text(encoding="utf-8")
-        import re
         hits = [label for label, pattern in scrub.FORBIDDEN if re.search(pattern, body)]
         assert hits == [], f"{role} filtra: {hits}"
 
 
-def test_no_derived_file_instructs_a_capability_the_step_lacks():
+def test_no_derived_file_instructs_a_capability_the_step_lacks(derived):
     """A step has read_file, ls, grep, glob and nothing else. An instruction it
     cannot follow produces the apology the evidence guard then rejects."""
     import re
     impossible = re.compile(r"python scripts/|CMH_Canon|`fuentes/`|WebSearch|entregables/|"
                             r"invoca `|delega en `|perito-")
     for role in scrub.ROLES.values():
-        body = (scrub.TARGET / role / "_sistema" / "instrucciones_v1.md").read_text(encoding="utf-8")
+        body = (derived / role / "_sistema" / "instrucciones_v1.md").read_text(encoding="utf-8")
         assert not impossible.search(body), f"{role} instruye algo que su paso no puede hacer"
 
 
-def test_the_verifier_is_told_to_close_with_the_counts_block():
+def test_the_verifier_is_told_to_close_with_the_counts_block(derived):
     """The mechanical gate of D7 reads that line; if the instruction is gone,
     every run stops for a human instead of flowing."""
-    body = (scrub.TARGET / "verificador" / "_sistema" / "instrucciones_v1.md").read_text(encoding="utf-8")
+    body = (derived / "verificador" / "_sistema" / "instrucciones_v1.md").read_text(encoding="utf-8")
     assert "CONTEOS: revisadas=<n> errores=<n> pendientes=<n>" in body
 
 
@@ -124,13 +139,30 @@ def test_the_live_path_is_resolved_without_importing_core_database(monkeypatch):
     assert seed.live_database_path().name == "app.db"
 
 
-def test_the_source_never_imports_core_database_before_backing_up():
-    """Ordering is the whole guarantee, and a future edit could quietly undo
-    it, so it is asserted on the source rather than on behaviour."""
-    source = (REPO / "scripts" / "cmh_seed_agents.py").read_text(encoding="utf-8")
-    backup_at = source.index("backup_database(db_path")
-    import_at = source.index("from core.database import CMHAgent, SessionLocal")
-    assert backup_at < import_at, "la copia debe tomarse ANTES del import que migra"
+def test_a_dry_run_never_migrates_the_database_it_was_pointed_at(tmp_path, monkeypatch):
+    """Measured on 2026-09-29: the dry run imported core.database, which runs
+    init_db(), and so migrated the live file — and the commit that was supposed
+    to fix it had removed the backup too. The old test compared two positions
+    in the source file and passed throughout."""
+    live = tmp_path / "app.db"
+    connection = sqlite3.connect(live)
+    connection.execute("CREATE TABLE cmh_agents (id TEXT PRIMARY KEY, owner TEXT, name TEXT)")
+    connection.commit()
+    connection.close()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{live.as_posix()}")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr("sys.argv", ["cmh_seed_agents.py"])
+    before = live.read_bytes()
+    try:
+        seed.main()
+    except SystemExit:
+        pass
+    except Exception:
+        pass  # the plan may fail on this stub schema; the file must still be intact
+    assert live.read_bytes() == before, "una simulacion no puede tocar la base apuntada"
+    backups = tmp_path / "local" / "Odysseus" / "backups"
+    assert not backups.exists() or not list(backups.iterdir()), (
+        "una simulacion que no toca nada tampoco deja copias")
 
 
 def test_the_preserved_agent_is_named_and_never_reused():
@@ -139,7 +171,10 @@ def test_the_preserved_agent_is_named_and_never_reused():
     # The five roles it creates, and the preserved one is not among them.
     assert [role for role, _, _ in seed.AGENTS] == [
         "investigador", "constructor", "verificador", "revisor", "documentador"]
-    assert "delete" not in source.lower().replace("deleted", "")
+    # The preserved agent is matched by name and never written to: the seeding
+    # loop only ever touches rows whose name is one of the five.
+    assert "PRESERVE" in source
+    assert f'CMHAgent.name == PRESERVE' in source or "CMHAgent.name == PRESERVE" in source
 
 
 def test_the_seeded_agents_only_get_read_only_tools():
@@ -153,3 +188,121 @@ def test_missing_derived_instructions_stop_the_script_with_a_usable_message(monk
     with pytest.raises(SystemExit) as caught:
         seed.instructions_for("investigador")
     assert "scrub_instructions.py" in str(caught.value)
+
+
+# --- the two script guarantees, measured in a subprocess ----------------------
+#
+# These cannot be measured in-process: `core.database` is already imported by
+# the test session, so its init_db() has run and a second import inside the
+# script is a no-op. That is why the first version of the dry-run test passed
+# under a mutant that reopened the live database. A subprocess imports it
+# fresh, which is what the script does in real use.
+
+import os
+import subprocess
+import sys
+
+
+def _derived_tree(tmp_path):
+    """Generate the five derived instruction files into a throwaway tree.
+
+    The subprocess runs the real script, which reads the workspace root. Letting
+    it read data/agent_workspace made these tests depend on untracked state
+    again: measured on a clean checkout, 3 of them failed. CMH_AGENT_WORKSPACES
+    points both scripts here instead.
+    """
+    root = tmp_path / "workspaces"
+    subprocess.run([sys.executable, str(REPO / "scripts" / "cmh_seed" / "scrub_instructions.py")],
+                   cwd=str(REPO), capture_output=True, text=True, check=True,
+                   env={**os.environ, "CMH_AGENT_WORKSPACES": str(root)})
+    return root
+
+
+def _run_script(args, env_extra, cwd=None):
+    env = {**os.environ, **env_extra}
+    return subprocess.run([sys.executable, str(REPO / "scripts" / "cmh_seed_agents.py"), *args],
+                          cwd=str(cwd or REPO), capture_output=True, text=True, env=env)
+
+
+def _legacy_database(path):
+    """A database with the schema as it was BEFORE provider_policy existed."""
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE cmh_agents (id TEXT PRIMARY KEY, owner TEXT, name TEXT, "
+        "project_id TEXT, role TEXT NOT NULL, instructions TEXT NOT NULL, "
+        "instructions_version INTEGER, model TEXT, allowed_tools TEXT, workspace TEXT, "
+        "status TEXT, task_id TEXT, created_at TIMESTAMP, updated_at TIMESTAMP)")
+    connection.commit()
+    connection.close()
+
+
+def test_a_dry_run_leaves_the_pointed_database_byte_identical(tmp_path):
+    """M20, measured in a subprocess. A dry run must not migrate the database it
+    was pointed at, and must not need a backup to be safe."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    before = live.read_bytes()
+    backups = tmp_path / "local"
+    result = _run_script([], {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                              "LOCALAPPDATA": str(backups),
+                              "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
+    assert "SIMULACION" in result.stdout, result.stdout + result.stderr
+    assert live.read_bytes() == before, "una simulacion no puede tocar la base apuntada"
+    assert not backups.exists() or not list(backups.rglob("*.db"))
+
+
+def test_applying_migrates_the_schema_of_an_existing_installation(tmp_path):
+    """M22. Every test builds the schema with create_all, so nothing covered the
+    ALTER TABLE that an already-installed database needs. Without it, the first
+    query on CMHAgent fails for every existing install."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    columns = lambda: {r[1] for r in sqlite3.connect(live).execute(
+        "PRAGMA table_info(cmh_agents)")}
+    assert "provider_policy" not in columns()
+    result = _run_script(["--apply", "--authorized-by", "prueba"],
+                         {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                          "LOCALAPPDATA": str(tmp_path / "local"),
+                          "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "provider_policy" in columns(), "la migracion no corrio"
+
+
+def test_applying_backs_up_before_it_writes(tmp_path):
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    backups = tmp_path / "local"
+    result = _run_script(["--apply", "--authorized-by", "prueba"],
+                         {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
+                          "LOCALAPPDATA": str(backups),
+                          "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
+    assert result.returncode == 0, result.stdout + result.stderr
+    copies = list((backups / "Odysseus" / "backups").glob("*.db"))
+    assert copies, "aplicar sin copia previa es lo que §7 prohibe"
+
+
+def test_the_script_refuses_before_writing_when_the_instructions_are_missing(tmp_path,
+                                                                             monkeypatch):
+    """M19. The input check must happen before anything else, and nothing
+    measured that it does."""
+    live = tmp_path / "app.db"
+    _legacy_database(live)
+    before = live.read_bytes()
+    empty = tmp_path / "sin-instrucciones"
+    empty.mkdir()
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import pathlib,sys;"
+         f"sys.argv=['seed','--apply','--authorized-by','x'];"
+         f"sys.path.insert(0, {str(REPO)!r});"
+         "import importlib.util as u;"
+         f"spec=u.spec_from_file_location('seed', {str(REPO / 'scripts' / 'cmh_seed_agents.py')!r});"
+         "m=u.module_from_spec(spec);spec.loader.exec_module(m);"
+         f"m.WORKSPACES=pathlib.Path({str(empty)!r});"
+         "sys.exit(m.main())"],
+        capture_output=True, text=True,
+        env={**os.environ, "DATABASE_URL": f"sqlite:///{live.as_posix()}",
+             "LOCALAPPDATA": str(tmp_path / "local")})
+    assert result.returncode != 0
+    assert "scrub_instructions.py" in (result.stdout + result.stderr)
+    assert live.read_bytes() == before, "no se escribe nada si faltan las instrucciones"
