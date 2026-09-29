@@ -725,9 +725,10 @@ async def test_the_quota_row_is_keyed_on_the_endpoint_id_not_the_url(factory, mo
 
 
 def test_the_local_candidate_uses_the_model_the_agent_chose(factory):
-    """Observation 3 of round 2: resolve_candidates was called without
-    local_model, so a local candidate inherited whatever model the endpoint had
-    cached - one the agent never chose."""
+    """Observation 3 of round 2, narrowed on 2026-09-29: an EXPLICIT local_model
+    still wins over everything the router would pick on its own. What changed is
+    the caller: _snapshot no longer hands it the agent's model, because that name
+    is a cloud one (see the API test below)."""
     with factory() as db:
         candidates = router.resolve_candidates(db, router.LOCAL_ONLY, "admin",
                                                local_model="elegido-por-el-agente")
@@ -1009,11 +1010,19 @@ def test_local_only_judges_the_registered_row_not_the_bare_url(factory):
 
 # --- closing the survivors of the round-3 campaign ---------------------------
 
-async def test_the_local_candidate_carries_the_agents_model_through_the_api(
+async def test_the_local_candidate_carries_the_configured_local_model_through_the_api(
         client, factory, monkeypatch):
-    """R12. The existing test called resolve_candidates directly, so dropping
-    local_model at the call site changed nothing it could see."""
+    """R12, repointed on 2026-09-29. It used to pin the OPPOSITE: that the local
+    candidate is called with the agent's model. Wrong across providers: a Groq
+    agent carries a cloud name that no local runtime serves, so the local
+    fallback was asked for a model that is not there. The local candidate now
+    carries the config's local identifier - not the agent's model, and not
+    whatever the runtime happens to have cached. This still goes through the API:
+    the first version of this test called resolve_candidates directly, so the
+    call site could change without it noticing."""
     monkeypatch.setattr(flow, "start", lambda run_id: None)
+    monkeypatch.setattr(router, "load_quota_config",
+                        lambda path=None: {**CONFIG, "local": {"model": "cmh-local"}})
     with factory() as db:
         # The local runtime has a different model cached than the agent chose.
         db.query(cdb.ModelEndpoint).filter(
@@ -1029,8 +1038,9 @@ async def test_the_local_candidate_carries_the_agents_model_through_the_api(
         candidates = json.loads(step.config)["candidates"]
     local = [c for c in candidates if "127.0.0.1" in (c["endpoint_url"] or "")]
     assert local, "el respaldo local debe estar en la lista"
-    assert local[0]["model"] == "model-a:free", (
-        "el respaldo local usa el modelo del agente, no el que el runtime cachea")
+    assert local[0]["model"] == "cmh-local", (
+        "el respaldo local usa el identificador local del config: ni el modelo "
+        "(de nube) del agente, ni el que el runtime cachea")
 
 
 async def test_a_loopback_endpoint_labelled_as_external_is_refused_outright(

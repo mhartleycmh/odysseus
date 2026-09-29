@@ -319,11 +319,8 @@ async def test_a_run_freezes_openrouter_with_the_model_discovered_for_it(api):
         run_id = await _create_run(client)
     config, events = _stored(factory, run_id)
     frozen = json.loads(config)["candidates"]
-    # The local candidate's own model name is a separate capacity (3.3b.3): only
-    # its position is pinned here.
-    assert [(c["endpoint_id"], c["model"]) for c in frozen[:2]] == [
-        ("groq", "openai/gpt-oss-120b"), ("orr", "big/model:free")]
-    assert [c["endpoint_id"] for c in frozen] == ["groq", "orr", "lms"]
+    assert [(c["endpoint_id"], c["model"]) for c in frozen] == [
+        ("groq", "openai/gpt-oss-120b"), ("orr", "big/model:free"), ("lms", "cmh-local")]
     discovery = [payload for kind, payload in events if kind == "provider_discovery"]
     assert discovery == [{"provider": "openrouter.ai", "outcome": "ok", "model": "big/model:free",
                           "source": "models/user", "reason": None}]
@@ -342,3 +339,68 @@ async def test_a_failed_discovery_still_creates_the_run_and_the_event_says_why(a
     assert len(discovery) == 1 and discovery[0]["outcome"] == "failed"
     assert discovery[0]["reason"] == "http:401"
     assert SECRET not in config and SECRET not in json.dumps(events)
+
+
+# --- the local candidate has its own model name ------------------------------
+#
+# A Groq agent carries `openai/gpt-oss-120b`. That name means something only on
+# Groq. Calling the local fallback with it asked LM Studio for a model it does not
+# have, so the last link of the chain answered 404 - a configuration fault, which
+# stops the step instead of falling back.
+
+def test_the_configured_local_identifier_wins_over_what_the_runtime_has_cached(world):
+    factory, _, _ = world
+    config = {**CONFIG, "local": {"model": "cmh-local"}}
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "lms").cached_models = json.dumps(["whatever-is-cached"])
+        db.commit()
+        local = [c for c in resolve_candidates(db, FREE_CLOUD_FIRST, config=config)
+                 if c["endpoint_id"] == "lms"]
+    assert [c["model"] for c in local] == ["cmh-local"]
+
+
+def test_an_explicit_local_model_still_wins_over_the_configured_one(world):
+    factory, _, _ = world
+    config = {**CONFIG, "local": {"model": "cmh-local"}}
+    with factory() as db:
+        local = [c for c in resolve_candidates(db, FREE_CLOUD_FIRST, config=config,
+                                               local_model="explicit")
+                 if c["endpoint_id"] == "lms"]
+    assert [c["model"] for c in local] == ["explicit"]
+
+
+def test_without_a_configured_identifier_the_runtimes_cached_model_is_used(world):
+    factory, _, _ = world
+    with factory() as db:
+        local = [c for c in resolve_candidates(db, FREE_CLOUD_FIRST, config=CONFIG)
+                 if c["endpoint_id"] == "lms"]
+    assert [c["model"] for c in local] == ["cmh-local"]  # the cached one, from the fixture
+
+
+async def test_a_groq_agent_gets_the_local_identifier_and_not_its_own_cloud_model(api):
+    client, factory, net = api
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "lms").cached_models = json.dumps(["whatever-is-cached"])
+        db.commit()
+    async with client:
+        run_id = await _create_run(client)
+    config, _ = _stored(factory, run_id)
+    local = [c for c in json.loads(config)["candidates"] if c["endpoint_id"] == "lms"]
+    assert [c["model"] for c in local] == ["cmh-local"]
+    assert local[0]["model"] != "openai/gpt-oss-120b"
+
+
+async def test_under_local_only_the_only_candidate_is_the_local_one_with_its_identifier(api):
+    client, factory, net = api
+    async with client:
+        definition = await client.post("/api/cmh/workflows", json={
+            "name": "synthetic", "project_id": "project",
+            "steps": [{"key": "a", "agent_id": "agent-a", "provider_policy": "local-only"}]})
+        assert definition.status_code == 201, definition.text
+        run = await client.post(f"/api/cmh/workflows/{definition.json()['id']}/runs",
+                                json={"initial_input": "synthetic input"})
+        assert run.status_code == 201, run.text
+    config, _ = _stored(factory, run.json()["id"])
+    frozen = json.loads(config)["candidates"]
+    assert [(c["endpoint_id"], c["model"]) for c in frozen] == [("lms", "cmh-local")]
+    assert net.requests == []  # nothing left the machine, not even a catalogue query

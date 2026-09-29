@@ -12,6 +12,8 @@
   ],
   "threshold": 0.9,
   "_threshold_nota": "El router no envia una peticion que llevaria a superar esta fraccion de cualquier ventana. 0,9 es valor inicial propuesto: deja 10% de margen para reintentos y para el desfase entre nuestro conteo y el del proveedor.",
+  "local": {"model": "cmh-local"},
+  "_local_nota": "Identificador con el que se llama al runtime local (LM Studio), el que fija `lms load --identifier cmh-local` (scripts/cmh_local/start.ps1). No es el nombre de un modelo: asi el candidato local no cambia cuando el banco de pruebas de 3.4 elige otro ganador. Antes el candidato local se llamaba con el modelo del agente, un nombre de Groq que ningun runtime local sirve. PENDIENTE: el usuario debe cargar el modelo con ese identificador (U4) o el respaldo local responde 404.",
   "discovery": {"ttl_s": 21600, "timeout_s": 15},
   "_discovery_nota": "Valores iniciales propuestos, parametrizables. Aplican a los proveedores con model=null que tienen una regla para elegirlo (hoy solo OpenRouter). ttl_s: cuanto se reutiliza el modelo descubierto antes de volver a preguntar al catalogo (6 h: el catalogo gratuito cambia despacio y cada consulta es una llamada mas a la cuenta). timeout_s: cuanto espera la creacion de un run a ese catalogo antes de dejar al proveedor fuera de la lista.",
   "providers": [

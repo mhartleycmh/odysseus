@@ -187,11 +187,16 @@ def _snapshot(db, owner, project_id, spec, discovered=None):
     # the guarantee of clean point 3. The step's own policy wins over the
     # agent's; both may be silent and the default applies.
     policy = resolve_policy(spec, {"provider_policy": agent.provider_policy})
-    # The agent's own model for the local candidate too. Without it a local
-    # endpoint inherited whatever it had cached, so a step could be produced
-    # by a model the agent never chose and then labelled with the one it did.
-    candidates = resolve_candidates(db, policy, owner, local_model=agent.model,
-                                    discovered=discovered)
+    # The local candidate is NOT called with the agent's model. That name means
+    # something only on the provider the agent was configured for: a Groq agent
+    # carries `openai/gpt-oss-120b`, which no local runtime serves, so the local
+    # fallback would have been asked for a model that is not there and the step
+    # would have died at the end of the chain on a 404. The router names the
+    # local model itself (config "local", else what the runtime has cached).
+    # The artifact still says which model wrote it, so nothing is mislabelled.
+    # An agent configured with a local endpoint keeps its own route: it is
+    # prepended below with its own model.
+    candidates = resolve_candidates(db, policy, owner, discovered=discovered)
     task_row = endpoint_for_url(db, task.endpoint_url, owner, agent.model)
     task_host = endpoint_host(task.endpoint_url)
     # Same PROVIDER and same model, not the same URL string. A registered row
@@ -299,7 +304,18 @@ def setup_cmh_workflow_routes() -> APIRouter:
             # Its config entry says model=null because the free catalogue turns
             # over; before this, nothing ever filled it in and the second link
             # of the chain never entered any list.
-            discovered, discovery_notes = await discover_free_models(db, owner)
+            #
+            # Only when some step may leave the machine. Under local-only nothing
+            # does, and a catalogue query is a call to the provider carrying the
+            # account's key: the first version asked anyway, and the test that
+            # pins local-only to "not even a catalogue query" caught it.
+            agents = {a.id: a for a in db.query(CMHAgent).filter(
+                CMHAgent.owner == owner,
+                CMHAgent.id.in_([spec["agent_id"] for spec in specs])).all()}
+            wants_cloud = any(resolve_policy(spec, agents.get(spec["agent_id"])) != LOCAL_ONLY
+                              for spec in specs)
+            discovered, discovery_notes = (
+                await discover_free_models(db, owner) if wants_cloud else ({}, []))
             snapshots = [_snapshot(db, owner, definition.project_id, spec, discovered)
                          for spec in specs]
             for spec, config in zip(specs, snapshots):

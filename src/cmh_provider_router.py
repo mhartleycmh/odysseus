@@ -201,6 +201,11 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
     ``discovered`` maps a host to the model :func:`discover_free_models` picked
     for it. The config wins: a model written there is never replaced by one
     found at run time.
+
+    A local runtime is called with, in order: the explicit ``local_model``, the
+    config's ``local.model`` (the identifier LM Studio was loaded under, so it
+    does not change when the winning model does), or what the runtime has
+    cached. Never the model of the agent: that is a cloud name.
     """
     from src.cmh_cost_policy import endpoint_host, is_local_endpoint, is_zero_cost_endpoint
 
@@ -224,10 +229,11 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
                                    "model": model, "host": host})
                 break
 
+    configured_local = (settings.get("local") or {}).get("model")
     for row in rows:
         if not is_local_endpoint(row):
             continue
-        model = local_model or _first_cached_model(row)
+        model = local_model or configured_local or _first_cached_model(row)
         if not model:
             continue
         candidates.append({"endpoint_id": row.id, "endpoint_url": row.base_url,

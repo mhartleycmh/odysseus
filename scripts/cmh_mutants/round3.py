@@ -64,9 +64,13 @@ MUTANTS = [
      '    if value is None:\n        return None'),
     ("R10 _checked_policy guarda el valor crudo, sin normalizar", FLOW,
      '    return policy', '    return value'),
-    ("R12 _snapshot no pasa local_model", WF,
-     '    candidates = resolve_candidates(db, policy, owner, local_model=agent.model)',
-     '    candidates = resolve_candidates(db, policy, owner)'),
+    # Repointed on 2026-09-29 and its meaning inverted. It used to drop
+    # local_model=agent.model; that decision was reversed (a Groq agent's model is
+    # not a name any local runtime serves), so the mutant now REINTRODUCES it.
+    ("R12 _snapshot vuelve a pasar el modelo del agente al candidato local", WF,
+     '    candidates = resolve_candidates(db, policy, owner, discovered=discovered)',
+     '    candidates = resolve_candidates(db, policy, owner, local_model=agent.model,\n'
+     '                                    discovered=discovered)'),
 
     ("R14 la copia de simulacion usa nombre fijo, no el pid", SEED,
      'f"cmh-seed-dryrun-{os.getpid()}.db"', '"cmh-seed-dryrun.db"'),

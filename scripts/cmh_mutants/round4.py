@@ -71,9 +71,8 @@ MUTANTS = [
      "            discovered, discovery_notes = {}, []",
      DISCOVERY_TESTS),
     ("D02 _snapshot no pasa lo descubierto al router", ROUTES,
-     "    candidates = resolve_candidates(db, policy, owner, local_model=agent.model,\n"
-     "                                    discovered=discovered)",
-     "    candidates = resolve_candidates(db, policy, owner, local_model=agent.model)",
+     "    candidates = resolve_candidates(db, policy, owner, discovered=discovered)",
+     "    candidates = resolve_candidates(db, policy, owner)",
      DISCOVERY_TESTS),
     ("D03 el router ignora el modelo descubierto", ROUTER,
      '            model = provider.get("model") or (discovered or {}).get(host)',
@@ -106,6 +105,26 @@ MUTANTS = [
     ("D10 el run no registra los eventos de descubrimiento", ROUTES,
      "            for note in discovery_notes:",
      "            for note in []:",
+     DISCOVERY_TESTS),
+    ("D11 se consulta el catalogo aunque todos los pasos sean local-only", ROUTES,
+     "            discovered, discovery_notes = (\n"
+     "                await discover_free_models(db, owner) if wants_cloud else ({}, []))",
+     "            discovered, discovery_notes = await discover_free_models(db, owner)",
+     DISCOVERY_TESTS),
+    ("D12 la condicion de 'algun paso admite la nube' se invierte", ROUTES,
+     '            wants_cloud = any(resolve_policy(spec, agents.get(spec["agent_id"])) != LOCAL_ONLY',
+     '            wants_cloud = any(resolve_policy(spec, agents.get(spec["agent_id"])) == LOCAL_ONLY',
+     DISCOVERY_TESTS),
+
+    # --- 3.3b.3 the local candidate has its own identifier ----------------------
+    # (R12 of round3, repointed, covers _snapshot handing the agent's model back.)
+    ("L01 el identificador local del config se ignora", ROUTER,
+     "        model = local_model or configured_local or _first_cached_model(row)",
+     "        model = local_model or _first_cached_model(row)",
+     DISCOVERY_TESTS),
+    ("L02 el config pisa al local_model explicito", ROUTER,
+     "        model = local_model or configured_local or _first_cached_model(row)",
+     "        model = configured_local or local_model or _first_cached_model(row)",
      DISCOVERY_TESTS),
 ]
 
