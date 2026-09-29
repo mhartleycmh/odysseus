@@ -33,6 +33,58 @@ def verdict(returncode: int, stdout: str) -> str:
     return "CAUGHT" if failed else "INVALIDO"
 
 
+def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
+    """Run a list of ``(name, file, old, new, tests)`` mutants against ``repo``.
+
+    One place for the loop that rounds 2-4 each carry a copy of. The file is
+    restored in a ``finally``, an obsolete pattern is NO APLICABLE and a broken
+    mutant is INVALIDO: neither leaves the denominator, and either makes the exit
+    status non-zero.
+    """
+    import subprocess
+
+    def run(tests):
+        return subprocess.run([str(py), "-m", "pytest", *tests, "-p", "no:cacheprovider",
+                               "-q", "--no-header"], cwd=str(repo),
+                              capture_output=True, text=True)
+
+    print(f"Repositorio bajo mutacion: {repo}")
+    caught = survived = skipped = invalid = 0
+    for name, relative, old, new, tests in mutants:
+        path = repo / relative
+        original = path.read_text(encoding="utf-8")
+        if old not in original:
+            print(f"{name}: NO APLICABLE (patron no encontrado)")
+            skipped += 1
+            continue
+        path.write_text(original.replace(old, new, 1), encoding="utf-8")
+        try:
+            result = run(tests)
+            failed = [l.split("::")[-1] for l in result.stdout.splitlines()
+                      if l.startswith("FAILED")]
+            outcome = verdict(result.returncode, result.stdout)
+            if outcome == "CAUGHT":
+                caught += 1
+                print(f"{name}: CAUGHT - cae: {failed[0]}")
+            elif outcome == "INVALIDO":
+                invalid += 1
+                print(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
+            else:
+                survived += 1
+                print(f"{name}: *** SURVIVED ***")
+        finally:
+            path.write_text(original, encoding="utf-8")
+
+    total = caught + survived + skipped + invalid
+    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
+          f"(de {total}; un patron obsoleto o un mutante roto NO salen del denominador)")
+    every = sorted({t for *_, tests in mutants for t in tests})
+    final = run(every)
+    print("Arbol restaurado:", [l for l in final.stdout.splitlines()
+                                if "passed" in l or "failed" in l][-1:])
+    return 1 if survived or skipped or invalid else 0
+
+
 def resolve_repo(default: pathlib.Path) -> pathlib.Path:
     """The directory a campaign may mutate, or SystemExit if it is the live tree."""
     override = os.environ.get("CMH_MUTANT_REPO")

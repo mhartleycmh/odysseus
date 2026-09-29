@@ -579,3 +579,136 @@ estaba definida y que el vacío era un hueco técnico.
   agentes **no se versionan** —llevan nombres de archivos financieros—, así que
   las pruebas usan un fixture sintético en `tests/fixtures/agent_sources` con la
   misma forma y ningún dato real. Primer conteo reproducible: **295**.
+
+---
+
+## ADR-027 · El status del proveedor llega al router: el fallback reactivo existe (2026-09-29)
+
+- **Contexto.** La auditoría de 6 lentes del 2026-09-29 midió que un 402, 408, 429,
+  5xx, timeout o error de conexión de Groq mataba el paso en su primer candidato: 8
+  de 8 fallas reales simuladas sobre la cadena real, con 0 eventos `provider_fallback`
+  y 0 peticiones al segundo candidato. El status viaja en el chunk `event: error`
+  como entero; `_run_agent_loop` lo aplanaba en un `RuntimeError` sin status,
+  `is_fallback_error` respondía `None` y `call_model` relanzaba. Solo funcionaba el
+  salto preventivo por cuota. Las 16 pruebas del fallback sustituían
+  `_run_one_candidate` por un doble que lanza una excepción con `.status_code`, la
+  única forma que la cadena real nunca produce.
+- **Decisión.** `RestrictedStreamError` (subclase de `RuntimeError`, en
+  `src/task_scheduler.py`) conserva el entero como `status_code`; el mensaje sigue
+  empezando por «Restricted task model stream failed». La prueba nueva recorre
+  `call_model` → `_run_agent_loop` → `stream_llm` con un `httpx.MockTransport`: solo
+  la red es falsa. Antes 8 fallaban y 5 pasaban; los 5 son los controles (proveedor
+  sano; 400/401/403/404, que deben detener el paso).
+- **Límite declarado.** Solo se guarda el número, no el texto del proveedor: un 401
+  puede repetir parte de la clave rechazada y este mensaje termina en la columna
+  `error` del paso y en el flujo SSE (ADR-011). Se decide por status: un
+  `ConnectError` interno de `llm_core` llega ya convertido en 503.
+- **Descartado.** Respetar el `fallback_eligible: false` que `llm_core` pone en
+  algunos errores (timeout genérico, error de protocolo): cada candidato reinicia el
+  paso desde cero sobre herramientas de solo lectura, así que reintentar en otro
+  proveedor no tiene efecto colateral, y ADR-020 manda que los timeouts cambien de
+  proveedor. Habría dejado morir el paso en el primer timeout de Groq, que es el fallo
+  que la cadena existe para absorber.
+- **Pruebas.** `tests/test_cmh_step_provider_failures.py`; mutantes S01–S03 de `round4`.
+
+## ADR-028 · El modelo de OpenRouter se descubre al crear el run (2026-09-29)
+
+- **Contexto.** La entrada de OpenRouter en `config/cmh_free_quotas.json` dice
+  `model: null` porque el catálogo gratuito rota, `resolve_candidates` salta a un
+  proveedor sin modelo y `pick_openrouter_free_model` no tenía ningún llamador fuera de
+  sus pruebas. Con U1, U2 y U4 hechas, la cadena real era Groq → LM Studio.
+- **Decisión.** `create_run` consulta, una vez por run, el catálogo de cada proveedor
+  sin modelo que tenga una regla para elegirlo (hoy solo OpenRouter), con la clave que
+  el servidor ya guarda, y congela la elección con el resto de la lista. Se pregunta
+  primero al listado de la cuenta (`/models/user`), filtrado por los ajustes de
+  privacidad, porque eso hace que el ajuste que U2 pide activar decida qué modelos
+  `:free` son elegibles; el listado general se usa solo si esa ruta no existe. Un 200 sin
+  ningún modelo elegible **no** se amplía al listado general: es la cuenta diciendo que
+  no. Un fallo deja al proveedor fuera de la lista y lo dice un evento
+  `provider_discovery`, uno por intento. La elección se cachea por endpoint durante
+  `discovery.ttl_s`; un modelo escrito en el config gana siempre. **No corre bajo
+  `local-only`**: una consulta de catálogo es una llamada al proveedor con la clave de
+  la cuenta (lo encontró la prueba escrita para fijarlo).
+- **Límite declarado.** **No verificado** que `/models/user` exista y traiga
+  `supported_parameters` y `context_length`: una búsqueda lo nombra, la página de
+  detalle de su documentación respondió 404 el 2026-09-29. Un modelo elegido puede
+  seguir respondiendo 404 por política de datos; un 404 no cambia de proveedor
+  (ADR-020) y el paso muere. El TTL y el timeout son valores iniciales propuestos.
+- **Descartado.** Fijar el modelo en el config (sigue permitido y manda, pero como
+  valor único un modelo `:free` retirado o excluido por privacidad rompería la cadena);
+  descubrirlo al arrancar el proceso (sin clave todavía, y se queda viejo); descubrirlo
+  por llamada (una consulta más en cada ronda).
+- **Pruebas.** `tests/test_cmh_provider_discovery.py`; mutantes D01–D12 de `round4`.
+
+## ADR-029 · El respaldo local se llama por su identificador, no por el modelo del agente (2026-09-29)
+
+- **Contexto.** El candidato local se llamaba con `agent.model`. Para un agente de Groq
+  eso es `openai/gpt-oss-120b`, un nombre que ningún runtime local sirve: el último
+  eslabón habría respondido 404, que es un fallo de configuración y detiene el paso, así
+  que el respaldo local nunca habría funcionado para un agente configurado en la nube.
+  Dos pruebas de la segunda revisión fijaban lo contrario; su razón era real (un paso
+  producido por un modelo y rotulado con otro), pero el artefacto ya lleva el modelo que
+  lo escribió (ADR-025).
+- **Decisión.** Un runtime local se llama con, en orden: `local_model` explícito, el
+  `local.model` del config (`cmh-local`, el identificador que fija
+  `lms load --identifier`, así que no cambia cuando el banco elige otro ganador), o lo
+  que el runtime tenga en caché. Nunca el modelo del agente. Un agente configurado con un
+  endpoint local conserva su ruta, antepuesta con su propio modelo.
+- **Límite declarado.** Hasta que el usuario cargue un modelo con ese identificador
+  (U4, `start.ps1`), el respaldo local responde 404.
+- **Descartado.** Descubrir el modelo cargado con `GET /v1/models` de LM Studio: una
+  llamada más al crear el run y elegiría lo que esté cargado por casualidad. Un nombre
+  en una celda del config es parametrizable y es con el que `start.ps1` ya carga.
+- **Pruebas.** `tests/test_cmh_provider_discovery.py` y `tests/test_cmh_review_findings.py`
+  (R12 reapuntado); mutantes L01–L02 de `round4` y R12 de `round3`.
+
+## ADR-030 · La cuota cuenta lo que el paso gastó: rondas, tokens y rechazos (2026-09-29)
+
+- **Contexto.** La cuota se cargaba una vez por paso EXITOSO con `requests=1` y sin
+  tokens. `tpm` y `tpd` no podían dispararse aunque el JSON los llevara (llenar los
+  cuatro límites, blueprint 9.5, no habría cambiado nada respecto de los tokens);
+  `rpm` y `rpd` contaban pasos y un paso hace hasta `max_rounds` peticiones; y una
+  llamada rechazada no se contaba. Con 4 ejecuciones diarias frente a 200 000 tokens
+  diarios de Groq, el límite que importa a 24/7 era el muerto.
+- **Decisión.** El bucle reporta sus totales en un solo evento `model_metrics` al final
+  de cada intento: tokens sumados sobre todas las rondas y un `usage_bucket` por ronda.
+  El planificador reenvía cuántas rondas cubren los totales (solo si el bucle las
+  reportó: desconocido no es cero; los buckets no se reenvían) y `call_model` carga al
+  candidato desde ese evento. Medido sobre la cadena real: un paso sano carga 1
+  petición, 3 tokens de entrada y 2 de salida, y un límite de 10 tokens al umbral 0,9
+  saca a Groq de la lista en el tercer paso. Un intento rechazado cuesta 1 petición y 0
+  tokens; uno que falla después de reportar su uso no se cobra dos veces; un fallo al
+  escribir la cuota se registra y no tumba el paso.
+- **Límite declarado.** Un intento que muere a media ejecución se cobra 1 petición y
+  ningún token, porque el bucle reporta sus totales solo al terminar. Los tokens son
+  los del proveedor cuando los informa y una estimación cuando no (`usage_source`). Que
+  un rechazo cuente contra el límite del proveedor **no está verificado**.
+- **Descartado.** No contar lo rechazado (era la regla anterior, «nunca sirvió una
+  petición»): sobrestimar solo hace que el router deje antes a un proveedor, y
+  subestimar lo hace caminar hacia un 429. Ventana deslizante (ADR-021).
+- **Pruebas.** `tests/test_cmh_step_provider_failures.py`; mutantes Q01–Q08 de `round4`.
+
+## ADR-031 · Un mutante solo cuenta como capturado si una prueba falla, y ningún corredor toca el árbol vivo (2026-09-29)
+
+- **Contexto.** Dos defectos de la herramienta de medición, ambos midiendo mal y ambos
+  hallados por casualidad. (1) `round2.py` llevaba escrita la ruta del árbol vivo e
+  ignoraba `CMH_MUTANT_REPO`: una campaña lanzada «sobre una copia» mutó archivos
+  versionados durante unos 5 minutos y contaminó las pruebas que se corrieron en esa
+  ventana; se vio porque `git status` mostró dos archivos que nadie había editado.
+  (2) Los corredores contaban como capturado cualquier salida distinta de cero de
+  pytest: `R17` de `round3` dejaba `_skip = ` sin valor, un `SyntaxError` en la línea
+  248, y figuraba en el «13 de 13 capturados» de `4fca1184` sin que ninguna prueba
+  hubiera demostrado detectar la deduplicación que decía retirar.
+- **Decisión.** `_target.resolve_repo` es la única forma de elegir el destino y se
+  niega ante cualquier carpeta con `.git` (un export no lo tiene; el árbol de trabajo
+  sí). `verdict()` distingue SURVIVED, CAUGHT (salida distinta de cero **y** una línea
+  `FAILED`) e INVALIDO (rompe la colección). `test_cmh_mutant_validity` aplica en
+  memoria cada mutante de las tres campañas y comprueba que el patrón existe y que el
+  resultado compila. En su primera corrida halló 3 mutantes de `round2` obsoletos
+  (M25, M26 retirados; N1 reapuntado) y un `D01` propio obsoleto.
+- **Límite declarado.** «Compila y una prueba falla» no prueba que la prueba que falla
+  sea la que debía: `cae:` muestra cuál es, y leerlo sigue siendo trabajo humano.
+- **Descartado.** Confiar en la disciplina de lanzar siempre sobre un export: eso es lo
+  que ya estaba escrito en el encabezado de `round3` y no impidió el incidente.
+- **Pruebas.** `tests/test_cmh_mutant_target.py`, `tests/test_cmh_mutant_validity.py`;
+  mutantes T01–T03 de `round4`.
