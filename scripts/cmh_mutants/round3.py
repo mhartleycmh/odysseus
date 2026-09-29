@@ -16,7 +16,7 @@ import pathlib
 import subprocess
 import sys
 
-from _target import resolve_repo
+from _target import resolve_repo, verdict
 
 REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])
 PY = pathlib.Path(sys.executable)
@@ -82,9 +82,13 @@ MUTANTS = [
     # Repointed after the fourth round rewrote the deduplication: the old
     # pattern matched code that no longer exists, and an obsolete pattern is
     # reported as NO APLICABLE precisely so it cannot vanish from the count.
+    # Repointed on 2026-09-29. The pattern above this one used to append
+    # `_skip = ` with no value: a SyntaxError, so the module never collected and
+    # every test "caught" it. The campaign counted that as a catch for as long as
+    # it existed. This one compiles and removes the deduplication for real.
     ("R17 la deduplicacion por proveedor se retira", WF,
-     "    seen, unique = set(), []",
-     "    seen, unique = set(), []\n    candidates = list(candidates)\n    _skip = "),
+     "        if key in seen:\n            continue",
+     "        if False:\n            continue"),
     ("R18 --policy deja de validarse en el guion", SEED,
      '    policy = normalize_policy(args.policy)\n    if policy is None:',
      '    policy = args.policy\n    if False:'),
@@ -104,7 +108,7 @@ def run():
 
 def main() -> int:
     print(f"Repositorio bajo mutacion: {REPO}")
-    caught = survived = skipped = 0
+    caught = survived = skipped = invalid = 0
     for name, relative, old, new in MUTANTS:
         path = REPO / relative
         original = path.read_text(encoding="utf-8")
@@ -117,22 +121,26 @@ def main() -> int:
             result = run()
             failed = [l.split("::")[-1] for l in result.stdout.splitlines()
                       if l.startswith("FAILED")]
-            if result.returncode:
+            outcome = verdict(result.returncode, result.stdout)
+            if outcome == "CAUGHT":
                 caught += 1
-                print(f"{name}: CAUGHT - cae: {failed[0] if failed else '?'}")
+                print(f"{name}: CAUGHT - cae: {failed[0]}")
+            elif outcome == "INVALIDO":
+                invalid += 1
+                print(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
             else:
                 survived += 1
                 print(f"{name}: *** SURVIVED ***")
         finally:
             path.write_text(original, encoding="utf-8")
 
-    total = caught + survived + skipped
-    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {skipped} NO APLICABLE "
-          f"(de {total}; un patron obsoleto NO sale del denominador)")
+    total = caught + survived + skipped + invalid
+    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
+          f"(de {total}; un patron obsoleto o un mutante roto NO salen del denominador)")
     final = run()
     print("Arbol restaurado:", [l for l in final.stdout.splitlines()
                                 if "passed" in l or "failed" in l][-1:])
-    return 1 if survived or skipped else 0
+    return 1 if survived or skipped or invalid else 0
 
 
 if __name__ == "__main__":

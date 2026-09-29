@@ -9,7 +9,7 @@ import pathlib
 import subprocess
 import sys
 
-from _target import resolve_repo
+from _target import resolve_repo, verdict
 
 # Was a hard-coded absolute path to the LIVE tree that ignored CMH_MUTANT_REPO:
 # a campaign launched on an export mutated the working tree instead. resolve_repo
@@ -49,19 +49,21 @@ MUTANTS = [
     ("M24 default_tool_evidence deja de bajar a minusculas", "src/cmh_workflows.py",
      '    return str(step_key or "").strip().lower() not in _NO_EVIDENCE_ROLES',
      '    return str(step_key or "").strip() not in _NO_EVIDENCE_ROLES'),
-    ("M25 already_listed ignora el modelo (and -> or)", "routes/cmh_workflow_routes.py",
-     '                         and c.get("model") == agent.model for c in candidates)',
-     '                         or c.get("model") == agent.model for c in candidates)'),
-    ("M26 el dedup vuelve a ignorar el puerto", "routes/cmh_workflow_routes.py",
-     '    return (parsed.netloc or "").strip().lower().rstrip(".")',
-     '    return (parsed.hostname or "").strip().lower().rstrip(".")'),
+    # M25 (already_listed and -> or) and M26 (dedup ignoring the port) were RETIRED
+    # on 2026-09-29: the fourth round replaced the code they mutated with
+    # _provider_key/_canonical_route, so their patterns no longer exist. What they
+    # guarded is covered by round3's R02, R02b and R17. They stayed in the list as
+    # patterns that matched nothing, and a runner that skips a pattern that
+    # matches nothing reports a smaller number than the one it was asked for.
     ("M27 resolved_model no se persiste en el config del paso", "src/cmh_workflows.py",
      '            if config.get("resolved_model"):\n                step.config = json.dumps(config)',
      '            pass'),
     # --- four against what this round changed -------------------------------
+    # Repointed on 2026-09-29: the id is now built from the row or the canonical URL.
     ("N1 el id congelado vuelve a poder ser None", "routes/cmh_workflow_routes.py",
-     'candidates = [{"endpoint_id": getattr(task_row, "id", None) or task.endpoint_url,',
-     'candidates = [{"endpoint_id": None,'),
+     '"endpoint_id": (getattr(task_row, "id", None)\n'
+     '                                       or _canonical_route(task.endpoint_url)),',
+     '"endpoint_id": None,'),
     ("N2 create_run vuelve a su propio default True", "routes/cmh_workflow_routes.py",
      '                config["require_tool_evidence"] = (\n                    bool(stated) if stated is not None\n                    else default_tool_evidence(spec["key"]))',
      '                config["require_tool_evidence"] = True'),
@@ -79,7 +81,7 @@ def run():
                            "-q", "--no-header"], cwd=REPO, capture_output=True, text=True)
 
 
-caught = survived = skipped = 0
+caught = survived = skipped = invalid = 0
 for name, relative, old, new in MUTANTS:
     path = REPO / relative
     original = path.read_text(encoding="utf-8")
@@ -91,16 +93,21 @@ for name, relative, old, new in MUTANTS:
     try:
         result = run()
         failed = [l.split("::")[-1] for l in result.stdout.splitlines() if l.startswith("FAILED")]
-        if result.returncode:
+        outcome = verdict(result.returncode, result.stdout)
+        if outcome == "CAUGHT":
             caught += 1
-            print(f"{name}: CAUGHT - cae: {failed[0] if failed else '?'}")
+            print(f"{name}: CAUGHT - cae: {failed[0]}")
+        elif outcome == "INVALIDO":
+            invalid += 1
+            print(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
         else:
             survived += 1
             print(f"{name}: *** SURVIVED ***")
     finally:
         path.write_text(original, encoding="utf-8")
 
-print(f"\n{caught} CAUGHT - {survived} SURVIVED - {skipped} no aplicables")
+print(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} no aplicables")
 final = run()
 print("Arbol restaurado:", [l for l in final.stdout.splitlines()
                             if "passed" in l or "failed" in l][-1:])
+sys.exit(1 if survived or invalid or skipped else 0)

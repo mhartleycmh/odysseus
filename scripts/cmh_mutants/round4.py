@@ -18,7 +18,7 @@ import pathlib
 import subprocess
 import sys
 
-from _target import resolve_repo
+from _target import resolve_repo, verdict
 
 REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])
 PY = pathlib.Path(sys.executable)
@@ -68,8 +68,8 @@ MUTANTS = [
 
     # --- 3.3b.2 OpenRouter's model is discovered and frozen with the list ------
     ("D01 create_run deja de descubrir el modelo", ROUTES,
-     "            discovered, discovery_notes = await discover_free_models(db, owner)",
-     "            discovered, discovery_notes = {}, []",
+     "                await discover_free_models(db, owner) if wants_cloud else ({}, []))",
+     "                ({}, []))",
      DISCOVERY_TESTS),
     ("D02 _snapshot no pasa lo descubierto al router", ROUTES,
      "    candidates = resolve_candidates(db, policy, owner, discovered=discovered)",
@@ -172,7 +172,7 @@ def run(tests):
 
 def main() -> int:
     print(f"Repositorio bajo mutacion: {REPO}")
-    caught = survived = skipped = 0
+    caught = survived = skipped = invalid = 0
     for name, relative, old, new, tests in MUTANTS:
         path = REPO / relative
         original = path.read_text(encoding="utf-8")
@@ -185,23 +185,27 @@ def main() -> int:
             result = run(tests)
             failed = [l.split("::")[-1] for l in result.stdout.splitlines()
                       if l.startswith("FAILED")]
-            if result.returncode:
+            outcome = verdict(result.returncode, result.stdout)
+            if outcome == "CAUGHT":
                 caught += 1
-                print(f"{name}: CAUGHT - cae: {failed[0] if failed else '?'}")
+                print(f"{name}: CAUGHT - cae: {failed[0]}")
+            elif outcome == "INVALIDO":
+                invalid += 1
+                print(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
             else:
                 survived += 1
                 print(f"{name}: *** SURVIVED ***")
         finally:
             path.write_text(original, encoding="utf-8")
 
-    total = caught + survived + skipped
-    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {skipped} NO APLICABLE "
-          f"(de {total}; un patron obsoleto NO sale del denominador)")
+    total = caught + survived + skipped + invalid
+    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
+          f"(de {total}; un patron obsoleto o un mutante roto NO salen del denominador)")
     every = sorted({t for *_, tests in MUTANTS for t in tests})
     final = run(every)
     print("Arbol restaurado:", [l for l in final.stdout.splitlines()
                                 if "passed" in l or "failed" in l][-1:])
-    return 1 if survived or skipped else 0
+    return 1 if survived or skipped or invalid else 0
 
 
 if __name__ == "__main__":

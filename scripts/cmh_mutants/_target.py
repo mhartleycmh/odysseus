@@ -15,6 +15,24 @@ import os
 import pathlib
 
 
+def verdict(returncode: int, stdout: str) -> str:
+    """CAUGHT only when a test actually failed.
+
+    pytest exits non-zero for two very different reasons: a test failed (the
+    mutant was caught) or the module could not even be collected (the mutant is
+    not valid Python, or breaks an import). The runners counted both as caught,
+    so a mutant that is a SyntaxError "fell" to every test in the suite at
+    once. That is what round3's R17 did: its patch left ``_skip = `` with no
+    value, it never compiled, and it stood in the "13 of 13 caught" of commit
+    4fca1184 while no test had ever been shown to notice the deduplication it
+    was meant to remove.
+    """
+    if returncode == 0:
+        return "SURVIVED"
+    failed = any(line.startswith("FAILED") for line in stdout.splitlines())
+    return "CAUGHT" if failed else "INVALIDO"
+
+
 def resolve_repo(default: pathlib.Path) -> pathlib.Path:
     """The directory a campaign may mutate, or SystemExit if it is the live tree."""
     override = os.environ.get("CMH_MUTANT_REPO")
