@@ -41,7 +41,7 @@ AFTER_REVIEWER = "2026-09-30T09:01:00Z"
 
 
 def build(path, *, status="completed", drop_artifact=None, drop_step=None, verifier_tools=None,
-          constructor_tools=None, decision="approved", decision_by="admin",
+          constructor_tools=None, reviewer_started=True, decision="approved", decision_by="admin",
           decision_at=BEFORE_REVIEWER, gate=("revisor",), reviewer_endpoint="orr",
           reviewer_frozen=None, broken_step=None, evidence_flags=None, blocked_url=None,
           usage_sources=None, run_id="run-1", started=T0):
@@ -90,7 +90,8 @@ def build(path, *, status="completed", drop_artifact=None, drop_step=None, verif
                 id=f"step-{run_id}-{key}", run_id=run_id, step_key=key, agent_id=f"agent-{key}",
                 config=json.dumps(config), dependencies="[]",
                 status="error" if key == broken_step else "completed",
-                started_at=started + timedelta(seconds=index * 10),
+                started_at=(None if key == "revisor" and not reviewer_started
+                            else started + timedelta(seconds=index * 10)),
                 finished_at=started + timedelta(seconds=index * 10 + 8), decision=step_decision))
             if key != drop_artifact:
                 db.add(cdb.CMHWorkflowArtifact(
@@ -472,3 +473,55 @@ def test_a_file_that_is_not_a_database_is_reported_and_not_a_traceback(tmp_path,
     path.write_bytes(b"this is not a sqlite file" * 40)
     assert report_mod.main(["run-1", "--db", str(path)]) == 2
     assert "no se pudo" in capsys.readouterr().out.lower()
+
+
+# --- review of revision-fase1-r7 -----------------------------------------------------------
+
+@pytest.mark.parametrize("decision_at", ["1999-01-01T00:00:00Z", "1970-01-01T00:00:00",
+                                         "2026-09-30T08:59:59Z"])
+def test_an_approval_dated_before_the_run_began_is_not_an_approval_of_this_run(
+        tmp_path, decision_at):
+    """The upper bound alone let a decision dated 1999 (or 1970) meet the criterion: the
+    engine cannot write such a date, so it means the database was altered."""
+    path = tmp_path / "app.db"
+    build(path, decision_at=decision_at)
+    criteria = report(path)["criteria"]
+    assert criteria["human_approval_recorded"] is False
+    assert criteria["human_approval_note"] == "revisor: la aprobacion es anterior al inicio de la ejecucion"
+    assert criteria["all_met"] is False
+
+
+def test_an_approval_at_the_very_second_the_reviewer_started_is_still_before_it(tmp_path):
+    """The engine sets started_at only after the approval: equal is allowed, later is not."""
+    path = tmp_path / "app.db"
+    build(path, decision_at="2026-09-30T09:00:30Z")          # the reviewer starts at 09:00:30
+    assert report(path)["criteria"]["human_approval_recorded"] is True
+
+
+def test_a_reviewer_with_no_start_time_cannot_be_shown_to_have_been_approved_first(tmp_path):
+    path = tmp_path / "app.db"
+    build(path, reviewer_started=False)
+    criteria = report(path)["criteria"]
+    assert criteria["human_approval_recorded"] is False
+    assert criteria["human_approval_note"] == "revisor: el paso no tiene hora de inicio"
+
+
+def test_a_step_whose_endpoint_id_is_a_url_with_credentials_prints_no_credential(tmp_path, capsys):
+    path = tmp_path / "app.db"
+    build(path, reviewer_endpoint="https://rvuser:RVPASS@api.groq.com/openai/v1")
+    step = {s["key"]: s for s in report(path)["steps"]}["revisor"]
+    assert step["endpoint_id"] == "https://api.groq.com"
+    report_mod.main(["run-1", "--db", str(path)])
+    assert "RVPASS" not in capsys.readouterr().out
+    report_mod.main(["run-1", "--db", str(path), "--json"])
+    assert "RVPASS" not in capsys.readouterr().out
+
+
+def test_latest_on_a_database_with_no_runs_says_so_and_is_not_green(tmp_path, capsys):
+    """Nothing to verify is not 'verified': the exit code that says it has to be pinned."""
+    path = tmp_path / "vacia.db"
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    cdb.Base.metadata.create_all(engine)
+    engine.dispose()
+    assert report_mod.main(["--latest", "--db", str(path)]) == 1
+    assert "No hay ejecuciones en la base." in capsys.readouterr().out

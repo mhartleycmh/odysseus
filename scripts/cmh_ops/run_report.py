@@ -179,9 +179,10 @@ def build_report(con, run_id: str) -> dict:
             unverifiable.append(key)
         declared = config.get("require_tool_evidence")
         needs_evidence = (key in DEFAULT_EVIDENCE) if declared is None else bool(declared)
+        shown_id = _scheme_host(endpoint_id) if endpoint_id and "://" in str(endpoint_id) else endpoint_id
         steps.append({
             "key": key, "agent": agents.get(agent_id, agent_id), "status": status,
-            "model": model, "endpoint_id": endpoint_id, "host": host,
+            "model": model, "endpoint_id": shown_id, "host": host,
             "fallbacks": [f for f in fallbacks if not str(f["reason"]).startswith("quota:")],
             "quota_skips": [f for f in fallbacks if str(f["reason"]).startswith("quota:")],
             "zero_cost_blocked": blocked,
@@ -215,6 +216,8 @@ def build_report(con, run_id: str) -> dict:
     gated = {s["key"]: s for s in steps if s["requires_approval"]}
     approvals = {key: s["decision"] for key, s in gated.items()}
 
+    run_started = _utc(run[4])
+
     def _problem(step):
         d = step["decision"] or {}
         if d.get("outcome") != "approved":
@@ -228,6 +231,11 @@ def build_report(con, run_id: str) -> dict:
             return "el paso no tiene hora de inicio"
         if at > started:
             return "la aprobacion es posterior al inicio del paso"
+        if run_started is not None and at < run_started:
+            # An approval dated 1999 or 1970 is not one given in this run. The engine cannot
+            # write such a date (it stamps the moment of approval), so it means the database
+            # was altered, or the clock was wrong.
+            return "la aprobacion es anterior al inicio de la ejecucion"
         return None
 
     if not gated:
