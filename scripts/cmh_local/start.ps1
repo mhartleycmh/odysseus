@@ -64,6 +64,17 @@ function Invoke-Lms {
     [pscustomobject]@{ ExitCode = $code; Output = $text }
 }
 
+function Test-SameModel {
+    # lms acepta una clave parcial ("gemma-4-e4b" por "google/gemma-4-e4b") y `lms ps` imprime
+    # la completa; una clave con espacios llega partida por celdas. Igualdad estricta daba por
+    # fallida una carga que habia salido bien. Se acepta que una contenga a la otra, nunca
+    # vacia: con una cadena vacia cualquier modelo "coincidiria".
+    param([string] $Loaded, [string] $Asked)
+    if (-not $Loaded -or -not $Asked) { return $false }
+    return ($Loaded.IndexOf($Asked, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+           ($Asked.IndexOf($Loaded, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
 function Get-Loaded {
     # Filas de `lms ps` tras el encabezado: identificador y modelo (columnas 1 y 2).
     # Un codigo de salida distinto de cero NO es "no hay nada cargado".
@@ -86,7 +97,7 @@ catch { throw "LM Studio no responde en $BaseUrl. Abrelo y activa su servidor lo
 
 $loaded = @(Get-Loaded)
 $mine = @($loaded | Where-Object { $_.Identifier -eq $Identifier })
-if ($mine.Count -gt 0 -and $mine[0].Model -ieq $Model) {
+if ($mine.Count -gt 0 -and (Test-SameModel $mine[0].Model $Model)) {
     $extra = @($loaded | Where-Object { $_.Identifier -ne $Identifier })
     if ($extra.Count -eq 0) {
         Write-Host "Ya esta cargado como '$Identifier' ($Model). Nada que hacer." -ForegroundColor Green
@@ -96,7 +107,7 @@ if ($mine.Count -gt 0 -and $mine[0].Model -ieq $Model) {
 }
 
 # Todo lo cargado que no sea ya el modelo pedido bajo el identificador pedido.
-$others = @($loaded | Where-Object { -not ($_.Identifier -eq $Identifier -and $_.Model -ieq $Model) })
+$others = @($loaded | Where-Object { -not ($_.Identifier -eq $Identifier -and (Test-SameModel $_.Model $Model)) })
 if ($others.Count -gt 0) {
     $names = ($others | ForEach-Object { "$($_.Identifier) ($($_.Model))" }) -join ', '
     if (-not $UnloadOthers) {
@@ -116,7 +127,7 @@ if ($load.ExitCode -ne 0) { throw "La carga fallo con exit $($load.ExitCode). Ba
 
 # No se dice "Listo" sin verlo: 'cmh-local' presente, con el modelo pedido, y nada mas.
 $after = @(Get-Loaded)
-$serving = @($after | Where-Object { $_.Identifier -eq $Identifier -and $_.Model -ieq $Model })
+$serving = @($after | Where-Object { $_.Identifier -eq $Identifier -and (Test-SameModel $_.Model $Model) })
 if ($serving.Count -eq 0) {
     throw "La carga termino sin error pero '$Identifier' no aparece en 'lms ps' con el modelo $Model."
 }

@@ -89,7 +89,9 @@ elif args[0] == "load":
         identifier = args[args.index("--identifier") + 1] if "--identifier" in args else args[1]
         print("Loading model...", file=sys.stderr)
         if not state.get("noop_load"):
-            state["loaded"].append({"identifier": identifier, "model": args[1]})
+            # the real lms accepts a partial key and `lms ps` then shows the full one
+            resolved = state.get("aliases", {}).get(args[1], args[1])
+            state["loaded"].append({"identifier": identifier, "model": resolved})
             save()
 elif args[0] == "unload":
     print("Unloaded.", file=sys.stderr)
@@ -97,7 +99,9 @@ elif args[0] == "unload":
         if not state.get("sticky"):        # a broken lms can say "Unloaded." and keep the models
             state["loaded"] = []
     elif len(args) > 1:
-        state["loaded"] = [m for m in state["loaded"] if m["identifier"] != args[1]]
+        # an unload that "works" (exit 0) and removes nothing, for the ids in sticky_names
+        state["loaded"] = [m for m in state["loaded"]
+                           if m["identifier"] != args[1] or args[1] in state.get("sticky_names", [])]
     save()
 sys.exit(0)
 '''
@@ -264,10 +268,13 @@ def lms(tmp_path):
         folder = root
 
         @staticmethod
-        def set_state(loaded=(), ls=LS_TEXT, fail=(), noop_load=False, sticky=False):
+        def set_state(loaded=(), ls=LS_TEXT, fail=(), noop_load=False, sticky=False,
+                      aliases=None, sticky_names=()):
             (root / "state" / "state.json").write_text(
                 json.dumps({"loaded": list(loaded), "ls": ls, "fail": list(fail),
-                            "noop_load": noop_load, "sticky": sticky}), encoding="utf-8")
+                            "noop_load": noop_load, "sticky": sticky,
+                            "aliases": aliases or {}, "sticky_names": list(sticky_names)}),
+                encoding="utf-8")
 
         @staticmethod
         def calls():
@@ -304,6 +311,18 @@ def powershell(script, timeout=240, **params):
             parts.append(f"-{name} {_quote(value)}")
     return subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                            " ".join(parts)], capture_output=True, text=True, timeout=timeout)
+
+
+def powershell_file(script, timeout=240, **params):
+    """Run a script through -File, as the documented command does: every argument arrives as
+    ONE string and a switch is a bare flag."""
+    args = []
+    for name, value in params.items():
+        args.append(f"-{name}")
+        if value is not True:
+            args.append(str(value))
+    return subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                           str(script), *args], capture_output=True, text=True, timeout=timeout)
 
 
 def bench(lms, server, tmp_path, **params):
@@ -547,10 +566,17 @@ def test_the_offload_context_and_identifier_are_passed_and_ttl_never_is(lms, ser
     assert not any("--ttl" in c for c in lms.calls())
 
 
-def test_a_comma_separated_list_binds_as_several_models_even_through_file(lms, server, tmp_path):
-    """With -File a list arrives as ONE string ('a,b'); the script splits it."""
-    result, rows = bench(lms, server, tmp_path, Models=f"{GEMMA},{GPT_OSS}")
+@pytest.mark.parametrize("separator", [",", ", "])
+def test_a_comma_separated_list_binds_as_several_models_even_through_file(
+        lms, server, tmp_path, separator):
+    """With -File a list arrives as ONE string ('a,b'); the script splits it and trims each
+    piece. The documented command says "a, b" works, and the test used to run through
+    -Command with no space, so neither the -File path nor the Trim() was ever exercised."""
+    out = tmp_path / "out.json"
+    result = powershell_file(BENCH, Lms=lms.path, BaseUrl=server.url, OutFile=out,
+                             Models=f"{GEMMA}{separator}{GPT_OSS}")
     assert result.returncode == 0, said(result)
+    rows = json.loads(out.read_text(encoding="utf-8-sig"))
     assert [r["Model"] for r in rows] == [GEMMA, GPT_OSS]
 
 
@@ -719,3 +745,108 @@ def test_start_does_not_say_ready_unless_cmh_local_is_actually_loaded(lms, serve
     result = start(lms, server)
     assert result.returncode != 0
     assert "no aparece" in said(result) and "Listo" not in result.stdout
+
+
+# --- review of revision-fase1-r7 ---------------------------------------------------------------
+
+def test_bench_refuses_to_measure_under_the_identifier_of_the_routers_fallback(lms, server, tmp_path):
+    """-Identifier cmh-local reopened by another door the defect of measuring under the name
+    start.ps1 leaves loaded: the loaded cmh-local counted as the bench's own and was unloaded."""
+    lms.set_state(loaded=[{"identifier": "cmh-local", "model": GEMMA}])
+    result, _ = bench(lms, server, tmp_path, Models=[GEMMA], Identifier="cmh-local")
+    assert result.returncode != 0 and "respaldo local del router" in said(result)
+    assert lms.calls() == [] and server.requests == []
+    assert lms.loaded() == ["cmh-local"]
+
+
+def test_bench_stops_when_its_own_identifier_is_still_loaded_after_an_unload(lms, server, tmp_path):
+    """The real lms exits 0 for 'Model Not Found', so an unload that removed nothing looks like
+    one that worked; the next candidate would be measured on top of the previous one."""
+    lms.set_state(sticky_names=["cmh-bench"])
+    result, rows = bench(lms, server, tmp_path, Models=[GEMMA, GPT_OSS])
+    assert result.returncode != 0 and "no lo descargo" in said(result)
+    assert len(server.requests) == 3                       # only the first candidate was measured
+    loads = [c for c in lms.calls() if c.startswith("load ") and "--estimate-only" not in c]
+    assert len(loads) == 1
+
+
+def test_a_leftover_cmh_bench_from_a_crashed_run_is_its_own_and_is_said(lms, server, tmp_path):
+    lms.set_state(loaded=[{"identifier": "cmh-bench", "model": "old/model"}])
+    result, rows = bench(lms, server, tmp_path, Models=[GEMMA])
+    assert result.returncode == 0, said(result)             # no -UnloadOthers needed for it
+    assert "de una corrida anterior" in said(result)
+    assert lms.loaded() == []
+
+
+def test_a_leftover_cmh_bench_does_not_count_as_somebody_elses_model(lms, server, tmp_path):
+    lms.set_state(loaded=[{"identifier": "cmh-bench", "model": "old/model"}, USER_MODEL])
+    result, _ = bench(lms, server, tmp_path, Models=[GEMMA])
+    assert result.returncode != 0 and "qwen/qwen3.8-27b" in said(result)
+    assert "Hay modelos cargados que este banco descargaria: qwen/qwen3.8-27b." in said(result)
+    assert server.requests == []
+
+
+def test_the_rate_leaves_out_the_first_token_of_each_measured_round(lms, server, tmp_path):
+    """Two tool rounds arrive in 3 pieces (the text round in 2 and does not count), each with
+    40 tokens: the numerator is 2 x (40 - 1) = 78, and what is printed is that over the time."""
+    _, rows = bench(lms, server, tmp_path, Models=[GEMMA])
+    row = rows[0]
+    assert row["RateTokens"] == 78
+    assert row["RateSeconds"] > 0
+    assert abs(row["TokensPerSec"] - round(row["RateTokens"] / row["RateSeconds"], 2)) < 1.0
+
+
+def test_a_model_with_no_measurable_speed_ranks_last_and_the_output_says_so(lms, server, tmp_path):
+    """A delivers every round in one piece (nothing measurable) and B streams. B wins; and
+    when A is the only one that passes, the line says 'no medible' instead of a blank."""
+    server.script = {0: {"mode": "one_chunk"}, 1: {"mode": "one_chunk"}, 2: {"mode": "one_chunk"}}
+    result, rows = bench(lms, server, tmp_path, Models=["cand/a", "cand/b"])
+    by_model = {r["Model"]: r for r in rows}
+    assert by_model["cand/a"]["TokensPerSec"] is None and by_model["cand/b"]["TokensPerSec"] > 0
+    assert "Ganador: cand/b" in said(result)
+
+    server.script, server.requests = {}, []
+    server.mode = "one_chunk"
+    lms.set_state()
+    alone, _ = bench(lms, server, tmp_path, Models=[GEMMA])
+    assert "velocidad no medible" in said(alone) and "-  tok/s" not in said(alone)
+
+
+# --- start.ps1: the model behind cmh-local ---------------------------------------------------
+
+def test_start_accepts_a_partial_key_that_lms_resolved(lms, server):
+    """lms loads 'gemma-4-e4b' as google/gemma-4-e4b and `lms ps` prints the full key. The
+    check by string equality failed a load that had worked, and asked for -UnloadOthers to
+    'replace' the very model that was wanted."""
+    lms.set_state(aliases={"gemma-4-e4b": GEMMA})
+    first = start(lms, server, model="gemma-4-e4b")
+    assert first.returncode == 0 and "Listo" in first.stdout, said(first)
+    assert lms.loaded() == ["cmh-local"]
+    calls_before = len(lms.calls())
+    again = start(lms, server, model="gemma-4-e4b")
+    assert again.returncode == 0 and "Ya esta cargado" in again.stdout, said(again)
+    assert not any(c.startswith(("load", "unload")) for c in lms.calls()[calls_before:])
+
+
+def test_start_accepts_a_model_key_with_spaces(lms, server):
+    """`lms ps` is read by whitespace: a key with spaces reaches the check in pieces."""
+    key = "my-org/My Model Name"
+    result = start(lms, server, model=key)
+    assert result.returncode == 0 and "Listo" in result.stdout, said(result)
+
+
+def test_start_does_not_take_an_unrelated_model_for_the_one_asked(lms, server):
+    lms.set_state(loaded=[{"identifier": "cmh-local", "model": "qwen/qwen3.8-27b"}])
+    result = start(lms, server)
+    assert result.returncode != 0 and "qwen/qwen3.8-27b" in said(result)
+    assert not any(c.startswith(("load", "unload")) for c in lms.calls())
+
+
+def test_start_does_not_say_already_loaded_while_another_model_shares_the_memory(lms, server):
+    """cmh-local is the right model but the user's own model is loaded next to it: it is NOT
+    'nothing to do', it is the shared-memory situation -UnloadOthers exists for."""
+    lms.set_state(loaded=[{"identifier": "cmh-local", "model": GEMMA}, USER_MODEL])
+    result = start(lms, server)
+    assert result.returncode != 0 and "qwen/qwen3.8-27b" in said(result)
+    assert "Ya esta cargado" not in result.stdout
+    assert not any(c.startswith(("load", "unload")) for c in lms.calls())

@@ -80,6 +80,24 @@ if (-not (Test-Path -LiteralPath $Lms)) { throw "No se encuentra lms en $Lms" }
 # Con -File una lista llega como una sola cadena 'a,b': se parte por comas.
 $Models = @($Models | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
+# El identificador del respaldo local del router (config local.model). Este banco no mide
+# bajo ese nombre: descargaria justo lo que start.ps1 deja cargado. Antes bastaba pasar
+# -Identifier cmh-local para reabrir ese defecto por otra puerta.
+$RouterIdentifier = "cmh-local"
+$ConfigPath = Join-Path $PSScriptRoot "..\..\config\cmh_free_quotas.json"
+if (Test-Path -LiteralPath $ConfigPath) {
+    try {
+        $fromConfig = ([System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8) |
+                       ConvertFrom-Json).local.model
+        if ($fromConfig) { $RouterIdentifier = [string]$fromConfig }
+    } catch { }
+}
+if ($Identifier -eq $RouterIdentifier) {
+    throw ("-Identifier '$Identifier' es el identificador del respaldo local del router " +
+           "(config local.model). Este banco no mide bajo ese nombre: descargaria lo que " +
+           "start.ps1 deja cargado. Usa otro, por ejemplo cmh-bench.")
+}
+
 # Los tres candidatos del blueprint (11.2), por nombre. Se buscan en `lms ls`.
 $Candidates = @("gemma-4-e4b", "qwen3.5-4b", "phi-4-mini")
 
@@ -115,6 +133,15 @@ function Get-LoadedIdentifiers {
         if ($seenHeader -and $line.Trim()) { $ids += ($line.Trim() -split '\s+')[0] }
     }
     return $ids
+}
+
+function Remove-Own {
+    # Descarga lo que ESTE guion cargo y comprueba que se fue. No se fia del codigo de salida:
+    # el lms real sale con 0 ante "Model Not Found", y una descarga que falla dejaria al
+    # candidato anterior en la memoria compartida bajo el mismo identificador. Devuelve $true
+    # si el identificador SIGUE cargado.
+    [void](Invoke-Lms @("unload", $Identifier))
+    return (@(Get-LoadedIdentifiers) -contains $Identifier)
 }
 
 # La misma conversacion para todos, o la comparacion no compara nada.
@@ -293,7 +320,11 @@ if (-not $wanted -or $wanted.Count -eq 0) { throw "No hay modelos que medir." }
 # --- no tocar lo que el usuario tiene cargado --------------------------------
 # Solo el identificador de este banco es nuestro. 'cmh-local' es lo que start.ps1 dejo
 # como respaldo del router: descargarlo lo deja respondiendo 404 hasta repetir start.ps1.
-$others = @(Get-LoadedIdentifiers | Where-Object { $_ -ne $Identifier })
+$loadedNow = @(Get-LoadedIdentifiers)
+if ($loadedNow -contains $Identifier) {
+    Write-Host "Habia un '$Identifier' de una corrida anterior (caida o interrumpida): es de este banco y se descarga." -ForegroundColor Yellow
+}
+$others = @($loadedNow | Where-Object { $_ -ne $Identifier })
 if ($others.Count -gt 0) {
     if (-not $UnloadOthers) {
         throw ("Hay modelos cargados que este banco descargaria: $($others -join ', '). " +
@@ -326,7 +357,9 @@ $results = foreach ($model in $wanted) {
     Write-Host "   memoria estimada: $estimated GiB"
 
     # Solo lo que este guion cargo: la vez anterior, bajo su propio identificador.
-    [void](Invoke-Lms @("unload", $Identifier))
+    if (Remove-Own) {
+        throw "lms unload $Identifier no lo descargo: sigue cargado y medir encima del candidato anterior contaminaria el resultado."
+    }
     $loadWatch = [System.Diagnostics.Stopwatch]::StartNew()
     # Sin --ttl a proposito: --ttl DESCARGA tras N segundos sin uso.
     $load = Invoke-Lms @("load", $model, "--gpu", $Gpu, "-c", "$ContextLength", "--identifier", $Identifier, "-y")
@@ -378,12 +411,16 @@ $results = foreach ($model in $wanted) {
         TokensPerSec = if ($rateSeconds -gt 0) { [math]::Round($rateTokens / $rateSeconds, 2) } else { $null }
         TotalTokensPerSec = if ($allSeconds -gt 0) { [math]::Round($allTokens / $allSeconds, 2) } else { $null }
         TokensEstimated = $estimatedTokens
+        RateTokens = $rateTokens
+        RateSeconds = [math]::Round($rateSeconds, 3)
         ResidentMB = if ($resident) { [math]::Round($resident / 1MB, 0) } else { $null }
     }
 }
 
 # Solo el identificador de este banco.
-[void](Invoke-Lms @("unload", $Identifier))
+if (Remove-Own) {
+    Write-Host "AVISO: '$Identifier' sigue cargado tras el banco. Descargalo a mano con: lms unload $Identifier" -ForegroundColor Yellow
+}
 
 Write-Host "`n=== RESULTADO ===" -ForegroundColor Green
 $results | Format-Table Model, Loaded, EstimatedGiB, FirstTokenSeconds, TokensPerSec, TotalTokensPerSec, Rounds, Answered, ToolCallsOk, ResidentMB -AutoSize
@@ -397,7 +434,10 @@ if ($OutFile) { $results | ConvertTo-Json -Depth 5 | Set-Content -Path $OutFile 
                 Write-Host "Medicion guardada en $OutFile" }
 
 if ($winner) {
-    Write-Host "Ganador: $($winner.Model) - $($winner.TokensPerSec) tok/s, primer token en $($winner.FirstTokenSeconds) s, tool calling valido y respuesta final." -ForegroundColor Green
+    $speed = if ($null -eq $winner.TokensPerSec) {
+        "velocidad no medible (ninguna ronda llego en al menos $MinDeltasForRate trozos; ordena ultimo)"
+    } else { "$($winner.TokensPerSec) tok/s" }
+    Write-Host "Ganador: $($winner.Model) - $speed, primer token en $($winner.FirstTokenSeconds) s, tool calling valido y respuesta final." -ForegroundColor Green
     Write-Host "Es el candidato local del router. Cargalo como 'cmh-local' con scripts/cmh_local/start.ps1 -Model '$($winner.Model)'."
     exit 0
 }
