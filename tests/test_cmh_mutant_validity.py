@@ -64,10 +64,16 @@ def test_the_runners_are_the_ones_this_module_covers():
     assert {"round2.py", "round3.py", "round4.py"} <= set(RUNNERS)
 
 
+#: Returned when a mutant could not be checked because the tool that checks its file type is
+#: missing. It is neither "valid" (None) nor "broken" (a message): the test skips instead of
+#: passing, because a mutant nobody compiled is not a mutant that compiles.
+UNCHECKED = object()
+
+
 def _syntax_problem(relative: str, mutated: str, workdir: pathlib.Path):
-    """Why the mutated source is not valid, or None. Python is compiled; a
-    PowerShell script goes through PowerShell's own parser (skipped when this
-    machine has none: the mutants are then unchecked, not passed)."""
+    """Why the mutated source is not valid, None if it is, or UNCHECKED. Python is
+    compiled; a PowerShell script goes through PowerShell's own parser and a shell
+    script through ``bash -n``. With no such tool the answer is UNCHECKED."""
     if relative.endswith(".py"):
         try:
             compile(mutated, relative, "exec")
@@ -77,7 +83,7 @@ def _syntax_problem(relative: str, mutated: str, workdir: pathlib.Path):
     if relative.endswith(".ps1"):
         powershell = shutil.which("powershell.exe")
         if not powershell:
-            return None
+            return UNCHECKED
         target = workdir / "mutant.ps1"
         target.write_text(mutated, encoding="ascii" if mutated.isascii() else "utf-8-sig")
         script = ("$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("
@@ -87,12 +93,20 @@ def _syntax_problem(relative: str, mutated: str, workdir: pathlib.Path):
         result = subprocess.run([powershell, "-NoProfile", "-Command", script],
                                 capture_output=True, text=True)
         return None if result.returncode == 0 else "no compila: " + result.stdout.strip()[:200]
+    if relative.endswith(".sh"):
+        bash = shutil.which("bash")
+        if not bash:
+            return UNCHECKED
+        target = workdir / "mutant.sh"
+        target.write_text(mutated, encoding="utf-8", newline="\n")
+        result = subprocess.run([bash, "-n", str(target)], capture_output=True, text=True)
+        return None if result.returncode == 0 else "no compila: " + result.stderr.strip()[:200]
     return f"tipo de archivo sin comprobacion de sintaxis: {relative}"
 
 
 @pytest.mark.parametrize("runner", RUNNERS)
 def test_every_mutant_is_applicable_and_compiles(runner, tmp_path):
-    broken = []
+    broken, unchecked = [], []
     mutants = _mutants(runner)
     assert mutants, runner
     for name, relative, old, new in mutants:
@@ -105,9 +119,31 @@ def test_every_mutant_is_applicable_and_compiles(runner, tmp_path):
             broken.append(f"{name}: el mutante no cambia nada")
             continue
         problem = _syntax_problem(relative, mutated, tmp_path)
-        if problem:
+        if problem is UNCHECKED:
+            unchecked.append(name)
+        elif problem:
             broken.append(f"{name}: {problem}")
     assert not broken, "\n".join(broken)
+    if unchecked:
+        pytest.skip(f"{len(unchecked)} mutante(s) sin comprobar (falta PowerShell o bash): "
+                    + ", ".join(unchecked[:5]))
+
+
+def test_a_mutant_that_could_not_be_checked_is_neither_valid_nor_broken(tmp_path, monkeypatch):
+    """With no PowerShell the check used to return None, which the caller reads as 'no
+    problem': the mutants were declared valid without anyone having parsed them."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert _syntax_problem("scripts/x.ps1", "Write-Host 1", tmp_path) is UNCHECKED
+    assert _syntax_problem("scripts/x.sh", "echo 1", tmp_path) is UNCHECKED
+    assert _syntax_problem("scripts/x.py", "x = 1", tmp_path) is None       # Python needs no tool
+    assert _syntax_problem("scripts/x.py", "x = ", tmp_path).startswith("no compila")
+
+
+def test_a_shell_mutant_goes_through_bash_and_a_broken_one_is_reported(tmp_path):
+    if not shutil.which("bash"):
+        pytest.skip("no bash on this machine")
+    assert _syntax_problem("scripts/x.sh", "echo 1\n", tmp_path) is None
+    assert "no compila" in _syntax_problem("scripts/x.sh", "if then fi\n", tmp_path)
 
 
 def test_a_mutant_that_does_not_compile_is_reported_as_broken_and_not_as_caught():

@@ -9,22 +9,32 @@
     (ls, read_file, con resultados sinteticos) y le devuelve el resultado, hasta
     que el modelo responde con texto. Mide, por modelo:
 
-      - segundos al primer token (streaming),
-      - tok/s de generacion (tokens / tiempo despues del primer token, no
-        tokens / tiempo total: el total incluye evaluar el prompt),
+      - segundos al primer token (streaming), el de la PRIMERA ronda,
+      - tok/s de generacion: tokens (menos el primero) sobre el tiempo posterior
+        al primer token, y solo de las rondas que llegaron en al menos 3 trozos.
+        Una ronda que el servidor entrega de un golpe (una llamada a herramienta
+        en un solo fragmento) mete sus tokens en el numerador y deja su tiempo en
+        el "primer token": no se cuenta. TotalTokensPerSec, sobre el tiempo total
+        incluido el prompt, se muestra para comparar y NO decide nada,
       - si CADA llamada a herramienta trae un nombre valido y argumentos JSON
-        con 'path', y si el modelo llego a una respuesta final,
+        con 'path', y si el modelo llego a una respuesta final (finish_reason
+        'stop' y texto no vacio; un flujo cortado o una ronda que agoto max_tokens
+        razonando NO es una respuesta),
       - memoria del runtime (aproximada).
 
     Que NO hace, por lo que costo descubrirlo (auditoria del 2026-09-29):
-      - No descarga lo que el usuario tenga cargado. Antes ejecutaba
-        `lms unload --all` sin avisar; ahora se detiene y lo dice, salvo que se
-        pase -UnloadOthers. Descarga solo lo que ella misma cargo.
+      - No toca lo que el usuario tenga cargado, NI SIQUIERA 'cmh-local', que es
+        lo que start.ps1 deja cargado como respaldo del router. Mide bajo el
+        identificador 'cmh-bench' y solo descarga ese. Si hay otra cosa cargada se
+        detiene y lo dice, salvo que se pase -UnloadOthers.
       - No mide todo el disco. Por defecto mide los tres candidatos del
         blueprint (11.2), buscados por nombre; -All mide todos los LLM.
       - No usa `2>&1` sobre lms.exe con ErrorActionPreference=Stop: en Windows
         PowerShell 5.1, la primera linea de stderr de un ejecutable nativo se
         vuelve un error terminal y el guion abortaba en su primera llamada.
+      - No infiere. Si `lms ls`, `lms ps` o `lms unload` devuelven un codigo
+        distinto de cero, se detiene con lo que lms dijo: antes declaraba los tres
+        candidatos "no esta en disco" o media con el modelo del usuario aun cargado.
 
     Por que --gpu 0.5 y no el valor por defecto: la carga automatica intenta
     offload completo sobre una iGPU de 2,0 GB y crashea con 0xC0000409
@@ -33,14 +43,20 @@
     Por que NO se pasa --ttl: verificado en `lms load --help`, --ttl descarga
     el modelo tras N segundos sin uso. Para dejarlo cargado hay que omitirlo.
 
-    El ganador es el candidato local del router, servido como 'cmh-local'. Un
-    modelo que falle el tool calling queda descartado aunque sea el mas rapido:
-    un paso de flujo que no puede llamar herramientas no pasa la guardia de
-    evidencia.
+    El ganador es el candidato local del router. Un modelo que falle el tool
+    calling queda descartado aunque sea el mas rapido: un paso de flujo que no
+    puede llamar herramientas no pasa la guardia de evidencia. Para servirlo al
+    router hay que cargarlo como 'cmh-local' con start.ps1.
+
+    Sale con codigo 0 si hay un ganador y 1 si ningun candidato paso.
+
+    En esta maquina la politica de ejecucion es Restricted: sin
+    -ExecutionPolicy Bypass el .ps1 ni empieza. Con -File una lista llega como una
+    sola cadena: usa comas, -Models "a,b".
 
 .EXAMPLE
-    powershell -File scripts/cmh_local/bench.ps1 -UnloadOthers
-    powershell -File scripts/cmh_local/bench.ps1 -Models "google/gemma-4-e4b" -UnloadOthers
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cmh_local/bench.ps1 -UnloadOthers
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cmh_local/bench.ps1 -Models "google/gemma-4-e4b,openai/gpt-oss-20b" -UnloadOthers
 #>
 [CmdletBinding()]
 param(
@@ -50,7 +66,8 @@ param(
     [string]   $Gpu = "0.5",
     [int]      $ContextLength = 16384,
     [int]      $Rounds = 3,
-    [string]   $Identifier = "cmh-local",
+    [int]      $MaxTokens = 1024,
+    [string]   $Identifier = "cmh-bench",
     [string]   $BaseUrl = "http://127.0.0.1:1234/v1",
     [string]   $Lms = "",
     [string]   $OutFile = ""
@@ -58,10 +75,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 if (-not $Lms) { $Lms = Join-Path $env:USERPROFILE ".lmstudio\bin\lms.exe" }
-if (-not (Test-Path $Lms)) { throw "No se encuentra lms en $Lms" }
+if (-not (Test-Path -LiteralPath $Lms)) { throw "No se encuentra lms en $Lms" }
+
+# Con -File una lista llega como una sola cadena 'a,b': se parte por comas.
+$Models = @($Models | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 # Los tres candidatos del blueprint (11.2), por nombre. Se buscan en `lms ls`.
 $Candidates = @("gemma-4-e4b", "qwen3.5-4b", "phi-4-mini")
+
+# Una ronda cuenta para tok/s solo si llego en al menos tantos trozos.
+$MinDeltasForRate = 3
 
 function Invoke-Lms {
     # Llama a lms sin que su stderr aborte el guion. En Windows PowerShell 5.1,
@@ -82,10 +105,12 @@ function Invoke-Lms {
 
 function Get-LoadedIdentifiers {
     # Filas de `lms ps` tras el encabezado; la primera columna es el identificador.
-    $ps = (Invoke-Lms @("ps")).Output
+    # Un codigo de salida distinto de cero NO es "no hay nada cargado".
+    $ps = Invoke-Lms @("ps")
+    if ($ps.ExitCode -ne 0) { throw "lms ps fallo (exit $($ps.ExitCode)): $($ps.Output)" }
     $ids = @()
     $seenHeader = $false
-    foreach ($line in ($ps -split "`r?`n")) {
+    foreach ($line in ($ps.Output -split "`r?`n")) {
         if ($line -match '^\s*IDENTIFIER\b') { $seenHeader = $true; continue }
         if ($seenHeader -and $line.Trim()) { $ids += ($line.Trim() -split '\s+')[0] }
     }
@@ -119,7 +144,7 @@ function Invoke-Chat {
     # Una ronda con streaming, para medir el primer token.
     param([object[]] $Messages, [string] $Model)
     $body = @{ model = $Model; messages = $Messages; tools = $tools; stream = $true
-               stream_options = @{ include_usage = $true }; max_tokens = 400 } | ConvertTo-Json -Depth 12
+               stream_options = @{ include_usage = $true }; max_tokens = $MaxTokens } | ConvertTo-Json -Depth 12
     $request = [System.Net.HttpWebRequest]::Create("$BaseUrl/chat/completions")
     $request.Method = "POST"
     $request.ContentType = "application/json"
@@ -192,6 +217,7 @@ function Invoke-Chat {
         GenerationSeconds = [math]::Round($generation, 2)
         Tokens = $tokens
         TokensEstimated = ($null -eq $usageTokens)
+        Deltas = $deltas
         FinishReason = $finish
         Content = $content.ToString()
         ToolCalls = $ordered
@@ -207,13 +233,22 @@ function Invoke-Conversation {
     $turns = @()
     $valid = $true
     $answered = $false
+    $note = "rondas agotadas ($Rounds) sin una respuesta final"
     $toolCallCount = 0
     for ($i = 1; $i -le $Rounds; $i++) {
         $round = Invoke-Chat -Messages $messages -Model $Model
         $turns += $round
         Write-Host ("   ronda {0}: primer token {1} s, {2} tokens, finish={3}, herramientas={4}" -f `
                     $i, $round.FirstTokenSeconds, $round.Tokens, $round.FinishReason, $round.ToolCalls.Count)
-        if ($round.ToolCalls.Count -eq 0) { $answered = $true; break }
+        if ($round.ToolCalls.Count -eq 0) {
+            # A round with no tool call is the final answer only if the model SAID it was
+            # done (finish_reason 'stop') and wrote something. A stream cut in half, or a
+            # round that spent max_tokens reasoning and wrote nothing, used to count.
+            $length = $round.Content.Trim().Length
+            if ($round.FinishReason -eq "stop" -and $length -gt 0) { $answered = $true }
+            else { $note = "la ronda $i termino sin respuesta final (finish='$($round.FinishReason)', $length caracteres de texto)" }
+            break
+        }
         $assistantCalls = @()
         foreach ($call in $round.ToolCalls) {
             $toolCallCount++
@@ -230,12 +265,15 @@ function Invoke-Conversation {
             $messages += @{ role = "tool"; tool_call_id = $call.Id; content = (Invoke-Tool -Name $call.Name -Path $path) }
         }
     }
-    [pscustomobject]@{ Rounds = $turns; ToolCallCount = $toolCallCount; ToolCallsValid = $valid; Answered = $answered }
+    [pscustomobject]@{ Rounds = $turns; ToolCallCount = $toolCallCount; ToolCallsValid = $valid
+                       Answered = $answered; Note = $(if ($answered) { $null } else { $note }) }
 }
 
 # --- que se mide -------------------------------------------------------------
+$listing = Invoke-Lms @("ls")
+if ($listing.ExitCode -ne 0) { throw "lms ls fallo (exit $($listing.ExitCode)): $($listing.Output)" }
 $onDisk = @()
-foreach ($line in ((Invoke-Lms @("ls")).Output -split "`r?`n")) {
+foreach ($line in ($listing.Output -split "`r?`n")) {
     if ($line -match '^(\S+/\S+)') { $key = $Matches[1]; if ($key -notmatch 'embed') { $onDisk += $key } }
 }
 if ($Models -and $Models.Count -gt 0) {
@@ -253,6 +291,8 @@ if ($Models -and $Models.Count -gt 0) {
 if (-not $wanted -or $wanted.Count -eq 0) { throw "No hay modelos que medir." }
 
 # --- no tocar lo que el usuario tiene cargado --------------------------------
+# Solo el identificador de este banco es nuestro. 'cmh-local' es lo que start.ps1 dejo
+# como respaldo del router: descargarlo lo deja respondiendo 404 hasta repetir start.ps1.
 $others = @(Get-LoadedIdentifiers | Where-Object { $_ -ne $Identifier })
 if ($others.Count -gt 0) {
     if (-not $UnloadOthers) {
@@ -261,11 +301,14 @@ if ($others.Count -gt 0) {
                "Vuelve a correrlo con -UnloadOthers si aceptas descargarlos.")
     }
     Write-Host "Descargando lo que hay cargado ($($others -join ', ')): lo pediste con -UnloadOthers." -ForegroundColor Yellow
-    [void](Invoke-Lms @("unload", "--all"))
+    $unloaded = Invoke-Lms @("unload", "--all")
+    if ($unloaded.ExitCode -ne 0) { throw "lms unload --all fallo (exit $($unloaded.ExitCode)): $($unloaded.Output)" }
+    $left = @(Get-LoadedIdentifiers | Where-Object { $_ -ne $Identifier })
+    if ($left.Count -gt 0) { throw "Tras descargar siguen cargados: $($left -join ', '). Medir con eso en memoria contaminaria el resultado." }
 }
 
 Write-Host "Candidatos: $($wanted -join ', ')"
-Write-Host "Offload $Gpu | contexto $ContextLength | hasta $Rounds rondas por modelo`n"
+Write-Host "Offload $Gpu | contexto $ContextLength | hasta $Rounds rondas por modelo | max_tokens $MaxTokens | identificador $Identifier`n"
 
 $results = foreach ($model in $wanted) {
     Write-Host "== $model ==" -ForegroundColor Cyan
@@ -274,15 +317,15 @@ $results = foreach ($model in $wanted) {
         [pscustomobject]@{ Model = $model -replace '^NO-DESCARGADO:', ''; Loaded = $false
                            Error = "no esta en disco (accion U4)"; EstimatedGiB = $null
                            LoadSeconds = $null; Rounds = 0; Answered = $false; ToolCallsOk = $false
-                           FirstTokenSeconds = $null; TokensPerSec = $null; TokensEstimated = $null
-                           ResidentMB = $null }
+                           FirstTokenSeconds = $null; TokensPerSec = $null; TotalTokensPerSec = $null
+                           TokensEstimated = $null; ResidentMB = $null }
         continue
     }
     $estimate = (Invoke-Lms @("load", $model, "--estimate-only", "-c", "$ContextLength", "-y")).Output
     $estimated = if ($estimate -match 'Estimated Total Memory:\s*([\d.]+)\s*GiB') { [double]$Matches[1] } else { $null }
     Write-Host "   memoria estimada: $estimated GiB"
 
-    # Solo lo que este guion cargo: la vez anterior, bajo el mismo identificador.
+    # Solo lo que este guion cargo: la vez anterior, bajo su propio identificador.
     [void](Invoke-Lms @("unload", $Identifier))
     $loadWatch = [System.Diagnostics.Stopwatch]::StartNew()
     # Sin --ttl a proposito: --ttl DESCARGA tras N segundos sin uso.
@@ -293,7 +336,8 @@ $results = foreach ($model in $wanted) {
         [pscustomobject]@{ Model = $model; Loaded = $false; Error = $load.Output.Trim()
                            EstimatedGiB = $estimated; LoadSeconds = $null; Rounds = 0
                            Answered = $false; ToolCallsOk = $false; FirstTokenSeconds = $null
-                           TokensPerSec = $null; TokensEstimated = $null; ResidentMB = $null }
+                           TokensPerSec = $null; TotalTokensPerSec = $null; TokensEstimated = $null
+                           ResidentMB = $null }
         continue
     }
 
@@ -304,16 +348,23 @@ $results = foreach ($model in $wanted) {
     $resident = (Get-Process -Name "*llama*", "*lms*", "*LM Studio*" -ErrorAction SilentlyContinue |
                  Measure-Object WorkingSet64 -Sum).Sum
 
-    $tokens = 0; $seconds = 0.0; $first = $null; $estimatedTokens = $false; $count = 0
+    $allTokens = 0; $allSeconds = 0.0
+    $rateTokens = 0; $rateSeconds = 0.0
+    $first = $null; $estimatedTokens = $false; $count = 0
     $toolOk = $false; $answered = $false
     if ($conversation) {
         foreach ($r in $conversation.Rounds) {
-            $tokens += $r.Tokens; $seconds += $r.GenerationSeconds
+            $allTokens += $r.Tokens; $allSeconds += $r.TotalSeconds
+            if ($r.Deltas -ge $MinDeltasForRate -and $r.GenerationSeconds -gt 0) {
+                # The first token is what the wait before it produced: not part of the rate.
+                $rateTokens += ($r.Tokens - 1); $rateSeconds += $r.GenerationSeconds
+            }
             if ($r.TokensEstimated) { $estimatedTokens = $true }
         }
         $count = $conversation.Rounds.Count
         $first = $conversation.Rounds[0].FirstTokenSeconds
         $answered = $conversation.Answered
+        if (-not $answered -and -not $failure) { $failure = $conversation.Note; Write-Host "   $failure" -ForegroundColor Yellow }
         # Herramientas usadas, todas validas y con respuesta final: es lo que exige la
         # guardia de evidencia, y el defecto intermitente se escapa midiendo una sola vez.
         $toolOk = ($conversation.ToolCallCount -gt 0) -and $conversation.ToolCallsValid -and $answered
@@ -324,25 +375,31 @@ $results = foreach ($model in $wanted) {
         LoadSeconds = [math]::Round($loadWatch.Elapsed.TotalSeconds, 1)
         Rounds = $count; Answered = $answered; ToolCallsOk = $toolOk
         FirstTokenSeconds = $first
-        TokensPerSec = if ($seconds -gt 0) { [math]::Round($tokens / $seconds, 2) } else { $null }
+        TokensPerSec = if ($rateSeconds -gt 0) { [math]::Round($rateTokens / $rateSeconds, 2) } else { $null }
+        TotalTokensPerSec = if ($allSeconds -gt 0) { [math]::Round($allTokens / $allSeconds, 2) } else { $null }
         TokensEstimated = $estimatedTokens
         ResidentMB = if ($resident) { [math]::Round($resident / 1MB, 0) } else { $null }
     }
 }
 
+# Solo el identificador de este banco.
 [void](Invoke-Lms @("unload", $Identifier))
 
 Write-Host "`n=== RESULTADO ===" -ForegroundColor Green
-$results | Format-Table Model, Loaded, EstimatedGiB, FirstTokenSeconds, TokensPerSec, Rounds, Answered, ToolCallsOk, ResidentMB -AutoSize
+$results | Format-Table Model, Loaded, EstimatedGiB, FirstTokenSeconds, TokensPerSec, TotalTokensPerSec, Rounds, Answered, ToolCallsOk, ResidentMB -AutoSize
 
+# Un modelo sin velocidad medible (ninguna ronda llego en trozos) puede ganar solo si no hay otro.
 $winner = $results | Where-Object { $_.Loaded -and $_.ToolCallsOk } |
-          Sort-Object TokensPerSec -Descending | Select-Object -First 1
-if ($winner) {
-    Write-Host "Ganador: $($winner.Model) - $($winner.TokensPerSec) tok/s, primer token en $($winner.FirstTokenSeconds) s, tool calling valido y respuesta final." -ForegroundColor Green
-    Write-Host "Es el candidato local del router. Precargalo con scripts/cmh_local/start.ps1."
-} else {
-    Write-Host "NINGUN candidato pasa: sin tool calling valido y una respuesta final no sirve para un paso de flujo." -ForegroundColor Red
-}
+          Sort-Object @{ Expression = { if ($null -eq $_.TokensPerSec) { -1 } else { $_.TokensPerSec } }; Descending = $true } |
+          Select-Object -First 1
 
 if ($OutFile) { $results | ConvertTo-Json -Depth 5 | Set-Content -Path $OutFile -Encoding utf8
                 Write-Host "Medicion guardada en $OutFile" }
+
+if ($winner) {
+    Write-Host "Ganador: $($winner.Model) - $($winner.TokensPerSec) tok/s, primer token en $($winner.FirstTokenSeconds) s, tool calling valido y respuesta final." -ForegroundColor Green
+    Write-Host "Es el candidato local del router. Cargalo como 'cmh-local' con scripts/cmh_local/start.ps1 -Model '$($winner.Model)'."
+    exit 0
+}
+Write-Host "NINGUN candidato pasa: sin tool calling valido y una respuesta final no sirve para un paso de flujo." -ForegroundColor Red
+exit 1
