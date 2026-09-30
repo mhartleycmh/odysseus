@@ -350,13 +350,20 @@ def test_a_dry_run_leaves_no_replica_behind(tmp_path):
     an encrypted provider key: `scratch` was created and never removed."""
     live = tmp_path / "app.db"
     _legacy_database(live)
-    before = set(pathlib.Path(tempfile.gettempdir()).glob("cmh-seed-dryrun-*.db"))
     result = _run_script([], {"DATABASE_URL": f"sqlite:///{live.as_posix()}",
                               "LOCALAPPDATA": str(tmp_path / "local"),
                               "CMH_AGENT_WORKSPACES": str(_derived_tree(tmp_path))})
     assert "SIMULACION" in result.stdout, result.stdout + result.stderr
-    after = set(pathlib.Path(tempfile.gettempdir()).glob("cmh-seed-dryrun-*.db"))
-    assert after <= before, f"copias huerfanas: {sorted(after - before)}"
+    # Only THIS process's replica is looked at, by the path the script prints. The test
+    # used to compare every cmh-seed-dryrun-*.db in the shared temp folder before and
+    # after, so another run in parallel (a mutation campaign, a second pytest) that
+    # created its own replica in that window made it fail: the baseline of round2 came
+    # out red for exactly that reason on 2026-09-30.
+    lines = [l for l in result.stdout.splitlines() if "copia desechable" in l]
+    assert lines, result.stdout
+    replica = pathlib.Path(lines[0].split(":", 1)[1].strip())
+    assert replica.name.startswith("cmh-seed-dryrun-") and replica.suffix == ".db"
+    assert not replica.exists(), f"copia huerfana: {replica}"
 
 
 @pytest.mark.parametrize("bad", ["local_only", "nube-total", "FREE-CLOUD-FIRST-ISH"])
