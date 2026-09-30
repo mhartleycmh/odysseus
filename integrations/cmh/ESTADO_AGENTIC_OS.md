@@ -1,6 +1,6 @@
 # Estado operativo: Agentic OS CMH
 
-Fecha de corte: 2026-09-24 (hora de Lima). Este archivo es el punto de reanudación para Claude y Codex. Actualizarlo al cerrar cada punto limpio con evidencia, no con intenciones.
+Fecha de corte: 2026-09-30 (hora de Lima; la Fase 1 en curso está en «Punto en curso — Fase 1», el resto es histórico). Este archivo es el punto de reanudación para Claude y Codex. Actualizarlo al cerrar cada punto limpio con evidencia, no con intenciones.
 
 ## Objetivo acordado
 
@@ -108,6 +108,74 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
   - `git diff --check` sin errores.
 - Revisión independiente (subagente, sin el razonamiento del constructor): 0 críticos, 1 importante (la conexión en la ruta programada no tenía prueba: la mutación sobrevivía 36 de 36), 4 menores. Corregidos el importante y los menores #2 (docstring), #3 (workspace `""`) y #5 (este registro); el #4 (allowlist vacía más workspace siempre falla) se mantiene por diseño. Veredicto: «With fixes».
 
+## Punto en curso — Fase 1 (2026-09-30)
+
+**La Fase 1 NO está cerrada: 0 de 7 pasos HECHOS.** Bloqueada por el usuario en 3.1 (claves y
+LM Studio) y en 3.5 (autorización de la siembra); 3.6 depende de ambos. Sin una ejecución real no hay
+punto limpio 10.
+
+- **Git.** Rama `dev`, **40 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6 y 9 de r7: 8 de código y pruebas y 1 de documentación).
+  Etiquetas de revisión: `revision-fase1-r2` a `r6`; `revision-fase1-r7` congela el commit de documentación de r7.
+- **Revisión independiente de `revision-fase1-r6` (`ea4eee18`): DEVUELTO**, 0 P1, 19 P2 y 66 P3. r7 los
+  corrige en ocho commits, cada uno con sus pruebas y sus mutantes (resumen y límites en ADR-036):
+  `bea9b262` (bucle de mutantes), `249daeec` (compuerta), `352ebde8` (descubrimiento), `a0048662` (cuota de
+  un intento que muere a medias), `00f6dc52` (informe del run), `10ad364f` (guiones locales), `c1f34f40`
+  (credenciales, proxy y siembra) y `82176e19` (una prueba que dependía del `%TEMP%` compartido). La segunda revisión, sobre `revision-fase1-r7`, se lanza a continuación: su veredicto se registra aquí y en ADR-036.
+- **Medido** sobre un export limpio de `c1f34f40` (sin `.git`): `tests/test_cmh_*.py` = **629 aprobadas,
+  0 fallidas**, 1 advertencia, 26 min 59 s. Campañas de mutantes sobre exports separados: `round3` 13/13, `round4` 64/64, `round5` 39/39, `round6` 45/45, `round7` 13/13, `round8` 32/32 y `round9` 20/20 sobre `c1f34f40`; `round2` no dio veredicto allí (línea base roja por una prueba que miraba el `%TEMP%` compartido; corregida en `82176e19`) y sobre `82176e19` dio 13/13, con `round3`, `round7` y `round9` repetidas: 13/13, 13/13 y 20/20. En total 239 mutantes, 0 sobrevivientes, 0 inválidos y 0 obsoletos, con el árbol restaurado en verde en las ocho.
+- **Base activa** (solo lectura, `integrity_check=ok`, 811 008 bytes): 1 agente (`CMH Researcher`, pausado),
+  0 definiciones, 0 ejecuciones, 3 endpoints (dos Ollama habilitados y Anthropic), ninguna clave gratuita
+  registrada. **La siembra no se ha ejecutado nunca contra ella.** Copias previas en
+  `%LOCALAPPDATA%\Odysseus\backups\` (la última, `app-antes-de-pytest-r7-r2-20260929-2310.db`, con
+  `integrity_check=ok` en origen y copia y 42 tablas sin diferencia de conteo).
+- **Servidor** del puerto 7000: corre el código del 25.09; no se reinició.
+- **No se hizo, y no está autorizado:** push, borrado de filas o copias, mover `data/`, `cmh_seed_agents.py
+  --apply`, `migrate-data.ps1`, aprobar o rechazar un paso en nombre del usuario.
+
+### Acciones del usuario, exactas
+
+1. **U1 · Groq.** Settings → Add Models → Add API Models (Endpoint) → Provider *Groq* → pegar la clave →
+   Add. En console.groq.com → Data Controls, activar Zero Data Retention. Dictar en el chat los cuatro
+   límites del panel (rpm, rpd, tpm, tpd). Opcional: `supports_tools` no tiene control en la interfaz; se
+   pone con un PATCH a `/api/model-endpoints/{id}` desde la consola del navegador (**no verificado en vivo**).
+2. **U2 · OpenRouter.** Cuenta sin créditos; en su privacidad, no entrenar ni retener; decidir §10.5.
+3. **U3 · Confirmar que ninguna cuenta (Groq, OpenRouter) tiene método de pago** (canon 06, fila 412).
+4. **U4 · LM Studio.** Descargar Qwen3.5-4B Q4_K_M y Phi-4-mini Q4_K_M. Registrar `http://127.0.0.1:1234/v1`
+   como tipo local. Correr `powershell -NoProfile -ExecutionPolicy Bypass -File
+   scripts/cmh_local/bench.ps1 -UnloadOthers` (**descarga lo que haya cargado: hoy `qwen/qwen3.8-27b`**) y
+   después `... start.ps1 -Model <ganador> -UnloadOthers`. Comprobar con `lms ps` que `cmh-local` está
+   cargado: sin eso el respaldo local responde 404.
+5. **U5 · Deshabilitar (no borrar) los Ollama `c6a553e7` y `2345ab42`**, una vez cada fila.
+6. **U6 · Autorizar en el chat `cmh_seed_agents.py --apply`**, después de U1, U4 y U5. Antes se corre el
+   ensayo sin `--apply`. Con solo endpoints locales la siembra se niega (`--allow-pending` la fuerza).
+7. **U7 · Reinicio del servidor.** Lo hace el agente, con copia previa y `--host 127.0.0.1 --port 7000`;
+   `CMH_OS_DEFAULT_MODE` admite `auto|demo`.
+8. **U8 · Decidir el traslado de `data/` fuera de OneDrive** (22.1).
+9. **U9 · Autorizar el push** de los 40 commits.
+10. **U10 · Decidir sobre el stash y las copias de seguridad acumuladas.**
+11. **U11 · Revisar `/cmh/os` con datos propios** tras el reinicio.
+
+### Secuencia cuando se desbloquee
+
+Ensayo de la siembra → U6 → `--apply` con copia previa → reinicio (U7) → primer run real de cinco pasos →
+`python scripts/cmh_ops/run_report.py --latest` (sale con 0 si se cumple todo, 3 si no) → punto limpio 10
+en este archivo con la plantilla del Apéndice C, ficha y revisión hasta APROBADO.
+
+### Para el canon al cerrar la fase (solo filas NUEVAS)
+
+- `05_decisiones_historicas.md`: VERIFICACIÓN de que `endpoint_kind=auto` sobre una red privada cuenta como
+  local (ADR-032); el identificador local `cmh-local` en vez del modelo del agente (ADR-029); la cuota cuenta
+  peticiones y tokens, también los de un intento fallido (ADR-030); la red privada se define por redes
+  nombradas, con CGNAT/Tailscale fuera como SUPUESTO (ADR-032, ADR-036).
+- `06_pendientes_abiertos.md`: velocidad real de LM Studio sin medir; `/models/user` de OpenRouter sin
+  verificar; `supports_tools` sin control en la interfaz; un PUT de agentes desvincula el `task_id`; los
+  textos del blueprint §7.3, §9.1 y §21-U4 quedan reemplazados por ADR-030, ADR-028 y ADR-029; las filas
+  390 y 391 quedan superadas; riesgo de 413 por tokens por minuto; `local.model` se aplica a todas las
+  filas locales habilitadas.
+- **Advertencia:** la maestra `Documentos\Claude\CMH_Canon\` necesita las mismas filas. Se escribe en la
+  maestra y se copia al espejo `CMH_Claude/CMH_Canon/` verificando con `cmp`. No tocar las líneas 359–371 de
+  `05`.
+
 ## Próxima acción exacta
 
 ### AVISO ANTES DE CERRAR LA FASE 1: el canon YA está escrito
@@ -139,6 +207,9 @@ produzca: el pendiente de evidencia de herramientas que quedó cerrado, el
 pendiente nuevo «constructor sin escritura de archivos», y los conteos del
 punto limpio 10.
 
+
+**Lista histórica del 2026-09-28, superada por «Punto en curso — Fase 1» (arriba).** Conservada
+como estaba: sus pasos 1 y 2 hablan de un agente y de LM Studio que ya cambiaron.
 
 Actualizada el 2026-09-28 al cerrar el punto limpio 9. Los pasos 1 y 2
 **bloquean todo lo demás**: sin ellos no existe ningún flujo que ejecutar.

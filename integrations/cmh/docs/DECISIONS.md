@@ -332,11 +332,17 @@ Fecha de todas las decisiones iniciales: 2026-09-24. Estado: aceptadas salvo ind
   candidato en `cmh_workflows.call_model`. El tercero se añadió porque una
   definición solo guarda un `agent_id`: repuntar el agente después de guardarla
   dejaba pasar una ruta de pago, y hay una prueba que lo demuestra.
+  *(Equivalencia con `round5`, que muta ocho lugares de código: SI01 y SI02 son «enlazar
+  agente y tarea»; SI03, la definición; SI04, SI07 y SI08, congelar el run —`_snapshot` y
+  la lista que arma el router—; SI05 y SI06, `call_model`. Cuatro sitios conceptuales,
+  ocho sitios de código.)*
 - **Límite declarado, no implícito.** La clasificación es **por host**: no puede
   ver si una cuenta tiene método de pago, así que un nivel gratuito y uno de
   pago sobre el mismo host le resultan idénticos. Esa mitad de la garantía es
   operativa —las cuentas se registran sin tarjeta— y está escrita en el módulo.
-- **`endpoint_kind = "auto"` cuenta como local solo con host loopback.** El
+- **`endpoint_kind = "auto"` cuenta como local solo con host loopback.**
+  *(Reemplazado en este punto por ADR-026 y ADR-032: `auto` cuenta como local sobre
+  loopback **o red privada**, y decide el host, no la etiqueta.)* El
   valor por defecto en la base es `auto`; exigir la cadena literal `"local"`
   habría bloqueado un endpoint loopback que nadie reetiquetó. `api` y `proxy`
   nunca cuentan como locales, ni sobre una URL loopback: quien los etiquetó así
@@ -533,7 +539,8 @@ estaba definida y que el vacío era un hueco técnico.
   bajo `local-only`, una política cuyo docstring promete que nada sale de la
   máquina.
 - **Decisión.** Decide el **host**: loopback, RFC1918 (10/8, 172.16/12,
-  192.168/16), link-local y `.local` cuentan; un host público no, lleve la
+  192.168/16), link-local y `.local` cuentan (ADR-032 añadió `fc00::/7` y los nombres
+  `0.0.0.0` y `host.docker.internal`); un host público no, lleve la
   etiqueta que lleve. `api` y `proxy` siguen descalificando incluso sobre
   loopback, porque quien los escribió declaró un túnel.
 - **Por qué no «solo loopback».** Una GPU en la LAN de CMH es infraestructura
@@ -590,7 +597,9 @@ estaba definida y que el vacío era un hueco técnico.
   y 0 peticiones al segundo candidato. El status viaja en el chunk `event: error`
   como entero; `_run_agent_loop` lo aplanaba en un `RuntimeError` sin status,
   `is_fallback_error` respondía `None` y `call_model` relanzaba. Solo funcionaba el
-  salto preventivo por cuota. Las 16 pruebas del fallback sustituían
+  salto preventivo por cuota. Las pruebas del fallback (16 según el commit `dd87c675`; la revisión de r7 midió 18 líneas
+  con `_run_one_candidate` en `tests/` antes de ese commit, y el criterio de las 16 no se
+  escribió) sustituían
   `_run_one_candidate` por un doble que lanza una excepción con `.status_code`, la
   única forma que la cadena real nunca produce.
 - **Decisión.** `RestrictedStreamError` (subclase de `RuntimeError`, en
@@ -622,7 +631,8 @@ estaba definida y que el vacío era un hueco técnico.
   el servidor ya guarda, y congela la elección con el resto de la lista. Se pregunta
   primero al listado de la cuenta (`/models/user`), filtrado por los ajustes de
   privacidad, porque eso hace que el ajuste que U2 pide activar decida qué modelos
-  `:free` son elegibles; el listado general se usa solo si esa ruta no existe. Un 200 sin
+  `:free` son elegibles; el listado general se usa solo si esa ruta no existe (404; hasta r7 se usaba ante cualquier
+  fallo y esta ADR decía lo contrario sin que fuera cierto). Un 200 sin
   ningún modelo elegible **no** se amplía al listado general: es la cuenta diciendo que
   no. Un fallo deja al proveedor fuera de la lista y lo dice un evento
   `provider_discovery`, uno por intento. La elección se cachea por endpoint durante
@@ -638,7 +648,22 @@ estaba definida y que el vacío era un hueco técnico.
   valor único un modelo `:free` retirado o excluido por privacidad rompería la cadena);
   descubrirlo al arrancar el proceso (sin clave todavía, y se queda viejo); descubrirlo
   por llamada (una consulta más en cada ronda).
-- **Pruebas.** `tests/test_cmh_provider_discovery.py`; mutantes D01–D12 de `round4`.
+- **Corregido en r7** (revisión independiente del 2026-09-29). El listado general se usaba
+  ante cualquier no-200 (401, 429, 5xx, un timeout) y esa elección, hecha sin el filtro de la
+  cuenta, se cacheaba seis horas: ahora se amplía solo ante 404, la nota dice por qué y esa
+  elección se confía 15 min (`unfiltered_ttl_s`). Sin clave registrada no se consulta nada
+  (antes salía anónima y OpenRouter entraba en la lista para morir con un 401), ni por http,
+  ni a una `base_url` mal formada; una carga de forma inesperada o una regla que lanza
+  dejan al proveedor fuera en vez de tumbar `create_run`; los valores de `discovery` se
+  validan; `timeout_s` es el **tiempo total** de las dos consultas (`asyncio.wait_for`); un
+  fallo se recuerda `failure_ttl_s` (60 s) para no cobrar el timeout a cada run; y la
+  caché se indexa por fila, URL y un hash de la clave, de modo que rotar la clave no sirve
+  el modelo de la cuenta anterior.
+- **Reemplaza texto del blueprint.** §9.1 dice que OpenRouter elige «el primer `:free` de
+  `GET /models`»: rige esta ADR (`/models/user` primero, `/models` solo ante 404, con la
+  clave registrada y por https).
+- **Pruebas.** `tests/test_cmh_provider_discovery.py`; mutantes D01–D12 (r6) y D13–D33
+  (r7) de `round4`; D06–D08 se reapuntaron porque el bucle que mutaban ya no existe.
 
 ## ADR-029 · El respaldo local se llama por su identificador, no por el modelo del agente (2026-09-29)
 
@@ -655,7 +680,12 @@ estaba definida y que el vacío era un hueco técnico.
   que el runtime tenga en caché. Nunca el modelo del agente. Un agente configurado con un
   endpoint local conserva su ruta, antepuesta con su propio modelo.
 - **Límite declarado.** Hasta que el usuario cargue un modelo con ese identificador
-  (U4, `start.ps1`), el respaldo local responde 404.
+  (U4, `start.ps1`), el respaldo local responde 404. El blueprint §21-U4 solo pide ver el
+  endpoint en `model_endpoints`: U4 tiene que incluir `start.ps1 -Model <modelo>` y comprobar
+  con `lms ps` que `cmh-local` está cargado. Además `local.model` se aplica a **todas** las
+  filas locales habilitadas, no solo a la que carga `start.ps1`: un Ollama sin deshabilitar
+  (U5) se llama también `cmh-local`, responde 404 y ese 404 detiene el paso enmascarando el
+  rechazo original. **No verificado en vivo**; por eso U5 pide deshabilitarlo.
 - **Descartado.** Descubrir el modelo cargado con `GET /v1/models` de LM Studio: una
   llamada más al crear el run y elegiría lo que esté cargado por casualidad. Un nombre
   en una celda del config es parametrizable y es con el que `start.ps1` ya carga.
@@ -679,14 +709,25 @@ estaba definida y que el vacío era un hueco técnico.
   saca a Groq de la lista en el tercer paso. Un intento rechazado cuesta 1 petición y 0
   tokens; uno que falla después de reportar su uso no se cobra dos veces; un fallo al
   escribir la cuota se registra y no tumba el paso.
-- **Límite declarado.** Un intento que muere a media ejecución se cobra 1 petición y
-  ningún token, porque el bucle reporta sus totales solo al terminar. Los tokens son
+- **Límite declarado.** *(Corregido en r7.)* Esta ADR decía que un intento que muere a
+  media ejecución se cobra 1 petición y ningún token «porque el bucle reporta sus totales
+  solo al terminar». La causa era falsa: el bucle reporta lo gastado en un chunk
+  `agent_terminal` justo antes del chunk de error y el planificador lo ignoraba. Desde r7 se
+  reenvía como `model_metrics` con `failed=true` y `rounds` = un texto por ronda HTTP, la
+  fallida incluida. Medido sobre la cadena real: dos rondas de 10/5 tokens y un 429 cargan 3
+  peticiones y 20/10 tokens. Sigue **sobrestimando** un intento rechazado antes de enviar
+  (configuración inválida, cooldown sintético 503): cuenta 1 petición sin que haya salido. Un
+  fallo al escribir la cuota se registra en el log, no en un evento del run. El blueprint §7.3
+  dice que `model_metrics` se emite «cada ronda»: se emite **uno por intento**, con un bucket
+  por ronda, y `provider_discovery` (ADR-028) no figura en su lista de eventos; §7.3 queda
+  corregido por esta ADR. Los tokens son
   los del proveedor cuando los informa y una estimación cuando no (`usage_source`). Que
   un rechazo cuente contra el límite del proveedor **no está verificado**.
 - **Descartado.** No contar lo rechazado (era la regla anterior, «nunca sirvió una
   petición»): sobrestimar solo hace que el router deje antes a un proveedor, y
   subestimar lo hace caminar hacia un 429. Ventana deslizante (ADR-021).
-- **Pruebas.** `tests/test_cmh_step_provider_failures.py`; mutantes Q01–Q08 de `round4`.
+- **Pruebas.** `tests/test_cmh_step_provider_failures.py` y `tests/test_cmh_restricted_loop.py`;
+  mutantes Q01–Q08 (r6) y Q09–Q15 (r7) de `round4`.
 
 ## ADR-031 · Un mutante solo cuenta como capturado si una prueba falla, y ningún corredor toca el árbol vivo (2026-09-29)
 
@@ -707,11 +748,24 @@ estaba definida y que el vacío era un hueco técnico.
   resultado compila. En su primera corrida halló 3 mutantes de `round2` obsoletos
   (M25, M26 retirados; N1 reapuntado) y un `D01` propio obsoleto.
 - **Límite declarado.** «Compila y una prueba falla» no prueba que la prueba que falla
-  sea la que debía: `cae:` muestra cuál es, y leerlo sigue siendo trabajo humano.
+  sea la que debía: `cae:` muestra cuál es, y leerlo sigue siendo trabajo humano. Para
+  PowerShell el comprobador solo detecta errores de **sintaxis**: un mutante con una función
+  inexistente o una propiedad mal escrita compila y, si cae una prueba por ese motivo, cuenta
+  CAUGHT sin que la conducta objetivo se haya observado; por eso los mutantes de `round6`
+  designan una prueba por id de nodo, para que eso sea revisable. Sin PowerShell (o sin
+  `bash` para los `.sh`) la prueba de validez **se omite** y lo dice: antes daba por bueno un
+  mutante que nadie había analizado.
+- **Corregido en r7.** El bucle común `campaign()` no tenía prueba propia y tres formas de
+  mentir: no corría las pruebas sin mutar (con una prueba roja todo mutante «caía», también
+  uno que no cambiaba nada), la negativa a mutar el árbol vivo vivía solo en `resolve_repo`, y
+  reescribía con `write_text` (CRLF a la plataforma) sin comparar. Ahora corre una línea base
+  (sale con 4 si está roja), rechaza por sí mismo una carpeta con `.git`, lee y escribe bytes,
+  compara la restauración y exige el árbol restaurado en verde para salir con 0; `round2` a
+  `round4` dejaron de llevar bucles propios.
 - **Descartado.** Confiar en la disciplina de lanzar siempre sobre un export: eso es lo
   que ya estaba escrito en el encabezado de `round3` y no impidió el incidente.
-- **Pruebas.** `tests/test_cmh_mutant_target.py`, `tests/test_cmh_mutant_validity.py`;
-  mutantes T01–T03 de `round4`.
+- **Pruebas.** `tests/test_cmh_mutant_target.py`, `tests/test_cmh_mutant_validity.py`,
+  `tests/test_cmh_mutant_campaign.py` (r7); mutantes T01–T03 (r6) y T04–T11 (r7) de `round4`.
 
 ---
 
@@ -731,19 +785,30 @@ estaba definida y que el vacío era un hueco técnico.
   `0.0.0.0`, `host.docker.internal` y `*.local`. `is_private` deja de decidir: incluye
   192.0.2.0/24 (documentación) y 240.0.0.0/4 (reservado), que ADR-026 no lista, y ha
   cambiado entre versiones de Python. Solo estrecha: lo que deja de ser local es
-  inenrutable y no es una dirección realista de runtime. 45 casos de frontera, ambos lados
+  inenrutable y no es una dirección realista de runtime. 36 casos de frontera (esta ADR y el commit `8c831e50` decían 45: la cuenta era errónea; r7 los
+  lleva a 44), ambos lados
   de cada borde, con las etiquetas `auto` y `local`, y `api`/`proxy` comprobadas como
   nunca locales. `round5` cierra con **24 de 24** capturados, 0 sobrevivientes, 0 inválidos.
 - **Resuelve el VERIFICAR de §9.3.** `endpoint_kind=auto` sobre una red privada **sí** es
-  local (48 combinaciones de host y etiqueta ejecutadas, `core.database` sin importar). La
+  local (lo fijan las pruebas de frontera; la cifra «48 combinaciones» de la versión inicial no
+  tenía guion versionado y se retira). La
   frase de ADR-019 («`auto` cuenta como local solo con host loopback») quedó reemplazada por
   ADR-026.
 - **Límite declarado.** Los nombres `*.local` cuentan como locales **sin resolverse**: se
   asume mDNS en la LAN, y no se verifica a qué dirección resuelve. 100.64/10 (CGNAT, donde
-  vive Tailscale) queda rechazado a propósito, y con él una GPU detrás de Tailscale.
+  vive Tailscale) queda fuera por **SUPUESTO de esta ADR** (ADR-026 no lo dice): una GPU detrás
+  de Tailscale no cuenta como `local-only` hasta que alguien decida lo contrario.
 - **Descartado.** Conservar `is_private` y solo añadir pruebas: la definición seguiría
   dependiendo de la versión de Python que corra.
-- **Pruebas.** `tests/test_cmh_cost_policy.py`; mutantes CG01–CG16 y SI01–SI08 de `round5`.
+- **Corregido en r7.** `enforced()` fallaba **abierto** (cualquier valor fuera de
+  `1/true/yes/on` apagaba la compuerta sin decirlo): ahora solo `0/false/no/off` la apagan y
+  dejan un aviso en el log; `describe()` prometía «sin secretos» e imprimía `user:pass@` (y el
+  evento `zero_cost_blocked` la URL cruda): pasan por `redact_url`; un host gratuito por http
+  ya no cuenta como gratuito (mandaría la clave en claro). `endpoint_for_url` sigue eligiendo
+  por subcadena en el ejecutor (`task_scheduler`), que es código de Odysseus: la compuerta
+  rechaza antes la URL engañosa, pero una tarea fuera de la cadena CMH no pasa por ella.
+- **Pruebas.** `tests/test_cmh_cost_policy.py`; mutantes CG01–CG16 y SI01–SI08 (r6: 24) y
+  CG11b, CG17–CG30 (r7) de `round5`.
 
 ## ADR-033 · Los guiones del banco local miden lo que dicen y no tocan lo que no cargaron (2026-09-29)
 
@@ -760,7 +825,9 @@ estaba definida y que el vacío era un hueco técnico.
   separar el primer token de la velocidad de generación (tokens sobre el tiempo posterior al
   primer token, no sobre el total). Valida cada llamada (nombre conocido, argumentos JSON con
   `path`), mide por nombre los tres candidatos del blueprint y dice cuáles no están en disco,
-  y **se niega a descargar lo que no cargó** salvo `-UnloadOthers`. Ambos guiones llaman a
+  y **se niega a descargar lo que no cargó** salvo `-UnloadOthers` *(en r6 solo era cierto de
+  `bench.ps1`, y ni de él: medía bajo `cmh-local` y descargaba justo lo que `start.ps1` deja
+  cargado; r7 mide bajo `cmh-bench` y `start.ps1` exige el mismo interruptor)*. Ambos guiones llaman a
   `lms` por un ayudante que relaja `ErrorActionPreference` solo alrededor de la llamada. Se
   encontró al ejecutarlo: las variables de PowerShell ignoran mayúsculas, y un `$rounds` local
   sombreaba el parámetro `-Rounds`.
@@ -771,8 +838,17 @@ estaba definida y que el vacío era un hueco técnico.
 - **Descartado.** Reparar solo la línea 92: el resto medía otra cosa de lo prometido. Ejecutar
   la prueba con `-File`: no enlaza una lista a un `[string[]]` y solo sobrevive el primer
   modelo; se usa `-Command`.
-- **Pruebas.** `tests/test_cmh_local_scripts.py` (16, bajo el PowerShell 5.1.26100 real);
-  mutantes B01–B12 y S01–S05 de `round6`.
+- **Corregido en r7.** Solo cuenta como respuesta final una ronda con `finish_reason` `stop` y
+  texto (un flujo cortado o una ronda que gastó `max_tokens` razonando —ahora `-MaxTokens`,
+  1024— no ganan); el código de salida de `lms ls`, `ps` y `unload` se comprueba; tok/s solo
+  cuenta rondas de al menos 3 trozos y descuenta el primer token; sin ganador sale con 1;
+  `start.ps1` comprueba el modelo detrás de un `cmh-local` ya cargado y no dice «Listo» sin
+  verlo en `lms ps`. La ayuda documenta `-ExecutionPolicy Bypass` (la política es Restricted
+  aquí) y `-Models "a,b"` (con `-File` una lista llega como una sola cadena); existe
+  `start.sh`. **Sin medir:** `$request.Proxy = $null`; .NET ya evita el proxy en loopback,
+  así que un servidor falso en 127.0.0.1 no distingue.
+- **Pruebas.** `tests/test_cmh_local_scripts.py` (16 en r6, 43 en r7, bajo el PowerShell
+  5.1.26100 real); mutantes B01–B12 y S01–S05 (r6) y B13–B31 y S06–S16 (r7) de `round6`.
 
 ## ADR-034 · La siembra crea la definición, guarda la política y no siembra una cadena vacía (2026-09-29)
 
@@ -789,7 +865,10 @@ estaba definida y que el vacío era un hueco técnico.
   revisor y documentador, compuerta humana antes del revisor hasta el paso 5.4) y escribe una
   **versión nueva**, nunca una edición, cuando la guardada difiere; una idéntica se deja
   quieta, así que sembrar dos veces no cambia nada. La política se guarda en cada agente.
-  `--apply` se detiene si no hay candidato gratuito (`--allow-pending` lo permite). La ruta
+  `--apply` se detiene si no hay candidato gratuito (`--allow-pending` lo permite; *en r6 esto
+  no era cierto con los endpoints vivos: los dos Ollama habilitados cuentan como candidatos
+  locales y la guarda no se activaba; desde r7, bajo `free-cloud-first`, exige al menos uno
+  gratuito de **nube**, y bajo `local-only` uno local*). La ruta
   sigue `ODYSSEUS_DATA_DIR` y resuelve las rutas relativas contra la raíz, como
   `core.database`. La copia previa lleva segundos y nunca reutiliza un nombre. El nombre de la
   definición no lleva flecha: imprimir U+2192 en una consola cp1252 lanzaba
@@ -797,12 +876,18 @@ estaba definida y que el vacío era un hueco técnico.
   flujos para reemplazar lo que no pueda imprimir.
 - **Límite declarado.** La negativa a sembrar sin candidatos llega **después** de la copia
   previa: los candidatos exigen abrir la base y abrirla es lo que la migra, así que la copia
-  tiene que existir antes (el mensaje dice que puede borrarse). **El guion no se ejecutó
+  tiene que existir antes (r7: el mensaje decía que la copia podía borrarse y no era cierto,
+  porque la base pudo migrarse al abrirla; ahora dice que se conserve). **El guion no se ejecutó
   nunca contra la base activa**: exige la autorización U6.
 - **Descartado.** Planificar sobre una réplica y aplicar sobre la real en dos fases: el motor
   de `core.database` se ata al archivo en la importación, así que exigiría dos procesos.
-- **Pruebas.** `tests/test_cmh_seed_scripts.py` (9 nuevas, sobre bases desechables construidas
-  por el `core.database` real); mutantes SD01–SD13 de `round7`.
+- **Corregido en r7.** La URI de la copia se arma con `Path.as_uri()` (un `#` en la ruta
+  cortaba la URI, perdía `mode=ro` y creaba un archivo vacío sobre el que se imprimía
+  «integrity ok»), la copia se compara con el origen por tablas, y una simulación sobre una
+  base que no existe corre en memoria en vez de crear una completa en disco.
+- **Pruebas.** `tests/test_cmh_seed_scripts.py` (9 nuevas en r6 y 6 en r7, sobre bases
+  desechables construidas por el `core.database` real); mutantes SD01–SD13 de `round7` y Z01–Z08
+  de `round9`.
 
 ## ADR-035 · El registro de una ejecución sale de sus filas, no de la memoria del agente (2026-09-29)
 
@@ -824,5 +909,90 @@ estaba definida y que el vacío era un hueco técnico.
   un intento que muere a media ejecución no se registran (ADR-030).
 - **Descartado.** Ampliar `GET /runs/{id}` ahora: es superficie de API para la Fase 2 (4.4);
   aquí basta un guion de solo lectura.
-- **Pruebas.** `tests/test_cmh_run_report.py`, más una prueba de cada evento; mutantes
-  RR01–RR12 de `round8`.
+- **Corregido en r7.** El criterio de cierre se podía cumplir por vacío: un paso cuya ruta no
+  se resolvía (id que es una URL, fila borrada) quedaba con `paid=[]` y «TODO CUMPLIDO»; sin
+  ninguna compuerta la aprobación humana valía `True`, y nunca se miraba quién ni cuándo; la
+  evidencia se medía según el `require_tool_evidence` congelado de cada paso. Ahora la ruta se
+  juzga por la URL congelada (y un paso completado cuya ruta no se puede resolver falla con
+  «NO VERIFICABLE»); la aprobación exige la compuerta en el revisor, una decisión `approved`,
+  un autor y una fecha **no posterior al inicio del paso** (comparadas en UTC); la evidencia se
+  pide siempre de investigador, constructor y verificador y se avisa aparte de un config que la
+  desactive. Los tokens dicen si son reales, estimados o mixtos, y un paso sin `model_metrics`
+  dice «sin dato» en vez de 0 / 0.
+- **Pruebas.** `tests/test_cmh_run_report.py` (14 en r6, 35 en r7), más una prueba de cada
+  evento; mutantes RR01–RR12 (r6) y RR13–RR32 (r7) de `round8`.
+
+---
+
+## ADR-036 · Segunda vuelta de la Fase 1: qué halló la revisión independiente de `revision-fase1-r6` y qué se corrigió (2026-09-30)
+
+- **Contexto.** La revisión independiente de la etiqueta `revision-fase1-r6` (`ea4eee18`) devolvió
+  **DEVUELTO**: 0 P1, 19 P2 y 66 P3 (85 filas fusionadas de 98 hallazgos confirmados; 7 refutados;
+  el único P1 original, GUI-F01, quedó en P2 al medirlo). Las 5 lentes ejecutaron las cosas: 105
+  hallazgos brutos, de 32 a 111 comprobaciones por lente. Ninguna pudo medir OpenRouter, Groq ni LM
+  Studio reales: toda la red fue simulada (§ «No medido» abajo).
+- **Decisión.** Las correcciones se hicieron por capacidad, cada una en su commit, con sus pruebas y
+  sus mutantes, sobre la misma disciplina de ADR-031:
+
+  | Commit | Capacidad | P2 | Mutantes nuevos |
+  |---|---|---|---|
+  | `bea9b262` | `campaign()` corre línea base, rechaza el árbol vivo y restaura byte a byte | #16, #17 | T04–T11 (`round4`) |
+  | `249daeec` | compuerta: `enforced()` cierra por defecto, `describe()` sin credenciales, https obligatorio | — (P3 #30, #31, #33) | CG11b, CG17–CG30 (`round5`) |
+  | `352ebde8` | descubrimiento: amplía solo ante 404, exige clave y https, tiempo total acotado | #3, #4, #18 | D13–D33 (`round4`) |
+  | `a0048662` | un intento que muere a medias se cobra por lo gastado | #2, #19 | Q09–Q15 (`round4`) |
+  | `00f6dc52` | informe del run: la lista vacía ya no significa «verificado» | #5, #8, #9 | RR13–RR32 (`round8`) |
+  | `10ad364f` | guiones locales: `cmh-bench`, respuesta final real, códigos de salida de `lms` | #1, #10–#15 | B13–B31, S06–S16 (`round6`) |
+  | `c1f34f40` | credenciales fuera del run congelado y del PATCH, rutas locales fuera del proxy, siembra | #6, #7 | F01–F04, P01–P05, X01–X03, Z01–Z08 (`round9`) |
+  | `82176e19` | la prueba de la réplica de simulación mira solo la suya | — | — |
+  | (este) | ADR corregidas (21 cambios) y esta ADR | — (P3 #46–#58) | — |
+
+- **Medido.** Sobre un export limpio (sin `.git`) de `c1f34f40`, `tests/test_cmh_*.py`: **629 aprobadas,
+  0 fallidas**, 1 advertencia, 26 min 59 s. Campañas de mutantes, cada una sobre su propio export y
+  precedida de una línea base verde que `campaign()` exige: `round3` 13/13, `round4` 64/64, `round5` 39/39, `round6` 45/45, `round7` 13/13, `round8` 32/32 y `round9` 20/20 sobre `c1f34f40`; `round2` no dio veredicto allí (línea base roja por una prueba que miraba el `%TEMP%` compartido; corregida en `82176e19`) y sobre `82176e19` dio 13/13, con `round3`, `round7` y `round9` repetidas: 13/13, 13/13 y 20/20. En total 239 mutantes, 0 sobrevivientes, 0 inválidos y 0 obsoletos, con el árbol restaurado en verde en las ocho. La suite completa no se repitió
+  sobre `82176e19`: ese commit solo cambia una prueba del módulo de siembra, que pasó (2 de 2 en su
+  selección) y que las cuatro campañas repetidas ejecutaron. `bench.ps1`, `start.ps1` y el informe se
+  midieron contra un `lms` y un servidor falsos, y contra el formato real de `lms ps` en solo lectura;
+  nada contra Groq, OpenRouter ni LM Studio reales. Una prueba que solo pasa si nada más corre a la vez
+  (`test_a_dry_run_leaves_no_replica_behind`, que miraba el `%TEMP%` global) la halló la propia línea
+  base de `round2`, que se negó a dar veredicto: el bucle nuevo hizo lo que debía.
+- **Límites declarados que r7 no cierra** (los tres primeros son supuestos que ningún control puede validar):
+  1. **100.64.0.0/10 (CGNAT, Tailscale) fuera de `local-only`** es un SUPUESTO nacido en ADR-032, sin
+     fuente; el código citaba ADR-026, que no lo dice. Una GPU detrás de Tailscale no cuenta como local.
+  2. **Si las cuentas de Groq y OpenRouter tienen tarjeta** no lo ve la compuerta (ADR-019). Pendiente 412.
+  3. **Los nombres `*.local`** se aceptan sin resolverse.
+  4. **La tarea gemela** se juzga al crearla o vincularla; si alguien la reactiva por su cuenta, el
+     planificador genérico no vuelve a llamar a la compuerta (un paso de flujo sí, en `call_model`). La
+     revisión lo refutó como defecto (SEC-08) pero es un límite que conviene tener escrito.
+  5. **413 por tokens por minuto** (P3 #28, riesgo no verificado): los pasos tardíos arrastran artefactos
+     de hasta 40 000 caracteres y un 4xx fuera de `FALLBACK_STATUS` detiene el paso sin probar el
+     siguiente. Se verifica contra Groq real en la primera ejecución.
+  6. **Sobrestimación de cuota** en un intento rechazado antes de enviar, y un fallo al escribir la
+     cuota va al log, no a un evento (P3 #26, #27).
+  7. `$request.Proxy = $null` de `bench.ps1` sin medir (.NET ya evita el proxy en loopback).
+- **No medido** (la revisión lo declaró y sigue igual hasta que el usuario haga U1–U4): que `/models/user` de
+  OpenRouter exista y traiga `supported_parameters` y `context_length`; que `/models` responda sin clave;
+  si un modelo excluido por privacidad responde 404; si un 429 rechazado cuenta contra el límite de Groq; el
+  formato real de `lms ls` / `lms load --estimate-only` y si LM Studio acepta el identificador `cmh-local`;
+  cómo transmite las llamadas a herramientas (por fragmentos o completas: de eso depende el tok/s); la
+  velocidad real. `bench.ps1` y `start.ps1` solo se ejecutaron contra un `lms` falso; el formato de tabla
+  de `lms ps` sí se comparó con el real, en solo lectura.
+- **Textos del blueprint v4.0 que r7 reemplaza** (el archivo está fuera del repositorio y no se editó): §7.3
+  (`model_metrics` se emite por intento, no «cada ronda», y `provider_discovery` es un evento más; ADR-030),
+  §9.1 (`/models/user` primero; ADR-028) y §21-U4 (incluye cargar el modelo con `start.ps1` y ver `cmh-local`
+  en `lms ps`; ADR-029).
+- **Redacción de tres commits.** Los mensajes de `6be2cbff`, `d42638b2` y `76b88c40` dicen «each aimed at its
+  own test»: lo exacto es que cada mutante designa **una prueba por id de nodo** y esa es la que debe caer;
+  que otras también caigan es normal y no se mide. No se reescriben commits ya hechos.
+- **Método (lecciones nuevas).**
+  1. Un bucle del que todo depende necesita su propia prueba sobre un repositorio de juguete: `campaign()`
+     tenía tres formas de mentir y ningún test que las viera.
+  2. Una lista vacía debe significar una sola cosa. El informe usaba `[]` para «verificado» y para «no
+     verificable».
+  3. Una prueba que solo pasa en el orden alfabético no está aislada: `test_workflow_step_declares_itself_
+     foreground_controlled` fallaba tras `test_cmh_seed_scripts.py` (`engine.dispose()` vacía la base en
+     memoria compartida). Tiene su propia base.
+  4. Un mutante que cambia un patrón que una corrección movió se declara obsoleto en segundos por la prueba
+     de validez, no tras una campaña de una hora: se repuntaron D06–D08, B04, S03, SD08, SD09, RR05–RR07,
+     RR09, CG11 y T01.
+- **Pruebas.** Ver la tabla: `tests/test_cmh_mutant_campaign.py`, `test_cmh_endpoint_patch.py` y
+  `test_cmh_llm_core_proxy.py` son nuevos; los demás módulos crecen.
