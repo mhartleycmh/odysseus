@@ -138,7 +138,7 @@ def _assert_definition_zero_cost(db, owner, steps) -> None:
             raise HTTPException(400, f"Step {spec['key']}: {exc}") from exc
 
 
-def _snapshot(db, owner, project_id, spec, discovered=None):
+def _snapshot(db, owner, project_id, spec, discovered=None, notes=None):
     agent = db.query(CMHAgent).filter(CMHAgent.id == spec["agent_id"],
                                       CMHAgent.owner == owner,
                                       CMHAgent.project_id == project_id).first()
@@ -196,7 +196,20 @@ def _snapshot(db, owner, project_id, spec, discovered=None):
     # The artifact still says which model wrote it, so nothing is mislabelled.
     # An agent configured with a local endpoint keeps its own route: it is
     # prepended below with its own model.
-    candidates = resolve_candidates(db, policy, owner, discovered=discovered)
+    dropped = []
+    candidates = resolve_candidates(db, policy, owner, discovered=discovered, dropped=dropped)
+    # A registered row whose URL carries user:pass@ is refused the way the task's own URL
+    # is above, and for the same reason: freezing it would persist the credential, and
+    # stripping it would leave the runner unable to find the row by URL, so the step would
+    # go out with no Authorization at all (where the URL form authenticated).
+    for note in dropped:
+        if note["reason"] == "credential_in_url":
+            raise HTTPException(400, f"Step {spec['key']}: el endpoint {note['endpoint_id']} "
+                                     f"lleva credenciales embebidas en su URL. Vuelve a "
+                                     f"registrarlo para que la credencial pase a su api_key: "
+                                     f"aqui no se recorta en silencio.")
+    if notes is not None:
+        notes.extend(n for n in dropped if n not in notes)
     task_row = endpoint_for_url(db, task.endpoint_url, owner, agent.model)
     task_host = endpoint_host(task.endpoint_url)
     # Same PROVIDER and same model, not the same URL string. A registered row
@@ -316,8 +329,9 @@ def setup_cmh_workflow_routes() -> APIRouter:
                               for spec in specs)
             discovered, discovery_notes = (
                 await discover_free_models(db, owner) if wants_cloud else ({}, []))
-            snapshots = [_snapshot(db, owner, definition.project_id, spec, discovered)
-                         for spec in specs]
+            dropped_notes: list = []
+            snapshots = [_snapshot(db, owner, definition.project_id, spec, discovered,
+                                   dropped_notes) for spec in specs]
             for spec, config in zip(specs, snapshots):
                 config["requires_approval"] = spec["requires_approval"]
                 # Falls back to the per-role default, not to a second True written
@@ -345,6 +359,11 @@ def setup_cmh_workflow_routes() -> APIRouter:
             # missing from the frozen lists must say why.
             for note in discovery_notes:
                 event(db, run.id, "provider_discovery", **note)
+            # A provider whose row the gate or the credential rule kept out of every frozen
+            # list used to vanish without a trace: the run went on with what was left and
+            # nobody could tell why Groq was not there.
+            for note in dropped_notes:
+                event(db, run.id, "provider_dropped", **note)
             db.commit()
             run_id = run.id
         start(run_id)

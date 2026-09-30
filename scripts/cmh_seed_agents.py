@@ -143,7 +143,19 @@ def backup_database(db_path: pathlib.Path, reason: str) -> pathlib.Path:
     return target
 
 
-def has_usable_route(candidates, policy: str) -> bool:
+#: What each reason the router gives for leaving a row out of the list means, in words.
+DROPPED_TEXT = {
+    "credential_in_url": "su URL lleva usuario y clave; vuelve a registrarlo para que pasen a la api_key",
+    "cost_gate": "la compuerta de costo cero lo rechaza (http en un host gratuito, o un modelo que no es :free)",
+}
+
+
+def _free_hosts():
+    from src.cmh_cost_policy import FREE_HOSTS
+    return FREE_HOSTS
+
+
+def has_usable_route(candidates, policy: str, keyed=None) -> bool:
     """Whether the agents would have somewhere to go.
 
     Under ``free-cloud-first`` that needs a candidate on a free CLOUD host: a local row
@@ -151,12 +163,19 @@ def has_usable_route(candidates, policy: str) -> bool:
     would have let ``--apply`` write five agents pointing at a runtime nobody serves,
     while ADR-034 said it stops when there is no free candidate. Under ``local-only`` a
     local candidate is all there is.
+
+    ``keyed`` is the set of endpoint ids that have a registered key. When it is given, a
+    cloud candidate without one does not count: Groq and OpenRouter answer 401 to a
+    request with no key, 401 is not a reason to change provider, and the first step
+    would stop before it reached the local fallback.
     """
     from src.cmh_cost_policy import FREE_HOSTS
     from src.cmh_provider_router import LOCAL_ONLY
     if policy == LOCAL_ONLY:
         return bool(candidates)
-    return any(candidate.get("host") in FREE_HOSTS for candidate in candidates)
+    return any(candidate.get("host") in FREE_HOSTS
+               and (keyed is None or candidate.get("endpoint_id") in keyed)
+               for candidate in candidates)
 
 
 def instructions_for(role: str) -> str:
@@ -197,7 +216,8 @@ def plan(db, owner: str, project_id: str, policy: str) -> list[dict]:
     from core.database import CMHAgent
     from src.cmh_provider_router import resolve_candidates
 
-    candidates = resolve_candidates(db, policy, owner)
+    dropped: list = []
+    candidates = resolve_candidates(db, policy, owner, dropped=dropped)
     model = candidates[0]["model"] if candidates else None
     endpoint_url = candidates[0]["endpoint_url"] if candidates else None
     rows = []
@@ -209,7 +229,7 @@ def plan(db, owner: str, project_id: str, policy: str) -> list[dict]:
             "role": role, "name": name, "description": description,
             "workspace": str(workspace), "model": model, "endpoint_url": endpoint_url,
             "instructions": instructions_for(role),
-            "candidates": candidates, "policy": policy,
+            "candidates": candidates, "policy": policy, "dropped": dropped,
             "project_id": project_id,
             "action": "actualizar" if existing else "crear",
             "existing_id": existing.id if existing else None,
@@ -429,14 +449,26 @@ def _main() -> int:
         owner = args.owner or (db.query(CMHAgent.owner).first() or ("mijhael hartley",))[0]
         rows = plan(db, owner, args.project, policy)
         preserved = db.query(CMHAgent).filter(CMHAgent.name == PRESERVE).first()
+        # Ids only: whether a key EXISTS is all this needs, and it is never printed.
+        from core.database import ModelEndpoint
+        keyed = {ep.id for ep in db.query(ModelEndpoint).all()
+                 if str(getattr(ep, "api_key", None) or "").strip()}
 
     print(f"Base: {db_path}")
     print(f"Owner: {owner} · proyecto: {args.project} · politica: {policy}")
     print(f"Candidatos resueltos: "
           f"{[c['endpoint_id'] for c in rows[0]['candidates']] or 'NINGUNO'}")
-    usable = has_usable_route(rows[0]["candidates"], policy)
+    usable = has_usable_route(rows[0]["candidates"], policy, keyed)
+    for note in rows[0]["dropped"]:
+        print(f"  DESCARTADO: endpoint {note['endpoint_id']} ({note['host']}): "
+              f"{DROPPED_TEXT.get(note['reason'], note['reason'])}")
     if not usable:
-        if rows[0]["candidates"]:
+        if any(c.get("host") in _free_hosts() and c.get("endpoint_id") not in keyed
+               for c in rows[0]["candidates"]):
+            print("  PENDIENTE: hay un endpoint gratuito de nube registrado SIN clave. Groq y "
+                  "OpenRouter responden 401 sin ella y un 401 no cambia de proveedor: el primer "
+                  "paso se detendria sin llegar al respaldo local. Registra la clave (U1, U2).")
+        elif rows[0]["candidates"]:
             print("  PENDIENTE: solo hay endpoints locales registrados y la politica "
                   f"'{policy}' necesita al menos uno gratuito de nube (Groq, U1). Un Ollama "
                   "habilitado cuenta como candidato local y no basta: los agentes quedarian "

@@ -190,10 +190,16 @@ def _endpoint_rows(db, owner: Optional[str]) -> list:
     return owner_filter(query, ModelEndpoint, owner or None).all()
 
 
+def _note_dropped(dropped: Optional[list], row, host: str, reason: str) -> None:
+    if dropped is not None:
+        dropped.append({"endpoint_id": row.id, "host": host, "reason": reason})
+
+
 def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = None,
                        local_model: Optional[str] = None,
                        config: Optional[dict] = None,
-                       discovered: Optional[dict] = None) -> list[dict]:
+                       discovered: Optional[dict] = None,
+                       dropped: Optional[list] = None) -> list[dict]:
     """The ordered candidate list a step freezes, under this policy.
 
     ``free-cloud-first``: the free providers in the order the config declares,
@@ -209,9 +215,15 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
     config's ``local.model`` (the identifier LM Studio was loaded under, so it
     does not change when the winning model does), or what the runtime has
     cached. Never the model of the agent: that is a cloud name.
+
+    A row that cannot enter the list is not skipped in silence: when ``dropped`` is a
+    list it receives ``{"endpoint_id", "host", "reason"}`` for it. The reasons are
+    ``credential_in_url`` (the URL carries user:pass@; see
+    :func:`~src.cmh_cost_policy.has_userinfo`) and ``cost_gate`` (the gate refuses the
+    row for that model: plain http on a free host, a model that is not ``:free``).
     """
     from src.cmh_cost_policy import (
-        endpoint_host, is_local_endpoint, is_zero_cost_endpoint, strip_userinfo,
+        endpoint_host, has_userinfo, is_local_endpoint, is_zero_cost_endpoint,
     )
 
     settings = config or load_quota_config()
@@ -228,10 +240,13 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
             for row in rows:
                 if endpoint_host(getattr(row, "base_url", "")) != host:
                     continue
-                if not is_zero_cost_endpoint(row, model):
+                if has_userinfo(row.base_url):
+                    _note_dropped(dropped, row, host, "credential_in_url")
                     continue
-                candidates.append({"endpoint_id": row.id,
-                                   "endpoint_url": strip_userinfo(row.base_url),
+                if not is_zero_cost_endpoint(row, model):
+                    _note_dropped(dropped, row, host, "cost_gate")
+                    continue
+                candidates.append({"endpoint_id": row.id, "endpoint_url": row.base_url,
                                    "model": model, "host": host})
                 break
 
@@ -239,11 +254,13 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
     for row in rows:
         if not is_local_endpoint(row):
             continue
+        if has_userinfo(row.base_url):
+            _note_dropped(dropped, row, endpoint_host(row.base_url), "credential_in_url")
+            continue
         model = local_model or configured_local or _first_cached_model(row)
         if not model:
             continue
-        candidates.append({"endpoint_id": row.id,
-                           "endpoint_url": strip_userinfo(row.base_url),
+        candidates.append({"endpoint_id": row.id, "endpoint_url": row.base_url,
                            "model": model, "host": endpoint_host(row.base_url)})
     return candidates
 
@@ -428,7 +445,7 @@ async def _discover_one(row, rule, knobs: dict) -> dict:
     here ever reads the key into a note: it goes into the request headers only.
     """
     from src import llm_core
-    from src.cmh_cost_policy import endpoint_scheme
+    from src.cmh_cost_policy import endpoint_scheme, has_userinfo
     from src.endpoint_resolver import build_headers, build_models_url, normalize_base
 
     api_key = str(getattr(row, "api_key", None) or "").strip()
@@ -436,6 +453,9 @@ async def _discover_one(row, rule, knobs: dict) -> dict:
         return {"model": None, "source": None, "reason": "no api key"}
     if endpoint_scheme(getattr(row, "base_url", "")) != "https":
         return {"model": None, "source": None, "reason": "not https"}
+    if has_userinfo(getattr(row, "base_url", "")):
+        # httpx would turn the userinfo into Authorization: Basic next to the key we send.
+        return {"model": None, "source": None, "reason": "credential in url"}
     try:
         base = normalize_base(getattr(row, "base_url", ""))
         models_url = build_models_url(base)

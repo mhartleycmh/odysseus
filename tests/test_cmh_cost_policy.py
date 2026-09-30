@@ -16,7 +16,7 @@ from routes import cmh_workflow_routes as routes
 from src import cmh_workflows as flow
 from src.cmh_cost_policy import (
     ZeroCostViolation, assert_zero_cost, describe, enforced, is_local_endpoint,
-    is_reachable_without_leaving_the_network, is_zero_cost_endpoint, redact_url, strip_userinfo,
+    has_userinfo, is_reachable_without_leaving_the_network, is_zero_cost_endpoint, redact_url,
 )
 
 LOCAL = "http://127.0.0.1:59999/v1"
@@ -85,7 +85,8 @@ def test_a_lookalike_host_is_not_the_free_host():
     ("169.253.255.255", False), ("169.255.0.1", False),
     ("[fe7f::1]", False), ("[fec0::1]", False), ("[fbff::1]", False), ("[fe00::1]", False),
     ("[fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]", False),
-    # carrier-grade NAT (Tailscale) is rejected on purpose (ADR-026); reserved and
+    # carrier-grade NAT (Tailscale) is outside local-only by ASSUMPTION of ADR-032 (ADR-026
+    # does not say it); reserved and
     # documentation ranges are not "a private network" even though Python calls
     # some of them private
     ("100.64.0.1", False), ("192.0.2.1", False), ("240.0.0.1", False), ("198.18.0.1", False),
@@ -181,6 +182,8 @@ def test_an_allowed_route_logs_nothing_even_with_the_gate_off(monkeypatch, caplo
     ("https://user:hunter2@openrouter.ai/api/v1", "https://openrouter.ai/api/v1"),
     ("https://openrouter.ai/api/v1?key=hunter2#frag", "https://openrouter.ai/api/v1"),
     ("http://a:b@[fe80::1]:1234/v1", "http://[fe80::1]:1234/v1"),
+    # a raw @ inside the password: the LAST @ ends the userinfo, so nothing of it may remain
+    ("https://user:p@ss@openrouter.ai/api/v1", "https://openrouter.ai/api/v1"),
     ("https://api.groq.com/openai/v1", "https://api.groq.com/openai/v1"),
     ("", ""), (None, ""),
 ])
@@ -189,16 +192,17 @@ def test_redact_url_drops_userinfo_query_and_fragment(url, expected):
 
 
 @pytest.mark.parametrize("url, expected", [
-    ("https://user:hunter2@openrouter.ai/api/v1", "https://openrouter.ai/api/v1"),
-    # unlike redact_url the query stays: a provider may need ?api-version= to be called at all
-    ("https://u:p@host.example/v1?api-version=2024#x", "https://host.example/v1?api-version=2024#x"),
-    ("http://a:b@[fe80::1]:1234/v1", "http://[fe80::1]:1234/v1"),
-    ("http://u%40a:p%3Ab@127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1"),
-    ("http://127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1"),
-    ("", ""), (None, ""),
+    ("https://user:hunter2@openrouter.ai/api/v1", True),
+    ("https://user:p@ss@openrouter.ai/api/v1", True),          # a raw @ inside the password
+    ("https://:onlypass@host.example/v1", True),
+    ("http://a:b@[fe80::1]:1234/v1", True),
+    ("http://u%40a:p%3Ab@127.0.0.1:1234/v1", True),
+    ("https://host.example/v1?email=a@b.com", False),          # an @ in the QUERY is not userinfo
+    ("https://host.example/v1/@handle", False),                # nor one in the path
+    ("http://127.0.0.1:1234/v1", False), ("", False), (None, False),
 ])
-def test_strip_userinfo_removes_the_credential_and_nothing_else(url, expected):
-    assert strip_userinfo(url) == expected
+def test_has_userinfo_sees_a_credential_only_in_the_authority(url, expected):
+    assert has_userinfo(url) is expected
 
 
 def test_redact_url_survives_an_unparsable_url():

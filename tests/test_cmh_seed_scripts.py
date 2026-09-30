@@ -479,9 +479,11 @@ def _database_with_endpoints(path, endpoints):
         "import json, sys\n"
         "import core.database as c\n"
         "with c.SessionLocal() as db:\n"
-        "    for i, (url, kind) in enumerate(json.loads(sys.argv[1])):\n"
+        "    for i, entry in enumerate(json.loads(sys.argv[1])):\n"
+        "        url, kind = entry[0], entry[1]\n"
+        "        key = entry[2] if len(entry) > 2 else ('gsk-TEST-DUMMY' if kind == 'api' else None)\n"
         "        db.add(c.ModelEndpoint(id=f'e{i}', name=f'e{i}', base_url=url,\n"
-        "                               endpoint_kind=kind, is_enabled=True))\n"
+        "                               endpoint_kind=kind, is_enabled=True, api_key=key))\n"
         "    db.commit()\n")
     subprocess.run([sys.executable, "-c", script, json.dumps(endpoints)], cwd=str(REPO),
                    check=True, capture_output=True, text=True,
@@ -749,3 +751,84 @@ def test_has_usable_route_by_policy():
     assert seed.has_usable_route([], "free-cloud-first") is False
     assert seed.has_usable_route([local], "local-only") is True
     assert seed.has_usable_route([], "local-only") is False
+
+
+# --- review of revision-fase1-r7: keys, a '#' in every path, and --apply on nothing ---------
+
+def test_a_cloud_candidate_without_a_registered_key_is_not_a_usable_route():
+    groq = {"host": "api.groq.com", "endpoint_id": "g"}
+    assert seed.has_usable_route([groq], "free-cloud-first", keyed={"g"}) is True
+    assert seed.has_usable_route([groq], "free-cloud-first", keyed=set()) is False
+    assert seed.has_usable_route([groq], "free-cloud-first", keyed=None) is True   # not asked
+    local = {"host": "127.0.0.1", "endpoint_id": "l"}
+    assert seed.has_usable_route([local], "local-only", keyed=set()) is True       # no key needed
+
+
+def test_groq_registered_without_its_key_does_not_open_the_gate_of_apply(tmp_path):
+    """Groq answers 401 to a request with no key and 401 is not a reason to change provider:
+    the first step would stop before it reached the local fallback, and --apply had written
+    five agents pointing at it."""
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [(GROQ_URL, "api", None)])
+    before = _stored(live)
+    dry = _run_script([], _seed_env(tmp_path, live))
+    assert "SIN clave" in dry.stdout, dry.stdout + dry.stderr
+    refused = _run_script(APPLY, _seed_env(tmp_path, live))
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "No se sembro nada" in refused.stdout and _stored(live) == before
+    keyed = tmp_path / "keyed.db"
+    _database_with_endpoints(keyed, [(GROQ_URL, "api")])                   # the default key
+    assert _run_script(APPLY, _seed_env(tmp_path, keyed)).returncode == 0
+
+
+def test_the_plan_says_which_rows_the_router_left_out_and_why(tmp_path):
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [("http://api.groq.com/openai/v1", "api")])      # plain http
+    result = _run_script([], _seed_env(tmp_path, live))
+    assert "DESCARTADO: endpoint e0 (api.groq.com)" in result.stdout, result.stdout
+    assert "compuerta de costo cero" in result.stdout
+    assert _run_script(APPLY, _seed_env(tmp_path, live)).returncode == 2
+
+
+def _hash_folder(tmp_path):
+    folder = tmp_path / "datos #1 de prueba"
+    folder.mkdir()
+    return folder / "app.db"
+
+
+def test_a_dry_run_on_a_database_in_a_folder_with_a_hash_reads_the_real_database(tmp_path):
+    """Built by hand, the URI of the simulation was cut at the '#': SQLite opened an EMPTY
+    database with integrity 'ok' beside the folder, and the plan was computed on nothing."""
+    live = _hash_folder(tmp_path)
+    _database_with_endpoints(live, [(GROQ_URL, "api")])
+    env = _seed_env(tmp_path, live)
+    before = sorted(p.name for p in tmp_path.iterdir())
+    result = _run_script([], env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Candidatos resueltos: ['e0']" in result.stdout        # it SAW the endpoint
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+
+def test_apply_on_a_database_in_a_folder_with_a_hash_checks_the_real_database(tmp_path):
+    live = _hash_folder(tmp_path)
+    _database_with_endpoints(live, [(GROQ_URL, "api")])
+    env = _seed_env(tmp_path, live)
+    before = {p.name for p in tmp_path.iterdir()}
+    result = _run_script(APPLY, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "integrity_check posterior: ok" in result.stdout
+    assert len(_stored(live)["agents"]) == 5
+    assert {p.name for p in tmp_path.iterdir()} - before == {"local"}   # only the backup folder
+
+
+def test_apply_on_a_database_that_does_not_exist_writes_it_to_disk_and_not_to_memory(tmp_path):
+    """The in-memory escape is for the SIMULATION only. --apply with no file must never seed
+    a database in memory, throw it away and print a success."""
+    folder = tmp_path / "vacio"
+    folder.mkdir()
+    missing = folder / "app.db"
+    result = _run_script(APPLY + ["--allow-pending"], _seed_env(tmp_path, missing))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert missing.exists()
+    assert len(_stored(missing)["agents"]) == 5
+    assert "en memoria" not in result.stdout

@@ -326,6 +326,21 @@ async def test_a_failure_is_remembered_briefly_and_then_asked_again(world):
     assert found == {"openrouter.ai": "big/model:free"} and later[0]["outcome"] == "ok"
 
 
+async def test_the_failure_ttl_comes_from_the_config_and_its_edges_hold(world):
+    """Only ttl_s, timeout_s and unfiltered_ttl_s were pinned to values other than the defaults:
+    a failure_ttl_s read from the code's constant instead of the config passed every test."""
+    factory, net, _ = world
+    config = {**CONFIG, "discovery": {"ttl_s": 21600, "timeout_s": 15, "failure_ttl_s": 10}}
+    with factory() as db:
+        await discover_free_models(db, config=config, at=T0)           # both routes answer 404
+        asked = len(net.requests)
+        _, inside = await discover_free_models(db, config=config, at=T0 + timedelta(seconds=9))
+        assert inside[0]["outcome"] == "failed" and len(net.requests) == asked
+        net.responses[USER_PATH] = (200, CATALOGUE)
+        found, outside = await discover_free_models(db, config=config, at=T0 + timedelta(seconds=11))
+    assert found == {"openrouter.ai": "big/model:free"} and outside[0]["outcome"] == "ok"
+
+
 async def test_a_choice_from_the_unfiltered_list_is_trusted_for_a_shorter_time(world):
     factory, net, _ = world
     net.responses[GENERAL_PATH] = (200, CATALOGUE)              # /models/user answers 404
@@ -500,21 +515,55 @@ def test_a_discovered_model_enters_second_and_a_missing_one_leaves_the_provider_
     assert [c["endpoint_id"] for c in without] == ["groq", "lms"]
 
 
-def test_the_frozen_candidates_carry_no_credential_even_if_the_row_still_does(world):
+def test_a_row_that_still_carries_a_credential_is_not_frozen_and_is_reported(world):
     """A row written before ADR-026, or edited through a path that did not split the URL,
-    still has user:pass@ in its base_url. It must not travel into the frozen config."""
+    still has user:pass@ in its base_url. Freezing it would persist the credential;
+    stripping it would leave the runner unable to find the row by URL, so the step would
+    go out with no Authorization (the URL form authenticated). It is left out, and said."""
     factory, _, _ = world
     with factory() as db:
         db.get(cdb.ModelEndpoint, "orr").base_url = "https://revuser:hunter2@openrouter.ai/api/v1"
         db.get(cdb.ModelEndpoint, "lms").base_url = "http://lmsuser:hunter2@127.0.0.1:59999/v1"
         db.commit()
-        candidates = resolve_candidates(db, FREE_CLOUD_FIRST, config=CONFIG,
+        dropped = []
+        candidates = resolve_candidates(db, FREE_CLOUD_FIRST, config=CONFIG, dropped=dropped,
                                         discovered={"openrouter.ai": "big/model:free"})
-    assert [c["endpoint_id"] for c in candidates] == ["groq", "orr", "lms"]
+    assert [c["endpoint_id"] for c in candidates] == ["groq"]
     assert "hunter2" not in json.dumps(candidates)
-    urls = {c["endpoint_id"]: c["endpoint_url"] for c in candidates}
-    assert urls["orr"] == "https://openrouter.ai/api/v1"
-    assert urls["lms"] == "http://127.0.0.1:59999/v1"
+    assert sorted((d["endpoint_id"], d["reason"]) for d in dropped) == [
+        ("lms", "credential_in_url"), ("orr", "credential_in_url")]
+
+
+def test_a_free_host_over_plain_http_is_dropped_by_the_gate_and_reported(world):
+    factory, _, _ = world
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "groq").base_url = "http://api.groq.com/openai/v1"
+        db.commit()
+        dropped = []
+        candidates = resolve_candidates(db, FREE_CLOUD_FIRST, config=CONFIG, dropped=dropped,
+                                        discovered={"openrouter.ai": "big/model:free"})
+    assert [c["endpoint_id"] for c in candidates] == ["orr", "lms"]
+    assert dropped == [{"endpoint_id": "groq", "host": "api.groq.com", "reason": "cost_gate"}]
+
+
+def test_the_list_is_the_same_when_nobody_asks_for_the_dropped_rows(world):
+    factory, _, _ = world
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "groq").base_url = "http://api.groq.com/openai/v1"
+        db.commit()
+        assert [c["endpoint_id"] for c in resolve_candidates(db, FREE_CLOUD_FIRST, config=CONFIG)] == [
+            "lms"]
+
+
+async def test_discovery_does_not_query_a_url_that_carries_a_credential(world):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "orr").base_url = "https://u:p@openrouter.ai/api/v1"
+        db.commit()
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and net.requests == []
+    assert notes[0]["reason"] == "credential in url"
 
 
 def test_the_cost_gate_still_refuses_a_discovered_model_that_is_not_free(world):
@@ -611,6 +660,43 @@ async def test_a_run_freezes_openrouter_with_the_model_discovered_for_it(api):
     assert discovery == [{"provider": "openrouter.ai", "outcome": "ok", "model": "big/model:free",
                           "source": "models/user", "reason": None}]
     assert SECRET not in config and SECRET not in json.dumps(events)
+
+
+async def test_a_run_is_refused_when_a_registered_row_still_carries_a_credential(api):
+    client, factory, net = api
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "lms").base_url = "http://lmsuser:hunter2@127.0.0.1:59999/v1"
+        db.commit()
+    async with client:
+        definition = await client.post("/api/cmh/workflows", json={
+            "name": "synthetic", "project_id": "project",
+            "steps": [{"key": "a", "agent_id": "agent-a"}]})
+        refused = await client.post(f"/api/cmh/workflows/{definition.json()['id']}/runs",
+                                    json={"initial_input": "synthetic input"})
+    assert refused.status_code == 400, refused.text
+    assert "credenciales" in refused.json()["detail"] and "lms" in refused.json()["detail"]
+    assert "hunter2" not in refused.text
+    with factory() as db:
+        assert db.query(cdb.CMHWorkflowRun).count() == 0
+
+
+async def test_a_provider_the_gate_left_out_leaves_an_event_in_the_run(api, monkeypatch):
+    """An OpenRouter row registered over plain http vanished from the frozen list without a
+    trace. Its model is pinned in the config so that discovery is not what leaves it out."""
+    client, factory, net = api
+    pinned = {"threshold": 0.9, "discovery": {"ttl_s": 21600, "timeout_s": 15}, "providers": [
+        {"endpoint_host": "api.groq.com", "order": 1, "model": "openai/gpt-oss-120b", "limits": {}},
+        {"endpoint_host": "openrouter.ai", "order": 2, "model": "pinned/model:free", "limits": {}}]}
+    monkeypatch.setattr(router, "load_quota_config", lambda path=None: pinned)
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "orr").base_url = "http://openrouter.ai/api/v1"
+        db.commit()
+    async with client:
+        run_id = await _create_run(client)
+    config, events = _stored(factory, run_id)
+    dropped = [payload for kind, payload in events if kind == "provider_dropped"]
+    assert dropped == [{"endpoint_id": "orr", "host": "openrouter.ai", "reason": "cost_gate"}]
+    assert "orr" not in [c["endpoint_id"] for c in json.loads(config)["candidates"]]
 
 
 async def test_a_failed_discovery_still_creates_the_run_and_the_event_says_why(api):
