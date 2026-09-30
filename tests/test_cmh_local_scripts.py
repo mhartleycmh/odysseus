@@ -64,6 +64,11 @@ def fails():
     listed = state.get("fail", [])
     if args[0] in listed:
         return True
+    if args[0] == "ps" and state.get("ps_fail_after") is not None:
+        # `lms ps` answers the first N times and fails from then on
+        state["ps_calls"] = state.get("ps_calls", 0) + 1
+        save()
+        return state["ps_calls"] > state["ps_fail_after"]
     return args[0] == "load" and "--estimate-only" not in args and ("load:" + args[1]) in listed
 
 
@@ -269,11 +274,12 @@ def lms(tmp_path):
 
         @staticmethod
         def set_state(loaded=(), ls=LS_TEXT, fail=(), noop_load=False, sticky=False,
-                      aliases=None, sticky_names=()):
+                      aliases=None, sticky_names=(), ps_fail_after=None):
             (root / "state" / "state.json").write_text(
                 json.dumps({"loaded": list(loaded), "ls": ls, "fail": list(fail),
                             "noop_load": noop_load, "sticky": sticky,
-                            "aliases": aliases or {}, "sticky_names": list(sticky_names)}),
+                            "aliases": aliases or {}, "sticky_names": list(sticky_names),
+                            "ps_fail_after": ps_fail_after, "ps_calls": 0}),
                 encoding="utf-8")
 
         @staticmethod
@@ -892,3 +898,77 @@ def test_start_takes_the_same_key_with_or_without_its_publisher_or_in_other_capi
     result = start(lms, server, model=asked)
     assert result.returncode == 0 and "Ya esta cargado" in result.stdout, said(result)
     assert not any(c.startswith(("load", "unload")) for c in lms.calls())
+
+
+# --- bench.ps1, r9: a cleanup that fails must not throw away what was measured ----------------
+#
+# The third review (revision-fase1-r8) measured that r8's Remove-Own re-read `lms ps` with no
+# guard: when that call failed, the script aborted with no table and no -OutFile, which r7
+# still produced. `lms ps` is called at the start, before each candidate and at the end: a
+# ps_fail_after of 2 lets the first two through and fails from the third on.
+
+def test_a_failing_lms_ps_at_the_end_keeps_the_measurement_and_says_it_could_not_check(
+        lms, server, tmp_path):
+    lms.set_state(ps_fail_after=2)              # start, before the only candidate; the end fails
+    result, rows = bench(lms, server, tmp_path, Models=[GEMMA])
+    assert result.returncode == 0, said(result)                # there is a winner
+    assert len(rows) == 1 and rows[0]["ToolCallsOk"] is True
+    assert "no se pudo comprobar" in said(result) and "lms ps" in said(result)
+
+
+def test_a_failing_lms_ps_between_candidates_stops_the_bench_but_keeps_the_first_row(
+        lms, server, tmp_path):
+    lms.set_state(ps_fail_after=2)              # start, before candidate 1; before candidate 2 fails
+    result, rows = bench(lms, server, tmp_path, Models=[GEMMA, GPT_OSS])
+    assert result.returncode != 0, said(result)
+    assert [r["Model"] for r in rows] == [GEMMA, GPT_OSS]
+    assert rows[0]["ToolCallsOk"] is True and rows[1]["Loaded"] is False
+    assert "no se pudo comprobar" in said(result)
+    assert "se detuvo antes de medirlo todo" in said(result)
+
+
+def test_a_stop_for_an_unload_that_unloads_nothing_keeps_what_was_measured_and_says_how_to_clean_up(
+        lms, server, tmp_path):
+    lms.set_state(sticky_names=["cmh-bench"])
+    result, rows = bench(lms, server, tmp_path, Models=[GEMMA, GPT_OSS])
+    assert result.returncode != 0, said(result)
+    assert len(rows) == 2 and rows[0]["ToolCallsOk"] is True and rows[1]["Loaded"] is False
+    assert "lms unload cmh-bench" in said(result)
+    assert len(server.requests) == 3                    # the second candidate was never measured
+
+
+def test_the_bench_warns_when_its_identifier_is_still_loaded_at_the_end(lms, server, tmp_path):
+    lms.set_state(sticky_names=["cmh-bench"])
+    result, rows = bench(lms, server, tmp_path, Models=[GEMMA])
+    assert result.returncode == 0, said(result)                # a winner exists
+    assert "AVISO" in said(result) and "lms unload cmh-bench" in said(result)
+    assert "cmh-bench" in lms.loaded()
+
+
+def test_an_identifier_that_was_already_loaded_and_is_not_the_default_belongs_to_the_user(
+        lms, server, tmp_path):
+    """Only 'cmh-bench' is the bench's own leftover. The message said a model the user had
+    loaded under -Identifier was 'de una corrida anterior' and unloaded it without the switch."""
+    lms.set_state(loaded=[USER_MODEL])
+    result, _ = bench(lms, server, tmp_path, Models=[GEMMA], Identifier="qwen/qwen3.8-27b")
+    assert result.returncode != 0 and "-UnloadOthers" in said(result)
+    assert "de una corrida anterior" not in said(result)
+    assert lms.loaded() == ["qwen/qwen3.8-27b"] and server.requests == []
+
+
+def test_bench_guards_both_the_identifier_in_the_config_and_the_default_cmh_local(
+        lms, server, tmp_path):
+    """start.ps1 loads under 'cmh-local' whatever the config says, so the guard covers the two.
+    The script reads config/cmh_free_quotas.json relative to itself: a copy in a tree of its own."""
+    tree = tmp_path / "tree"
+    (tree / "scripts" / "cmh_local").mkdir(parents=True)
+    (tree / "config").mkdir()
+    script = tree / "scripts" / "cmh_local" / "bench.ps1"
+    script.write_bytes(BENCH.read_bytes())
+    (tree / "config" / "cmh_free_quotas.json").write_text(
+        json.dumps({"local": {"model": "lm-router"}}), encoding="utf-8")
+    for identifier in ("lm-router", "cmh-local"):
+        result = powershell(str(script), Lms=lms.path, BaseUrl=server.url, Models=[GEMMA],
+                            Identifier=identifier)
+        assert result.returncode != 0 and "respaldo local del router" in said(result), identifier
+    assert lms.calls() == [] and server.requests == []

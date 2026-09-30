@@ -22,6 +22,9 @@
         razonando NO es una respuesta),
       - memoria del runtime (aproximada).
 
+    Un modelo sin velocidad medible (ninguna de sus rondas llego en al menos 3 trozos) ordena
+    ULTIMO y solo gana si no hay otro que pase el tool calling; la salida lo dice.
+
     Que NO hace, por lo que costo descubrirlo (auditoria del 2026-09-29):
       - No toca lo que el usuario tenga cargado, NI SIQUIERA 'cmh-local', que es
         lo que start.ps1 deja cargado como respaldo del router. Mide bajo el
@@ -48,7 +51,9 @@
     puede llamar herramientas no pasa la guardia de evidencia. Para servirlo al
     router hay que cargarlo como 'cmh-local' con start.ps1.
 
-    Sale con codigo 0 si hay un ganador y 1 si ningun candidato paso.
+    Sale con codigo 0 si hay un ganador y 1 si ningun candidato paso o si el banco se detuvo
+    antes de medirlos todos (un unload que no descarga, un `lms ps` que falla): lo medido hasta
+    entonces se imprime y se guarda en -OutFile antes de salir.
 
     En esta maquina la politica de ejecucion es Restricted: sin
     -ExecutionPolicy Bypass el .ps1 ni empieza. Con -File una lista llega como una
@@ -92,11 +97,14 @@ if (Test-Path -LiteralPath $ConfigPath) {
         if ($fromConfig) { $RouterIdentifier = [string]$fromConfig }
     } catch { }
 }
-if ($Identifier -eq $RouterIdentifier) {
+# start.ps1 carga bajo 'cmh-local' por defecto aunque el config diga otra cosa: se protegen los dos.
+if (@("cmh-local", $RouterIdentifier) -contains $Identifier) {
     throw ("-Identifier '$Identifier' es el identificador del respaldo local del router " +
-           "(config local.model). Este banco no mide bajo ese nombre: descargaria lo que " +
-           "start.ps1 deja cargado. Usa otro, por ejemplo cmh-bench.")
+           "(config local.model, o el 'cmh-local' que start.ps1 usa por defecto). Este banco " +
+           "no mide bajo ese nombre: descargaria lo que start.ps1 deja cargado. Usa otro, " +
+           "por ejemplo cmh-bench.")
 }
+$DefaultIdentifier = "cmh-bench"
 
 # Los tres candidatos del blueprint (11.2), por nombre. Se buscan en `lms ls`.
 $Candidates = @("gemma-4-e4b", "qwen3.5-4b", "phi-4-mini")
@@ -138,10 +146,13 @@ function Get-LoadedIdentifiers {
 function Remove-Own {
     # Descarga lo que ESTE guion cargo y comprueba que se fue. No se fia del codigo de salida:
     # el lms real sale con 0 ante "Model Not Found", y una descarga que falla dejaria al
-    # candidato anterior en la memoria compartida bajo el mismo identificador. Devuelve $true
-    # si el identificador SIGUE cargado.
+    # candidato anterior en la memoria compartida bajo el mismo identificador. Devuelve
+    # "cargado" si el identificador SIGUE cargado, "libre" si se fue y "desconocido" si `lms ps`
+    # fallo y no se pudo comprobar (antes la excepcion tiraba lo ya medido).
     [void](Invoke-Lms @("unload", $Identifier))
-    return (@(Get-LoadedIdentifiers) -contains $Identifier)
+    try { $now = @(Get-LoadedIdentifiers) } catch { return "desconocido" }
+    if ($now -contains $Identifier) { return "cargado" }
+    return "libre"
 }
 
 # La misma conversacion para todos, o la comparacion no compara nada.
@@ -320,11 +331,14 @@ if (-not $wanted -or $wanted.Count -eq 0) { throw "No hay modelos que medir." }
 # --- no tocar lo que el usuario tiene cargado --------------------------------
 # Solo el identificador de este banco es nuestro. 'cmh-local' es lo que start.ps1 dejo
 # como respaldo del router: descargarlo lo deja respondiendo 404 hasta repetir start.ps1.
+# Solo el identificador por defecto ('cmh-bench') es nuestro. Otro que ya estuviera cargado
+# lo puso el usuario: es ajeno, exige -UnloadOthers y no se le llama "de una corrida anterior".
 $loadedNow = @(Get-LoadedIdentifiers)
-if ($loadedNow -contains $Identifier) {
+$ownLeftover = ($Identifier -eq $DefaultIdentifier) -and ($loadedNow -contains $Identifier)
+if ($ownLeftover) {
     Write-Host "Habia un '$Identifier' de una corrida anterior (caida o interrumpida): es de este banco y se descarga." -ForegroundColor Yellow
 }
-$others = @($loadedNow | Where-Object { $_ -ne $Identifier })
+$others = @($loadedNow | Where-Object { -not ($ownLeftover -and $_ -eq $Identifier) })
 if ($others.Count -gt 0) {
     if (-not $UnloadOthers) {
         throw ("Hay modelos cargados que este banco descargaria: $($others -join ', '). " +
@@ -334,13 +348,14 @@ if ($others.Count -gt 0) {
     Write-Host "Descargando lo que hay cargado ($($others -join ', ')): lo pediste con -UnloadOthers." -ForegroundColor Yellow
     $unloaded = Invoke-Lms @("unload", "--all")
     if ($unloaded.ExitCode -ne 0) { throw "lms unload --all fallo (exit $($unloaded.ExitCode)): $($unloaded.Output)" }
-    $left = @(Get-LoadedIdentifiers | Where-Object { $_ -ne $Identifier })
+    $left = @(Get-LoadedIdentifiers | Where-Object { -not ($ownLeftover -and $_ -eq $Identifier) })
     if ($left.Count -gt 0) { throw "Tras descargar siguen cargados: $($left -join ', '). Medir con eso en memoria contaminaria el resultado." }
 }
 
 Write-Host "Candidatos: $($wanted -join ', ')"
 Write-Host "Offload $Gpu | contexto $ContextLength | hasta $Rounds rondas por modelo | max_tokens $MaxTokens | identificador $Identifier`n"
 
+$stopped = $null
 $results = foreach ($model in $wanted) {
     Write-Host "== $model ==" -ForegroundColor Cyan
     if ($model -like "NO-DESCARGADO:*") {
@@ -357,8 +372,21 @@ $results = foreach ($model in $wanted) {
     Write-Host "   memoria estimada: $estimated GiB"
 
     # Solo lo que este guion cargo: la vez anterior, bajo su propio identificador.
-    if (Remove-Own) {
-        throw "lms unload $Identifier no lo descargo: sigue cargado y medir encima del candidato anterior contaminaria el resultado."
+    $own = Remove-Own
+    if ($own -ne "libre") {
+        $why = if ($own -eq "cargado") {
+            "lms unload $Identifier no lo descargo: sigue cargado y medir encima del candidato anterior contaminaria el resultado. Descargalo a mano con: lms unload $Identifier"
+        } else {
+            "no se pudo comprobar con lms ps que '$Identifier' se descargara: medir encima del candidato anterior contaminaria el resultado."
+        }
+        Write-Host "   $why" -ForegroundColor Red
+        [pscustomobject]@{ Model = $model; Loaded = $false; Error = $why
+                           EstimatedGiB = $estimated; LoadSeconds = $null; Rounds = 0
+                           Answered = $false; ToolCallsOk = $false; FirstTokenSeconds = $null
+                           TokensPerSec = $null; TotalTokensPerSec = $null; TokensEstimated = $null
+                           ResidentMB = $null }
+        $stopped = $why
+        break
     }
     $loadWatch = [System.Diagnostics.Stopwatch]::StartNew()
     # Sin --ttl a proposito: --ttl DESCARGA tras N segundos sin uso.
@@ -417,11 +445,6 @@ $results = foreach ($model in $wanted) {
     }
 }
 
-# Solo el identificador de este banco.
-if (Remove-Own) {
-    Write-Host "AVISO: '$Identifier' sigue cargado tras el banco. Descargalo a mano con: lms unload $Identifier" -ForegroundColor Yellow
-}
-
 Write-Host "`n=== RESULTADO ===" -ForegroundColor Green
 $results | Format-Table Model, Loaded, EstimatedGiB, FirstTokenSeconds, TokensPerSec, TotalTokensPerSec, Rounds, Answered, ToolCallsOk, ResidentMB -AutoSize
 
@@ -432,6 +455,18 @@ $winner = $results | Where-Object { $_.Loaded -and $_.ToolCallsOk } |
 
 if ($OutFile) { $results | ConvertTo-Json -Depth 5 | Set-Content -Path $OutFile -Encoding utf8
                 Write-Host "Medicion guardada en $OutFile" }
+
+# Solo el identificador de este banco, DESPUES de imprimir y guardar lo medido.
+$own = Remove-Own
+if ($own -eq "cargado") {
+    Write-Host "AVISO: '$Identifier' sigue cargado tras el banco. Descargalo a mano con: lms unload $Identifier" -ForegroundColor Yellow
+} elseif ($own -eq "desconocido") {
+    Write-Host "AVISO: no se pudo comprobar con lms ps si '$Identifier' quedo cargado. Revisalo con: lms ps" -ForegroundColor Yellow
+}
+if ($stopped) {
+    Write-Host "El banco se detuvo antes de medirlo todo: $stopped" -ForegroundColor Red
+    exit 1
+}
 
 if ($winner) {
     $speed = if ($null -eq $winner.TokensPerSec) {
