@@ -15,10 +15,10 @@ separately, so an obsolete pattern cannot quietly leave the denominator.
 """
 
 import pathlib
-import subprocess
 import sys
 
-from _target import resolve_repo, verdict
+from _target import resolve_repo
+from _target import campaign
 
 REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])
 PY = pathlib.Path(sys.executable)
@@ -26,6 +26,7 @@ if not PY.exists() or "python" not in PY.name.lower():
     PY = REPO.parent.parent / ".venv" / "Scripts" / "python.exe"
 
 TARGET_TESTS = ["tests/test_cmh_mutant_target.py"]
+CAMPAIGN_TESTS = ["tests/test_cmh_mutant_campaign.py"]
 STEP_FAILURE_TESTS = ["tests/test_cmh_step_provider_failures.py"]
 DISCOVERY_TESTS = ["tests/test_cmh_provider_discovery.py"]
 
@@ -39,10 +40,11 @@ FLOW = "src/cmh_workflows.py"
 #: (name, file, text to replace, replacement, test modules that must fall)
 MUTANTS = [
     # --- the campaign runners refuse the live tree -----------------------------
-    ("T01 resolve_repo deja de mirar .git", TARGET,
-     '    if (repo / ".git").exists() and os.environ.get("CMH_MUTANT_ALLOW_LIVE") != "1":',
-     '    if False and (repo / ".git").exists():',
-     TARGET_TESTS),
+    # T01 was repointed on 2026-09-29 when the check moved into assert_not_live.
+    ("T01 assert_not_live deja de mirar .git", TARGET,
+     '    if (pathlib.Path(repo) / ".git").exists() and os.environ.get("CMH_MUTANT_ALLOW_LIVE") != "1":',
+     '    if False and (pathlib.Path(repo) / ".git").exists():',
+     TARGET_TESTS + CAMPAIGN_TESTS),
     ("T02 resolve_repo ignora CMH_MUTANT_REPO", TARGET,
      '    override = os.environ.get("CMH_MUTANT_REPO")',
      '    override = None',
@@ -51,6 +53,40 @@ MUTANTS = [
      "REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])",
      "REPO = pathlib.Path(__file__).resolve().parents[2]",
      TARGET_TESTS),
+
+    # --- the loop itself: what the review of 2026-09-29 found it could not tell ---
+    ("T04 campaign deja de correr la linea base", TARGET,
+     "    if baseline.returncode != 0:",
+     "    if False:",
+     CAMPAIGN_TESTS),
+    ("T05 campaign deja de rechazar el arbol vivo por su cuenta", TARGET,
+     "    assert_not_live(repo)\n\n    def run(tests):",
+     "    def run(tests):",
+     CAMPAIGN_TESTS),
+    ("T06 el codigo de salida siempre es cero", TARGET,
+     "    return 0 if not (survived or skipped or invalid) and final.returncode == 0 else 1",
+     "    return 0",
+     CAMPAIGN_TESTS),
+    ("T07 el archivo mutado no se restaura", TARGET,
+     "            path.write_bytes(raw)\n            if path.read_bytes() != raw:",
+     "            pass\n            if False:",
+     CAMPAIGN_TESTS),
+    ("T08 la campana deja de normalizar CRLF antes de buscar el patron", TARGET,
+     '        text = raw.decode("utf-8").replace("\\r\\n", "\\n")',
+     '        text = raw.decode("utf-8")',
+     CAMPAIGN_TESTS),
+    ("T09 un mutante que no cambia nada deja de ser INVALIDO", TARGET,
+     "        if mutated == text:",
+     "        if False:",
+     CAMPAIGN_TESTS),
+    ("T10 failed_id corta en el ultimo :: y no en el primero", TARGET,
+     '    return body.split("::", 1)[1] if "::" in body else body',
+     '    return body.rsplit("::", 1)[1] if "::" in body else body',
+     CAMPAIGN_TESTS),
+    ("T11 el arbol final restaurado deja de exigirse verde", TARGET,
+     "    return 0 if not (survived or skipped or invalid) and final.returncode == 0 else 1",
+     "    return 0 if not (survived or skipped or invalid) else 1",
+     CAMPAIGN_TESTS),
 
     # --- 3.3b.1 the provider's status survives the trip from stream to router ---
     ("S01 el paso vuelve a lanzar un RuntimeError sin status", SCHED,
@@ -164,49 +200,5 @@ MUTANTS = [
 ]
 
 
-def run(tests):
-    return subprocess.run([str(PY), "-m", "pytest", *tests, "-p", "no:cacheprovider",
-                           "-q", "--no-header"], cwd=str(REPO),
-                          capture_output=True, text=True)
-
-
-def main() -> int:
-    print(f"Repositorio bajo mutacion: {REPO}")
-    caught = survived = skipped = invalid = 0
-    for name, relative, old, new, tests in MUTANTS:
-        path = REPO / relative
-        original = path.read_text(encoding="utf-8")
-        if old not in original:
-            print(f"{name}: NO APLICABLE (patron no encontrado)")
-            skipped += 1
-            continue
-        path.write_text(original.replace(old, new, 1), encoding="utf-8")
-        try:
-            result = run(tests)
-            failed = [l.split("::")[-1] for l in result.stdout.splitlines()
-                      if l.startswith("FAILED")]
-            outcome = verdict(result.returncode, result.stdout)
-            if outcome == "CAUGHT":
-                caught += 1
-                print(f"{name}: CAUGHT - cae: {failed[0]}")
-            elif outcome == "INVALIDO":
-                invalid += 1
-                print(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
-            else:
-                survived += 1
-                print(f"{name}: *** SURVIVED ***")
-        finally:
-            path.write_text(original, encoding="utf-8")
-
-    total = caught + survived + skipped + invalid
-    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
-          f"(de {total}; un patron obsoleto o un mutante roto NO salen del denominador)")
-    every = sorted({t for *_, tests in MUTANTS for t in tests})
-    final = run(every)
-    print("Arbol restaurado:", [l for l in final.stdout.splitlines()
-                                if "passed" in l or "failed" in l][-1:])
-    return 1 if survived or skipped or invalid else 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(campaign(MUTANTS, REPO, PY))

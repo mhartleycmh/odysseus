@@ -13,10 +13,10 @@ separately: round 2's runner let a stale pattern quietly leave the denominator.
 
 import os
 import pathlib
-import subprocess
 import sys
 
-from _target import resolve_repo, verdict
+from _target import resolve_repo
+from _target import campaign
 
 REPO = resolve_repo(pathlib.Path(__file__).resolve().parents[2])
 PY = pathlib.Path(sys.executable)
@@ -100,48 +100,6 @@ MUTANTS = [
 ]
 
 
-def run():
-    return subprocess.run([str(PY), "-m", "pytest", *TESTS, "-p", "no:cacheprovider",
-                           "-q", "--no-header"], cwd=str(REPO),
-                          capture_output=True, text=True)
-
-
-def main() -> int:
-    print(f"Repositorio bajo mutacion: {REPO}")
-    caught = survived = skipped = invalid = 0
-    for name, relative, old, new in MUTANTS:
-        path = REPO / relative
-        original = path.read_text(encoding="utf-8")
-        if old not in original:
-            print(f"{name}: NO APLICABLE (patron no encontrado)")
-            skipped += 1
-            continue
-        path.write_text(original.replace(old, new, 1), encoding="utf-8")
-        try:
-            result = run()
-            failed = [l.split("::")[-1] for l in result.stdout.splitlines()
-                      if l.startswith("FAILED")]
-            outcome = verdict(result.returncode, result.stdout)
-            if outcome == "CAUGHT":
-                caught += 1
-                print(f"{name}: CAUGHT - cae: {failed[0]}")
-            elif outcome == "INVALIDO":
-                invalid += 1
-                print(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
-            else:
-                survived += 1
-                print(f"{name}: *** SURVIVED ***")
-        finally:
-            path.write_text(original, encoding="utf-8")
-
-    total = caught + survived + skipped + invalid
-    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
-          f"(de {total}; un patron obsoleto o un mutante roto NO salen del denominador)")
-    final = run()
-    print("Arbol restaurado:", [l for l in final.stdout.splitlines()
-                                if "passed" in l or "failed" in l][-1:])
-    return 1 if survived or skipped or invalid else 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    # The mutants of this round are (name, file, old, new); they all answer to TESTS.
+    sys.exit(campaign([(*m, TESTS) for m in MUTANTS], REPO, PY))
