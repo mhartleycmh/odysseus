@@ -16,7 +16,7 @@ from routes import cmh_workflow_routes as routes
 from src import cmh_workflows as flow
 from src.cmh_cost_policy import (
     ZeroCostViolation, assert_zero_cost, describe, enforced, is_local_endpoint,
-    is_reachable_without_leaving_the_network, is_zero_cost_endpoint, redact_url,
+    is_reachable_without_leaving_the_network, is_zero_cost_endpoint, redact_url, strip_userinfo,
 )
 
 LOCAL = "http://127.0.0.1:59999/v1"
@@ -186,6 +186,19 @@ def test_an_allowed_route_logs_nothing_even_with_the_gate_off(monkeypatch, caplo
 ])
 def test_redact_url_drops_userinfo_query_and_fragment(url, expected):
     assert redact_url(url) == expected
+
+
+@pytest.mark.parametrize("url, expected", [
+    ("https://user:hunter2@openrouter.ai/api/v1", "https://openrouter.ai/api/v1"),
+    # unlike redact_url the query stays: a provider may need ?api-version= to be called at all
+    ("https://u:p@host.example/v1?api-version=2024#x", "https://host.example/v1?api-version=2024#x"),
+    ("http://a:b@[fe80::1]:1234/v1", "http://[fe80::1]:1234/v1"),
+    ("http://u%40a:p%3Ab@127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1"),
+    ("http://127.0.0.1:1234/v1", "http://127.0.0.1:1234/v1"),
+    ("", ""), (None, ""),
+])
+def test_strip_userinfo_removes_the_credential_and_nothing_else(url, expected):
+    assert strip_userinfo(url) == expected
 
 
 def test_redact_url_survives_an_unparsable_url():

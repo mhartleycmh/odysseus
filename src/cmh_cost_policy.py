@@ -113,6 +113,26 @@ def endpoint_scheme(base_url: Optional[str]) -> str:
         return ""
 
 
+def strip_userinfo(base_url: Optional[str]) -> str:
+    """The URL without ``user:pass@``; path, query and fragment stay.
+
+    What a run FREEZES for each candidate. A row whose base_url still carries
+    credentials (ADR-026 lifts them into ``api_key`` on the way in, but a row written
+    before that, or edited through a path that did not split them, still has them)
+    must not put them into ``cmh_workflow_steps.config``. Unlike :func:`redact_url`
+    this keeps the query: a provider may need ``?api-version=`` to be called at all.
+    """
+    if not base_url:
+        return base_url or ""
+    try:
+        parts = urlparse(base_url)
+    except ValueError:
+        return base_url
+    if "@" not in parts.netloc:
+        return base_url
+    return parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1]).geturl()
+
+
 def redact_url(base_url: Optional[str]) -> str:
     """The URL without credentials, query or fragment: safe for a message or an event.
 

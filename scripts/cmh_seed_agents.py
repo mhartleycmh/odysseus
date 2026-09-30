@@ -83,6 +83,23 @@ NO_TOOL_EVIDENCE = {"revisor", "documentador"}
 HUMAN_GATE = {"revisor"}
 
 
+def _read_only(path) -> sqlite3.Connection:
+    """A read-only connection to ``path``.
+
+    The URI comes from ``Path.as_uri()``, which percent-encodes ``#``, ``?`` and spaces.
+    Built by hand, an unescaped ``#`` in the path cut the URI short, dropped
+    ``mode=ro`` and made SQLite create an EMPTY file beside the folder, over which the
+    backup then printed "integrity origen=ok copia=ok".
+    """
+    return sqlite3.connect(f"{pathlib.Path(path).resolve().as_uri()}?mode=ro", uri=True)
+
+
+def _table_names(connection: sqlite3.Connection) -> list:
+    return [row[0] for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
+        "ORDER BY name")]
+
+
 def backup_database(db_path: pathlib.Path, reason: str) -> pathlib.Path:
     """Copy the live database outside the repo and OneDrive, verifying both ends."""
     local = os.environ.get("LOCALAPPDATA")
@@ -100,7 +117,7 @@ def backup_database(db_path: pathlib.Path, reason: str) -> pathlib.Path:
         counter += 1
         target = target_dir / f"app-{reason}-{stamp}-{counter}.db"
 
-    source = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+    source = _read_only(db_path)
     before = source.execute("PRAGMA integrity_check").fetchone()[0]
     if before != "ok":
         source.close()
@@ -108,15 +125,38 @@ def backup_database(db_path: pathlib.Path, reason: str) -> pathlib.Path:
     destination = sqlite3.connect(str(target))
     source.backup(destination)
     destination.close()
+    expected = _table_names(source)
     source.close()
-    check = sqlite3.connect(f"file:{target.as_posix()}?mode=ro", uri=True)
+    check = _read_only(target)
     after = check.execute("PRAGMA integrity_check").fetchone()[0]
+    found = _table_names(check)
     check.close()
     if after != "ok":
         raise RuntimeError(f"La copia no pasa integrity_check: {after}")
+    # integrity_check says "ok" for an empty file too. A copy with other tables than the
+    # source is not a copy, whatever its integrity.
+    if found != expected:
+        raise RuntimeError(f"La copia no tiene las mismas tablas que la base activa: "
+                           f"origen {len(expected)}, copia {len(found)}")
     print(f"Copia previa: {target} ({target.stat().st_size} bytes), "
           f"integrity origen={before} copia={after}")
     return target
+
+
+def has_usable_route(candidates, policy: str) -> bool:
+    """Whether the agents would have somewhere to go.
+
+    Under ``free-cloud-first`` that needs a candidate on a free CLOUD host: a local row
+    alone, such as an Ollama that is still enabled and answers to the local identifier,
+    would have let ``--apply`` write five agents pointing at a runtime nobody serves,
+    while ADR-034 said it stops when there is no free candidate. Under ``local-only`` a
+    local candidate is all there is.
+    """
+    from src.cmh_cost_policy import FREE_HOSTS
+    from src.cmh_provider_router import LOCAL_ONLY
+    if policy == LOCAL_ONLY:
+        return bool(candidates)
+    return any(candidate.get("host") in FREE_HOSTS for candidate in candidates)
 
 
 def instructions_for(role: str) -> str:
@@ -323,7 +363,7 @@ def _main() -> int:
         print("Escribir en la base activa exige --authorized-by (decision §6.4).")
         return 2
 
-    from src.cmh_provider_router import PROVIDER_POLICIES, normalize_policy
+    from src.cmh_provider_router import LOCAL_ONLY, PROVIDER_POLICIES, normalize_policy
     policy = normalize_policy(args.policy)
     if policy is None:
         print(f"--policy '{args.policy}' no existe. "
@@ -368,7 +408,7 @@ def _main() -> int:
         # read-only file read-write until something writes, so a mutant that
         # drops it has no observable effect here. Kept, and declared as
         # unmeasured rather than covered by a test that cannot fail.
-        source = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        source = _read_only(db_path)
         destination = sqlite3.connect(str(scratch))
         source.backup(destination)
         destination.close()
@@ -376,6 +416,12 @@ def _main() -> int:
         os.environ["DATABASE_URL"] = f"sqlite:///{scratch.as_posix()}"
         print(f"SIMULACION sobre una copia desechable: {scratch}")
         print(f"La base real ({db_path}) solo se lee para copiarla; no se migra.")
+    elif not args.apply:
+        # No such file: importing core.database would CREATE a complete database at that
+        # path and the run would end by saying nothing was written.
+        os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+        print(f"La base real ({db_path}) no existe: la simulacion corre sobre una base vacia "
+              f"en memoria y no crea nada en disco.")
 
     from core.database import CMHAgent, SessionLocal
 
@@ -388,9 +434,16 @@ def _main() -> int:
     print(f"Owner: {owner} · proyecto: {args.project} · politica: {policy}")
     print(f"Candidatos resueltos: "
           f"{[c['endpoint_id'] for c in rows[0]['candidates']] or 'NINGUNO'}")
-    if not rows[0]["candidates"]:
-        print("  PENDIENTE: no hay ningun endpoint gratuito registrado todavia. "
-              "Los agentes quedarian sin modelo y ningun flujo podria ejecutarse.")
+    usable = has_usable_route(rows[0]["candidates"], policy)
+    if not usable:
+        if rows[0]["candidates"]:
+            print("  PENDIENTE: solo hay endpoints locales registrados y la politica "
+                  f"'{policy}' necesita al menos uno gratuito de nube (Groq, U1). Un Ollama "
+                  "habilitado cuenta como candidato local y no basta: los agentes quedarian "
+                  "apuntando a un runtime que nadie sirve.")
+        else:
+            print("  PENDIENTE: no hay ningun endpoint gratuito registrado todavia. "
+                  "Los agentes quedarian sin modelo y ningun flujo podria ejecutarse.")
     print(f"\n{'accion':12} {'rol':14} {'nombre':14} {'instrucciones':>13}  workspace")
     for row in rows:
         print(f"{row['action']:12} {row['role']:14} {row['name']:14} "
@@ -406,14 +459,16 @@ def _main() -> int:
         print('  python scripts/cmh_seed_agents.py --apply --authorized-by "<nombre>"')
         return 0
 
-    if not rows[0]["candidates"] and not args.allow_pending:
+    if not usable and not args.allow_pending:
         # After the backup, not before: the candidates need the database, and
         # opening it is what migrates it, so the copy has to exist first.
-        print("\nNo se escribio nada: no hay ningun endpoint gratuito registrado, asi que "
-              "los cinco agentes quedarian sin modelo y ningun flujo podria ejecutarse.")
+        print("\nNo se sembro nada: no hay ningun endpoint gratuito utilizable, asi que "
+              "los cinco agentes quedarian sin modelo o apuntando a un runtime local que "
+              "nadie sirve, y ningun flujo podria ejecutarse.")
         print("Registra antes Groq, LM Studio y deshabilita Ollama (U1, U4, U5), o usa "
               "--allow-pending para sembrar igual.")
-        print("La copia previa de arriba se hizo antes de abrir la base; puedes borrarla.")
+        print("Abrir la base para calcular esto pudo migrarla (init_db): la copia previa de "
+              "arriba es de ANTES de abrirla. Conservala.")
         return 2
 
     with SessionLocal() as db:
@@ -429,7 +484,7 @@ def _main() -> int:
     if still:
         print(f"'{PRESERVE}' sigue en estado: {still.status}")
     if db_path.is_file():
-        check = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
+        check = _read_only(db_path)
         print("integrity_check posterior:",
               check.execute("PRAGMA integrity_check").fetchone()[0])
         check.close()

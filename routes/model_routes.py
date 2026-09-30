@@ -1375,6 +1375,36 @@ def _api_key_fingerprint(api_key: Optional[str]) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
 
 
+def _patched_base_url(raw: str):
+    """``(base_url, key_from_url)`` for a PATCH of an endpoint's base URL.
+
+    The same cleaning the PATCH always did, plus what POST does: ``user:pass@`` is
+    lifted out of the URL (ADR-026, decision of 2026-09-29). PATCH used to store the
+    URL as typed, so an endpoint edited in place kept the credential in its
+    ``base_url`` and it travelled into every run's frozen config.
+    """
+    from src.endpoint_resolver import split_url_credentials
+    base = raw.strip().rstrip("/")
+    for suffix in ("/models", "/chat/completions", "/completions", "/v1/messages"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+    return split_url_credentials(_normalize_base(base))
+
+
+def _apply_base_url_update(ep, body: dict) -> None:
+    """Apply ``body["base_url"]`` to ``ep``. An explicit, non-empty ``api_key`` in the same
+    body wins over the one that was in the URL."""
+    if "base_url" not in body or not isinstance(body["base_url"], str):
+        return
+    base, url_key = _patched_base_url(body["base_url"])
+    if not base:
+        return
+    ep.base_url = base
+    explicit = isinstance(body.get("api_key"), str) and body["api_key"].strip()
+    if url_key and not explicit:
+        ep.api_key = url_key
+
+
 def setup_model_routes(model_discovery):
     router = APIRouter(prefix="/api")
 
@@ -2560,14 +2590,7 @@ def setup_model_routes(model_discovery):
                     _new_key = body["api_key"].strip()
                     # Empty string means "clear it" (e.g. local Ollama no longer needs a key).
                     ep.api_key = _new_key or None
-                if "base_url" in body and isinstance(body["base_url"], str):
-                    _new_base = body["base_url"].strip().rstrip("/")
-                    for _suffix in ("/models", "/chat/completions", "/completions", "/v1/messages"):
-                        if _new_base.endswith(_suffix):
-                            _new_base = _new_base[: -len(_suffix)].rstrip("/")
-                    _new_base = _normalize_base(_new_base)
-                    if _new_base:
-                        ep.base_url = _new_base
+                _apply_base_url_update(ep, body)
             else:
                 ep.is_enabled = not ep.is_enabled
             db.commit()

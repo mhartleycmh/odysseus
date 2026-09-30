@@ -210,7 +210,9 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
     does not change when the winning model does), or what the runtime has
     cached. Never the model of the agent: that is a cloud name.
     """
-    from src.cmh_cost_policy import endpoint_host, is_local_endpoint, is_zero_cost_endpoint
+    from src.cmh_cost_policy import (
+        endpoint_host, is_local_endpoint, is_zero_cost_endpoint, strip_userinfo,
+    )
 
     settings = config or load_quota_config()
     rows = _endpoint_rows(db, owner)
@@ -228,7 +230,8 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
                     continue
                 if not is_zero_cost_endpoint(row, model):
                     continue
-                candidates.append({"endpoint_id": row.id, "endpoint_url": row.base_url,
+                candidates.append({"endpoint_id": row.id,
+                                   "endpoint_url": strip_userinfo(row.base_url),
                                    "model": model, "host": host})
                 break
 
@@ -239,7 +242,8 @@ def resolve_candidates(db, policy: str = DEFAULT_POLICY, owner: Optional[str] = 
         model = local_model or configured_local or _first_cached_model(row)
         if not model:
             continue
-        candidates.append({"endpoint_id": row.id, "endpoint_url": row.base_url,
+        candidates.append({"endpoint_id": row.id,
+                           "endpoint_url": strip_userinfo(row.base_url),
                            "model": model, "host": endpoint_host(row.base_url)})
     return candidates
 

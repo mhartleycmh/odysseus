@@ -500,6 +500,23 @@ def test_a_discovered_model_enters_second_and_a_missing_one_leaves_the_provider_
     assert [c["endpoint_id"] for c in without] == ["groq", "lms"]
 
 
+def test_the_frozen_candidates_carry_no_credential_even_if_the_row_still_does(world):
+    """A row written before ADR-026, or edited through a path that did not split the URL,
+    still has user:pass@ in its base_url. It must not travel into the frozen config."""
+    factory, _, _ = world
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "orr").base_url = "https://revuser:hunter2@openrouter.ai/api/v1"
+        db.get(cdb.ModelEndpoint, "lms").base_url = "http://lmsuser:hunter2@127.0.0.1:59999/v1"
+        db.commit()
+        candidates = resolve_candidates(db, FREE_CLOUD_FIRST, config=CONFIG,
+                                        discovered={"openrouter.ai": "big/model:free"})
+    assert [c["endpoint_id"] for c in candidates] == ["groq", "orr", "lms"]
+    assert "hunter2" not in json.dumps(candidates)
+    urls = {c["endpoint_id"]: c["endpoint_url"] for c in candidates}
+    assert urls["orr"] == "https://openrouter.ai/api/v1"
+    assert urls["lms"] == "http://127.0.0.1:59999/v1"
+
+
 def test_the_cost_gate_still_refuses_a_discovered_model_that_is_not_free(world):
     factory, _, _ = world
     with factory() as db:

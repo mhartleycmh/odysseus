@@ -524,12 +524,31 @@ def _clear_host_dead(url: str) -> None:
 _http_client: Optional[httpx.AsyncClient] = None
 _http_limits = httpx.Limits(max_connections=100, max_keepalive_connections=30, keepalive_expiry=30.0)
 
+class _LocalDirectClient(httpx.AsyncClient):
+    """An AsyncClient that never sends a local route through a proxy.
+
+    httpx honours HTTP_PROXY / HTTPS_PROXY / ALL_PROXY, and NO_PROXY cannot name a
+    private RANGE (it takes hosts, not CIDRs). Under ``local-only``, "nothing leaves
+    the machine" then depended on an environment without a proxy that nobody
+    declares: measured with HTTP_PROXY set, http://127.0.0.1:1234, http://localhost
+    and http://192.168.1.50 all went through the proxy. A route the cost gate calls
+    local (loopback, RFC1918, link-local, unique-local, ``*.local``) is sent through
+    the client's direct transport, whatever the environment says.
+    """
+
+    def _transport_for_url(self, url):
+        from src.cmh_cost_policy import is_reachable_without_leaving_the_network
+        if is_reachable_without_leaving_the_network(url.host):
+            return self._transport
+        return super()._transport_for_url(url)
+
+
 def _get_http_client() -> httpx.AsyncClient:
     """Return process-wide AsyncClient. Per-request timeout is passed at call time."""
     global _http_client
     if _http_client is None or _http_client.is_closed:
         from src.tls_overrides import llm_verify
-        _http_client = httpx.AsyncClient(
+        _http_client = _LocalDirectClient(
             limits=_http_limits, http2=False, verify=llm_verify(),
         )
     return _http_client

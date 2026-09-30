@@ -585,7 +585,8 @@ def test_it_refuses_to_seed_an_empty_chain_and_writes_nothing(tmp_path):
     env = _seed_env(tmp_path, live)
     refused = _run_script(APPLY, env)
     assert refused.returncode == 2, refused.stdout + refused.stderr
-    assert "No se escribio nada" in refused.stdout and "--allow-pending" in refused.stdout
+    assert "No se sembro nada" in refused.stdout and "--allow-pending" in refused.stdout
+    assert "puedes borrarla" not in refused.stdout      # opening the base may have migrated it
     stored = _stored(live)
     assert stored["agents"] == [] and stored["definitions"] == [] and stored["tasks"] == 0
 
@@ -661,3 +662,83 @@ def test_a_console_that_cannot_print_the_names_does_not_end_the_script(tmp_path)
     result = _run_script(APPLY, _seed_env(tmp_path, live, PYTHONIOENCODING="ascii"))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Definicion" in result.stdout
+
+
+# --- review of 2026-09-29: the backup URI, the dry run on nothing, the empty-chain guard ------
+
+def test_the_backup_of_a_path_with_a_hash_and_a_space_copies_the_real_database(
+        tmp_path, monkeypatch):
+    """The URI was built by hand: an unescaped '#' cut it short, dropped mode=ro and made
+    SQLite create an empty file beside the folder, and the script printed
+    'integrity origen=ok copia=ok' over an empty copy."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    folder = tmp_path / "datos #1 de prueba"
+    folder.mkdir()
+    source = folder / "app.db"
+    con = sqlite3.connect(source)
+    con.execute("CREATE TABLE t (a TEXT)")
+    con.execute("INSERT INTO t VALUES ('x')")
+    con.commit()
+    con.close()
+    before = {p.name for p in tmp_path.iterdir()}
+    target = seed.backup_database(source, "prueba")
+    assert sqlite3.connect(target).execute("SELECT a FROM t").fetchone()[0] == "x"
+    assert {p.name for p in tmp_path.iterdir()} - before == {"local"}    # nothing stray beside it
+
+
+def test_a_copy_that_lacks_the_tables_of_the_source_is_refused(tmp_path, monkeypatch):
+    """integrity_check answers 'ok' for an EMPTY file too."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    source = tmp_path / "app.db"
+    con = sqlite3.connect(source)
+    con.execute("CREATE TABLE t (a TEXT)")
+    con.commit()
+    con.close()
+    answers = iter([["a", "b"], []])                   # the source has two tables, the copy none
+    monkeypatch.setattr(seed, "_table_names", lambda connection: next(answers))
+    with pytest.raises(RuntimeError, match="mismas tablas"):
+        seed.backup_database(source, "prueba")
+
+
+def test_a_dry_run_on_a_database_that_does_not_exist_creates_nothing(tmp_path):
+    """Importing core.database creates a complete database at whatever path it is pointed
+    at: the script then ended with 'SIMULACION: no se escribio nada'."""
+    missing = tmp_path / "no-existe" / "app.db"
+    result = _run_script([], _seed_env(tmp_path, missing))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "no existe" in result.stdout and "en memoria" in result.stdout
+    assert not missing.exists() and not missing.parent.exists()
+
+
+def test_local_endpoints_alone_do_not_open_the_gate_of_apply_under_free_cloud_first(tmp_path):
+    """ADR-034 said --apply stops when there is no free candidate. With the live endpoints
+    (two Ollama rows still enabled) the guard never fired: they count as local candidates
+    under the local identifier, and five agents were written pointing at a runtime nobody
+    serves. Under free-cloud-first a free CLOUD candidate is what makes them usable."""
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [("http://127.0.0.1:11434", "local")])
+    before = _stored(live)
+    dry = _run_script([], _seed_env(tmp_path, live))
+    assert "solo hay endpoints locales" in dry.stdout, dry.stdout + dry.stderr
+    refused = _run_script(APPLY, _seed_env(tmp_path, live))
+    assert refused.returncode == 2, refused.stdout + refused.stderr
+    assert "No se sembro nada" in refused.stdout and "puedes borrarla" not in refused.stdout
+    assert _stored(live) == before
+
+
+def test_under_local_only_a_local_endpoint_is_enough(tmp_path):
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [("http://127.0.0.1:11434", "local")])
+    result = _run_script(APPLY + ["--policy", "local-only"], _seed_env(tmp_path, live))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert len(_stored(live)["agents"]) == 5
+
+
+def test_has_usable_route_by_policy():
+    local = {"host": "127.0.0.1"}
+    groq = {"host": "api.groq.com"}
+    assert seed.has_usable_route([groq, local], "free-cloud-first") is True
+    assert seed.has_usable_route([local], "free-cloud-first") is False
+    assert seed.has_usable_route([], "free-cloud-first") is False
+    assert seed.has_usable_route([local], "local-only") is True
+    assert seed.has_usable_route([], "local-only") is False
