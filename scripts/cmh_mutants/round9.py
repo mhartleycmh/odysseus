@@ -28,6 +28,7 @@ FREEZE_TESTS = ["tests/test_cmh_provider_discovery.py"]
 PATCH_TESTS = ["tests/test_cmh_endpoint_patch.py"]
 PROXY_TESTS = ["tests/test_cmh_llm_core_proxy.py"]
 SEED_TESTS = ["tests/test_cmh_seed_scripts.py"]
+STEP_TESTS = ["tests/test_cmh_step_provider_failures.py"]
 
 POLICY = "src/cmh_cost_policy.py"
 WF_ROUTES = "routes/cmh_workflow_routes.py"
@@ -36,6 +37,7 @@ ROUTER = "src/cmh_provider_router.py"
 MODEL_ROUTES = "routes/model_routes.py"
 LLM_CORE = "src/llm_core.py"
 SEED = "scripts/cmh_seed_agents.py"
+SCHEDULER = "src/task_scheduler.py"
 
 #: (name, file, text to replace, replacement, test modules that must fall)
 MUTANTS = [
@@ -222,6 +224,23 @@ MUTANTS = [
      '    for note in rows[0]["dropped"]:',
      "    for note in []:",
      SEED_TESTS),
+    # --- the header a workflow step REALLY sends (r9) -------------------------------
+    # task_scheduler.py builds it twice with the same line: in _run_agent_loop (what every
+    # workflow step runs) and in _execute_research_task (Odysseus's own research task, which
+    # no CMH flow calls). Only the first is reachable from call_model; the pattern carries
+    # the line that follows it so that it names one site and not both.
+    ("P10 el ejecutor del paso no pone la cabecera Authorization de la fila", SCHEDULER,
+     "                    headers = build_headers(ep.api_key, normalize_base(ep.base_url))\n"
+     "            finally:",
+     "                    headers = {}\n"
+     "            finally:",
+     STEP_TESTS),
+    ("P11 el ejecutor del paso envia siempre Bearer, tambien un Basic ya armado", SCHEDULER,
+     "                    headers = build_headers(ep.api_key, normalize_base(ep.base_url))\n"
+     "            finally:",
+     '                    headers = {"Authorization": "Bearer " + str(ep.api_key)}\n'
+     "            finally:",
+     STEP_TESTS),
 ]
 
 

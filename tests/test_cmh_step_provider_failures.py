@@ -13,6 +13,7 @@ Here only the network is fake. The path under test is
 ``MockTransport``, so every layer between the step and the socket is real.
 """
 
+import base64
 import json
 
 import httpx
@@ -64,11 +65,13 @@ class Network:
     def __init__(self):
         self.groq = "ok"
         self.hits = []
+        self.authorization = {}     # host -> the Authorization header of its last request
         self.error_body = "simulated"
         self.groq_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.hits.append(request.url.host)
+        self.authorization[request.url.host] = request.headers.get("authorization")
         if request.url.host == "api.groq.com":
             self.groq_calls += 1
             mode = self.groq
@@ -345,3 +348,48 @@ async def test_the_scheduler_forwards_how_many_rounds_the_reported_totals_cover(
     assert forwarded[0]["rounds"] == 3
     assert (forwarded[0]["input_tokens"], forwarded[0]["output_tokens"]) == (30, 9)
     assert "usage_buckets" not in forwarded[0]
+
+
+# --- the header a step REALLY sends (review of revision-fase1-r8, P2 nº2) ------------------------
+#
+# tests/test_cmh_endpoint_patch.py builds the header with its own call to build_headers and sends
+# it through a MockTransport: that proves the helper, not the sender. The sender is
+# TaskScheduler._run_agent_loop, which opens ``core.database.SessionLocal`` INSIDE the function;
+# the `chain` fixture above patches only ``flow.SessionLocal``, so the scheduler read another,
+# empty database, found no row and sent NO Authorization at all, and nothing noticed: the
+# mutants that replaced the call by ``headers = {}`` or by a hard-coded Bearer survived (measured
+# by three lenses). This fixture points the scheduler at the same database, and the tests read
+# the header at the transport, after call_model -> _run_one_candidate -> _run_agent_loop ->
+# stream_agent_loop -> stream_llm.
+
+BASIC = "Basic " + base64.b64encode(b"bob:s3cret").decode()
+
+
+@pytest.fixture
+def keyed_chain(chain, monkeypatch):
+    net, factory, workspace = chain
+    monkeypatch.setattr(cdb, "SessionLocal", factory)
+    return net, factory, workspace
+
+
+def _set_keys(factory, **keys):
+    with factory() as session:
+        for endpoint_id, key in keys.items():
+            session.get(cdb.ModelEndpoint, endpoint_id).api_key = key
+        session.commit()
+
+
+async def test_a_step_sends_each_provider_the_authorization_of_its_own_row(keyed_chain):
+    net, factory, workspace = keyed_chain
+    _set_keys(factory, groq="gsk-TEST-DUMMY", openrouter="sk-or-TEST-DUMMY")
+    net.groq = "429"                     # Groq refuses, so BOTH hosts are called
+    assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_OPENROUTER"
+    assert net.authorization == {"api.groq.com": "Bearer gsk-TEST-DUMMY",
+                                 "openrouter.ai": "Bearer sk-or-TEST-DUMMY"}
+
+
+async def test_a_credential_lifted_from_the_url_reaches_the_provider_as_basic(keyed_chain):
+    net, factory, workspace = keyed_chain
+    _set_keys(factory, groq=BASIC)
+    assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_GROQ"
+    assert net.authorization["api.groq.com"] == BASIC
