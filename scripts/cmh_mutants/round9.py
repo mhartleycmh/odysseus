@@ -171,9 +171,44 @@ MUTANTS = [
      '        check = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)\n'
      '        print("integrity_check posterior:",',
      SEED_TESTS),
-    ("Z11 --apply sobre una base que no existe la siembra en memoria", SEED,
-     "    elif not args.apply:",
-     "    elif True:",
+    ("Z11 --apply sobre una base que no existe se siembra en memoria (ninguna rama de memoria excluye ya a --apply)", SEED,
+     ('    if args.apply:\n'
+     '        if db_path.is_file():\n'
+     '            backup_database(db_path, "before-seed-agents")\n'
+     '    elif db_path.is_file():\n'
+     '        scratch = pathlib.Path(tempfile.gettempdir()) / f"cmh-seed-dryrun-{os.getpid()}.db"\n'
+     "        _SCRATCH[0] = scratch   # removed in main()'s finally, however this ends\n"
+     '        # mode=ro is defence, not a measurable guarantee: SQLite happily opens a\n'
+     '        # read-only file read-write until something writes, so a mutant that\n'
+     '        # drops it has no observable effect here. Kept, and declared as\n'
+     '        # unmeasured rather than covered by a test that cannot fail.\n'
+     '        source = _read_only(db_path)\n'
+     '        destination = sqlite3.connect(str(scratch))\n'
+     '        source.backup(destination)\n'
+     '        destination.close()\n'
+     '        source.close()\n'
+     '        os.environ["DATABASE_URL"] = f"sqlite:///{scratch.as_posix()}"\n'
+     '        print(f"SIMULACION sobre una copia desechable: {scratch}")\n'
+     '        print(f"La base real ({db_path}) solo se lee para copiarla; no se migra.")\n'
+     '    elif not args.apply:\n'),
+     ('    if args.apply and db_path.is_file():\n'
+     '        backup_database(db_path, "before-seed-agents")\n'
+     '    elif db_path.is_file():\n'
+     '        scratch = pathlib.Path(tempfile.gettempdir()) / f"cmh-seed-dryrun-{os.getpid()}.db"\n'
+     "        _SCRATCH[0] = scratch   # removed in main()'s finally, however this ends\n"
+     '        # mode=ro is defence, not a measurable guarantee: SQLite happily opens a\n'
+     '        # read-only file read-write until something writes, so a mutant that\n'
+     '        # drops it has no observable effect here. Kept, and declared as\n'
+     '        # unmeasured rather than covered by a test that cannot fail.\n'
+     '        source = _read_only(db_path)\n'
+     '        destination = sqlite3.connect(str(scratch))\n'
+     '        source.backup(destination)\n'
+     '        destination.close()\n'
+     '        source.close()\n'
+     '        os.environ["DATABASE_URL"] = f"sqlite:///{scratch.as_posix()}"\n'
+     '        print(f"SIMULACION sobre una copia desechable: {scratch}")\n'
+     '        print(f"La base real ({db_path}) solo se lee para copiarla; no se migra.")\n'
+     '    elif True:\n'),
      SEED_TESTS),
     ("Z12 un endpoint de nube sin clave cuenta como ruta utilizable", SEED,
      '               and (keyed is None or candidate.get("endpoint_id") in keyed)',
