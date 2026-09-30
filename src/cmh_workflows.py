@@ -309,13 +309,21 @@ async def call_model(config: dict, prompt: str) -> str:
         # Accounting must never take a step down with it. A write that fails
         # after the model has answered would throw away the artifact (defect N1
         # of an earlier round did exactly that with a NULL endpoint id), so it
-        # is logged and the step goes on.
+        # is logged and the step goes on. It is also said in the run: a quota that is
+        # under-counted without a trace is the failure this function exists to avoid, and
+        # the log is not where the run's reader looks. The event may itself fail if it was
+        # the database that failed, and then the log is all there is.
         try:
             with SessionLocal() as db:
                 record_usage(db, candidate["endpoint_id"], **usage)
                 db.commit()
-        except Exception:
+        except Exception as exc:
             logger.exception("Could not charge quota to endpoint %s", candidate.get("endpoint_id"))
+            try:
+                record("quota_write_failed", endpoint_id=candidate.get("endpoint_id"),
+                       error_type=type(exc).__name__)
+            except Exception:
+                logger.exception("Could not record quota_write_failed for run %s", config.get("run_id"))
 
     last_error: Exception | None = None
     for index, candidate in enumerate(ready):
@@ -353,9 +361,12 @@ async def call_model(config: dict, prompt: str) -> str:
             # only makes the router leave a provider early, under-estimating
             # makes it walk into a 429. Not when the attempt already reported
             # its usage (the failure came after the loop finished): that would
-            # count the same call twice. A partial attempt that dies mid-loop is
-            # charged one request and no tokens, because the loop reports its
-            # totals only when it ends.
+            # count the same call twice. An attempt that dies mid-loop reports what
+            # it had spent in an agent_terminal chunk, which the scheduler forwards as
+            # model_metrics with failed=true, so it was charged by `charging` above. Only
+            # one that dies without reporting anything (a refusal before the first
+            # round, a failure before the request left) is charged here: one request,
+            # no tokens. That can over-count a request that never went out.
             if not charged["any"]:
                 charge(candidate, requests=1)
             reason = is_fallback_error(exc)

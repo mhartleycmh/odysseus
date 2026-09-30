@@ -284,6 +284,24 @@ async def test_an_attempt_that_fails_after_reporting_its_usage_is_not_charged_tw
     assert (day["requests"], day["tokens_in"], day["tokens_out"]) == (1, 7, 3)
 
 
+async def test_a_failing_quota_write_is_said_in_the_run_as_well_as_in_the_log(chain, monkeypatch):
+    """Under-counted quota with no trace in the run was the failure: the log is not where the
+    run's reader looks. The event names the endpoint and the error's type, never its text."""
+    net, factory, workspace = chain
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked: sk-SENTINEL-SECRET")
+
+    monkeypatch.setattr(router, "record_usage", broken)
+    assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_GROQ"
+    with factory() as session:
+        events = [json.loads(e.payload) for e in session.query(cdb.CMHWorkflowEvent).filter(
+            cdb.CMHWorkflowEvent.kind == "quota_write_failed").all()]
+    assert len(events) == 1
+    assert (events[0]["endpoint_id"], events[0]["error_type"]) == ("groq", "RuntimeError")
+    assert "sk-SENTINEL-SECRET" not in json.dumps(events)
+
+
 async def test_a_failing_quota_write_does_not_take_the_step_down(chain, monkeypatch):
     """N1 of an earlier round: a quota write that failed after the model had
     answered threw the artifact away."""

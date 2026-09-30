@@ -103,6 +103,22 @@ test('buildTrace produces timed spans for steps, tools, model calls and approval
   assert.equal(trace.tokensIn + trace.tokensOut, 4714 + 681);
 });
 
+test('an attempt that died reports its tokens but is drawn as an error, not as a model answer', () => {
+  const at = '2026-09-24T15:00:05Z';
+  const events = [
+    { seq: 1, kind: 'step_started', stepKey: 'investigador', payload: {}, at: '2026-09-24T15:00:00Z' },
+    { seq: 2, kind: 'model_metrics', stepKey: 'investigador', at,
+      payload: { metrics: { model: 'm-groq', input_tokens: 20, output_tokens: 10, rounds: 3, failed: true } } },
+    { seq: 3, kind: 'model_metrics', stepKey: 'investigador', at,
+      payload: { metrics: { model: 'm-or', input_tokens: 3, output_tokens: 2, rounds: 1 } } },
+  ];
+  const trace = buildTrace(events.reduce(applyEvent, sampleExecution()), events);
+  const models = trace.spans.filter((s) => s.kind === 'modelo');
+  assert.deepEqual(models.map((s) => [s.name, s.status, s.tokens]), [['m-groq', 'error', 30], ['m-or', 'ok', 5]]);
+  assert.equal(trace.errors, 1, 'the dead attempt counts as one error');
+  assert.equal(trace.tokensIn + trace.tokensOut, 35, 'its tokens are still spent tokens');
+});
+
 test('topoOrder puts dependencies first; isFresh ignores old events', () => {
   assert.deepEqual(topoOrder(sampleExecution().steps), ['investigador', 'revisor']);
   const now = Date.parse('2026-09-24T15:00:10Z');

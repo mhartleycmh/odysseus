@@ -275,8 +275,12 @@ export function buildTrace(execution, events) {
       tokensIn += input;
       tokensOut += output;
       const seconds = num(metrics.response_time);
+      // An attempt that died (failed: true) also reports what it had spent, and the tokens are
+      // real; but it is not a model answer that succeeded, so it is drawn as an error.
+      const failed = metrics.failed === true;
+      if (failed) errors += 1;
       spans.push({ id: `m-${event.seq}`, name: String(metrics.model || payload.model || 'modelo'), kind: 'modelo', stepKey: key,
-                   startMs: Math.max(0, at - Math.round(seconds * 1000)), durationMs: Math.round(seconds * 1000), status: 'ok', tokens: input + output });
+                   startMs: Math.max(0, at - Math.round(seconds * 1000)), durationMs: Math.round(seconds * 1000), status: failed ? 'error' : 'ok', tokens: input + output });
     } else if (event.kind === 'step_approval_requested') {
       const span = { id: `a-${event.seq}`, name: `aprobación ${key}`, kind: /** @type {const} */ ('aprobacion'), stepKey: key, startMs: at, durationMs: 0, status: /** @type {'running'} */ ('running'), tokens: 0 };
       spans.push(span);
