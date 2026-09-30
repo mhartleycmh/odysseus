@@ -156,3 +156,105 @@ def test_failed_id_takes_everything_after_the_first_double_colon():
     line = "FAILED tests/test_x.py::test_a[[fe80::1]] - AssertionError: assert False"
     assert target.failed_id(line) == "test_a[[fe80::1]]"
     assert target.failed_id("FAILED tests/test_x.py::test_plain - boom") == "test_plain"
+
+
+# --- review of revision-fase1-r7: what the first tests of the loop still let through ---------
+
+def test_the_baseline_runs_the_union_of_every_mutants_tests_not_just_the_first(tmp_path, capsys):
+    """Round4, round5 and round9 designate different modules per mutant. A baseline over only
+    the first mutant's tests would miss a red test in another module, and with it every mutant
+    of that module would 'fall' again, the defect of the baseline itself."""
+    root = toy(tmp_path)
+    (root / "tests" / "test_other.py").write_text("def test_red():\n    assert False\n",
+                                                  encoding="utf-8")
+    before = (root / "mod.py").read_bytes()
+    code = run(root, mutant("M1", "return x * 2", "return x * 3"),
+               mutant("M2", "return x + 1", "return x + 2", ["tests/test_other.py"]))
+    assert code == 4
+    assert "LINEA BASE ROJA" in capsys.readouterr().out
+    assert (root / "mod.py").read_bytes() == before
+
+
+def test_the_summary_line_counts_every_outcome_and_keeps_them_in_the_total(tmp_path, capsys):
+    root = toy(tmp_path)
+    code = run(root,
+               mutant("CAUGHT", "return x * 2", "return x * 3"),
+               mutant("SURVIVED", "return x + 1", "return x + 2"),
+               mutant("BROKEN", "return len(label)", "return len(label) +"),
+               mutant("OBSOLETE", "return x * 99", "return x * 100"))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "1 CAUGHT - 1 SURVIVED - 1 INVALIDOS - 1 NO APLICABLE (de 4;" in out
+
+
+@pytest.mark.parametrize("escape", ["../outside.py", "ABSOLUTE"])
+def test_a_mutant_may_only_name_a_file_inside_the_export(tmp_path, escape):
+    """The live-tree guard looks at the repo folder. A path with '..' or an absolute one was
+    opened, mutated and restored OUTSIDE it."""
+    root = toy(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("def f(x):\n    return x * 2\n", encoding="utf-8")
+    relative = str(outside) if escape == "ABSOLUTE" else escape
+    before = outside.read_bytes()
+    with pytest.raises(SystemExit, match="fuera del repositorio"):
+        run(root, ("ESC", relative, "x * 2", "x * 99", TESTS))
+    assert outside.read_bytes() == before
+
+
+@pytest.mark.parametrize("as_file", [False, True])
+def test_a_git_file_or_folder_both_mark_a_working_tree(tmp_path, monkeypatch, as_file):
+    """In a git worktree .git is a FILE: .is_dir() would have let it through."""
+    monkeypatch.delenv("CMH_MUTANT_ALLOW_LIVE", raising=False)
+    root = toy(tmp_path)
+    (root / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8") if as_file \
+        else (root / ".git").mkdir()
+    with pytest.raises(SystemExit, match="arbol vivo"):
+        run(root, mutant("M1", "return x * 2", "return x * 3"))
+
+
+@pytest.mark.parametrize("value", ["0", "", "true", "yes"])
+def test_only_the_value_one_lifts_the_working_tree_guard(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("CMH_MUTANT_ALLOW_LIVE", value)
+    root = toy(tmp_path, git=True)
+    with pytest.raises(SystemExit, match="arbol vivo"):
+        run(root, mutant("M1", "return x * 2", "return x * 3"))
+
+
+def test_the_value_one_does_lift_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CMH_MUTANT_ALLOW_LIVE", "1")
+    root = toy(tmp_path, git=True)
+    assert run(root, mutant("M1", "return x * 2", "return x * 3")) == 0
+
+
+@pytest.mark.parametrize("line, expected", [
+    ("FAILED tests/t.py::test_x[carpeta OneDrive-guardado en OneDrive - CMH] - AssertionError: assert False",
+     "test_x[carpeta OneDrive-guardado en OneDrive - CMH]"),
+    ("FAILED tests/t.py::test_x[a] - AssertionError: assert [1] == [2]", "test_x[a]"),
+    ("FAILED tests/t.py::test_plain - boom [x]", "test_plain"),
+    ("FAILED tests/t.py::test_a[[fe80::1]] - boom", "test_a[[fe80::1]]"),
+    ("FAILED tests/t.py::test_bare", "test_bare"),
+])
+def test_failed_id_keeps_brackets_with_a_dash_inside_and_drops_the_message(line, expected):
+    assert target.failed_id(line) == expected
+
+
+class _Recorder(__import__("io").StringIO):
+    flushes = 0
+
+    def flush(self):
+        type(self).flushes += 1
+        super().flush()
+
+
+def test_progress_is_flushed_and_the_file_being_mutated_is_announced(tmp_path, monkeypatch):
+    """A campaign redirected to a file showed nothing until it ended, and a killed one left a
+    mutant in place without a word: each line is flushed and the mutated file is named first."""
+    root = toy(tmp_path)
+    recorder = _Recorder()
+    _Recorder.flushes = 0
+    monkeypatch.setattr(sys, "stdout", recorder)
+    assert run(root, mutant("M1", "return x * 2", "return x * 3")) == 0
+    out = recorder.getvalue()
+    assert "(mutando mod.py para M1)" in out
+    assert "Arbol restaurado (las pruebas que designan los mutantes, no el modulo entero)" in out
+    assert _Recorder.flushes >= 5          # header, announcement, verdict, summary, restored tree

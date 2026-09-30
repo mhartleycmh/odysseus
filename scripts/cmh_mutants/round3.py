@@ -1,4 +1,5 @@
-"""The 10 mutants the third independent review left alive, plus 4 of my own.
+"""The mutants the third independent review left alive, plus some of my own: 13 after
+three equivalent ones were retired (see the list; the campaign prints the count).
 
 Run it against an EXPORT of the tag, never the live tree: the third review had
 to repoint round2.py by hand because it wrote mutations into versioned files
@@ -68,9 +69,9 @@ MUTANTS = [
     # local_model=agent.model; that decision was reversed (a Groq agent's model is
     # not a name any local runtime serves), so the mutant now REINTRODUCES it.
     ("R12 _snapshot vuelve a pasar el modelo del agente al candidato local", WF,
-     '    candidates = resolve_candidates(db, policy, owner, discovered=discovered)',
+     '    candidates = resolve_candidates(db, policy, owner, discovered=discovered, dropped=dropped)',
      '    candidates = resolve_candidates(db, policy, owner, local_model=agent.model,\n'
-     '                                    discovered=discovered)'),
+     '                                    discovered=discovered, dropped=dropped)'),
 
     ("R14 la copia de simulacion usa nombre fijo, no el pid", SEED,
      'f"cmh-seed-dryrun-{os.getpid()}.db"', '"cmh-seed-dryrun.db"'),

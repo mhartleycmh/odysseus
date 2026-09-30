@@ -13,9 +13,15 @@ cannot be fooled by a path that merely looks like a copy. The check lives in
 ``resolve_repo`` and handed ``campaign`` the live tree used to be obeyed.
 """
 
+import functools
 import os
 import pathlib
+import re
 import subprocess
+
+#: A campaign runs for tens of minutes with its output redirected to a file: without a
+#: flush nothing shows until the end, and a killed run loses every line.
+say = functools.partial(print, flush=True)
 
 
 def verdict(returncode: int, stdout: str) -> str:
@@ -40,9 +46,17 @@ def failed_id(line: str) -> str:
     """The test id of a ``FAILED`` line, parameters included.
 
     Splitting on the last ``::`` cut ``[fe80::1]`` to ``1]``: an id may contain
-    ``::`` itself. The module part ends at the FIRST ``::``.
+    ``::`` itself. The module part ends at the FIRST ``::``. And an id may contain
+    `` - `` inside its brackets (``[carpeta OneDrive-guardado en OneDrive - CMH]``), so
+    when the id opens a bracket the message starts after the bracket that closes it.
     """
-    body = line[len("FAILED "):].split(" - ")[0]
+    rest = line[len("FAILED "):]
+    head = rest.split(" - ")[0]
+    if "[" in head:
+        closed = re.match(r"(.*?\])(?: - |$)", rest)
+        body = closed.group(1) if closed else head
+    else:
+        body = head
     return body.split("::", 1)[1] if "::" in body else body
 
 
@@ -74,6 +88,12 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
       is green.
     """
     assert_not_live(repo)
+    root = pathlib.Path(repo).resolve()
+    for _, relative, *_ in mutants:
+        if not (root / relative).resolve().is_relative_to(root):
+            # The guard above looks only at ``repo``. A relative path with ``..`` or an
+            # absolute one was opened, mutated and restored OUTSIDE the export.
+            raise SystemExit(f"El mutante apunta fuera del repositorio bajo mutacion: {relative}")
 
     def run(tests):
         return subprocess.run([str(py), "-m", "pytest", *tests, "-p", "no:cacheprovider",
@@ -81,11 +101,11 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
                               capture_output=True, text=True)
 
     every = sorted({t for *_, tests in mutants for t in tests})
-    print(f"Repositorio bajo mutacion: {repo}")
+    say(f"Repositorio bajo mutacion: {repo}")
     baseline = run(every)
     if baseline.returncode != 0:
-        print("LINEA BASE ROJA: las pruebas fallan SIN mutar nada; ningun veredicto valdria.")
-        print("\n".join(baseline.stdout.splitlines()[-12:]))
+        say("LINEA BASE ROJA: las pruebas fallan SIN mutar nada; ningun veredicto valdria.")
+        say("\n".join(baseline.stdout.splitlines()[-12:]))
         return 4
 
     caught = survived = skipped = invalid = 0
@@ -95,14 +115,17 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
         crlf = b"\r\n" in raw
         text = raw.decode("utf-8").replace("\r\n", "\n")
         if old not in text:
-            print(f"{name}: NO APLICABLE (patron no encontrado)")
+            say(f"{name}: NO APLICABLE (patron no encontrado)")
             skipped += 1
             continue
         mutated = text.replace(old, new, 1)
         if mutated == text:
-            print(f"{name}: *** INVALIDO - el mutante no cambia nada ***")
+            say(f"{name}: *** INVALIDO - el mutante no cambia nada ***")
             invalid += 1
             continue
+        # Killed from outside (a timeout, the task manager) the ``finally`` below does not run
+        # and the file stays mutated: say which one is, before it is.
+        say(f"   (mutando {relative} para {name})")
         path.write_bytes((mutated.replace("\n", "\r\n") if crlf else mutated).encode("utf-8"))
         try:
             result = run(tests)
@@ -110,26 +133,28 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
             outcome = verdict(result.returncode, result.stdout)
             if outcome == "CAUGHT":
                 caught += 1
-                print(f"{name}: CAUGHT - cae: {failed[0]}")
+                say(f"{name}: CAUGHT - cae: {failed[0]}")
             elif outcome == "INVALIDO":
                 invalid += 1
-                print(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
+                say(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
             else:
                 survived += 1
-                print(f"{name}: *** SURVIVED ***")
+                say(f"{name}: *** SURVIVED ***")
         finally:
             path.write_bytes(raw)
             if path.read_bytes() != raw:
                 raise RuntimeError(f"No se pudo restaurar {relative} byte a byte")
 
     total = caught + survived + skipped + invalid
-    print(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
-          f"(de {total}; un patron obsoleto o un mutante roto NO salen del denominador)")
+    say(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
+        f"(de {total}; un patron obsoleto o un mutante roto NO salen del denominador)")
     final = run(every)
     summary = [l for l in final.stdout.splitlines() if "passed" in l or "failed" in l][-1:]
-    print("Arbol restaurado:", summary)
+    # The pytest line counts the tests the mutants DESIGNATE (the union in ``every``), not the
+    # whole module: round7 restores on 9 of its module's 45 tests.
+    say("Arbol restaurado (las pruebas que designan los mutantes, no el modulo entero):", summary)
     if final.returncode != 0:
-        print("El arbol restaurado NO esta verde.")
+        say("El arbol restaurado NO esta verde.")
     return 0 if not (survived or skipped or invalid) and final.returncode == 0 else 1
 
 

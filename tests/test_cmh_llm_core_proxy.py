@@ -55,3 +55,12 @@ def test_a_remote_route_still_uses_the_proxy(proxied, url):
     """The rule is 'what the gate calls local', not 'everything': a cloud call keeps the
     proxy the machine is configured with (100.64.0.0/10 is NOT local, ADR-032)."""
     assert proxied._transport_for_url(httpx.URL(url)) is not proxied._transport
+
+
+def test_the_private_httpx_method_the_client_overrides_still_exists():
+    """_LocalDirectClient overrides httpx's private _transport_for_url, and requirements.txt
+    asks for httpx without a version. If an upgrade renames it, the override would silently
+    stop being called and local routes would go through the proxy again: fail here, not there."""
+    assert callable(getattr(httpx.AsyncClient, "_transport_for_url", None))
+    override = llm_core._LocalDirectClient.__dict__.get("_transport_for_url")
+    assert override is not None and override is not httpx.AsyncClient._transport_for_url

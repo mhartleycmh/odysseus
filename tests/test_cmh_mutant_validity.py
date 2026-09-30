@@ -36,7 +36,8 @@ def _verdict():
 def _mutants(runner: str):
     """(name, file, old, new) of every mutant, read from the runner's source.
 
-    Parsed, not imported: round2 runs its whole campaign at import time.
+    Parsed, not imported: importing a runner resolves REPO and PY, and this only needs the
+    mutant lists. (round2 used to run its whole campaign at import time; it no longer does.)
     """
     tree = ast.parse((MUTANTS_DIR / runner).read_text(encoding="utf-8"))
     constants = {}

@@ -84,3 +84,13 @@ def test_no_runner_carries_an_absolute_path_to_a_tree(runner):
     """The defect itself: a drive-letter path literal that pointed at the live tree."""
     source = (MUTANTS / runner).read_text(encoding="utf-8")
     assert not _DRIVE_PATH.search(source), runner
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_every_runner_hands_its_mutants_to_campaign_and_has_no_loop_of_its_own(runner):
+    """Replacing each round's private loop with campaign() closed P2 n16, and nothing held it:
+    a runner ending in sys.exit(0) would mutate nothing and exit green, and pass every test
+    here."""
+    source = (MUTANTS / runner).read_text(encoding="utf-8")
+    assert re.search(r"^\s*sys\.exit\(campaign\(.*\bREPO, PY\)\)", source, re.MULTILINE), runner
+    assert "subprocess" not in source and "write_text" not in source, runner

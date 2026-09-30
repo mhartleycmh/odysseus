@@ -1,9 +1,11 @@
 """Mutants for step 3.4: the local bench and preload scripts (PowerShell 5.1).
 
-Each mutant names the ONE test that must fall, by node id, so a campaign of 15
-runs takes a minute or two instead of the two minutes each full pass of the module
-costs. The test that is named is the one that claims to pin the behaviour; the
-final pass runs the whole module once.
+Each mutant names the ONE test that must fall, by node id, so a campaign takes
+minutes instead of a full pass of the module per mutant. The test that is named is
+the one that claims to pin the behaviour. The pass that closes the campaign runs the
+UNION of the named tests, not the whole module: "Arbol restaurado: N passed" counts
+those (40 of the module's tests when r7 closed), and three tests of r6 are named by
+no mutant (see ADR-036).
 
 Run it against an EXPORT of a commit, never the live tree. The runner refuses a
 directory that contains .git (see _target.py).
@@ -55,8 +57,8 @@ MUTANTS = [
      '                $rateTokens += ($r.Tokens - 1); $rateSeconds += $r.TotalSeconds',
      RUNS_UNDER_PS51),
     ("B05 entre candidatos descarga todo, no solo lo que cargo", BENCH,
-     '    [void](Invoke-Lms @("unload", $Identifier))\n    $loadWatch = ',
-     '    [void](Invoke-Lms @("unload", "--all"))\n    $loadWatch = ',
+     '    [void](Invoke-Lms @("unload", $Identifier))\n    return (@(Get-LoadedIdentifiers)',
+     '    [void](Invoke-Lms @("unload", "--all"))\n    return (@(Get-LoadedIdentifiers)',
      only("test_the_bench_never_unloads_cmh_local_by_name_and_measures_under_its_own_identifier")),
     ("B06 descarga lo que el usuario tiene cargado sin -UnloadOthers", BENCH,
      '    if (-not $UnloadOthers) {',
@@ -97,7 +99,7 @@ MUTANTS = [
      '"--identifier", $Identifier, "--ttl", "60", "-y")',
      only("test_start_loads_with_offload_context_and_identifier_and_without_a_ttl")),
     ("S03 vuelve a cargar aunque ya este cargado", START,
-     'if ($mine.Count -gt 0 -and $mine[0].Model -ieq $Model) {',
+     'if ($mine.Count -gt 0 -and (Test-SameModel $mine[0].Model $Model)) {',
      'if ($false) {',
      only("test_start_does_nothing_when_the_identifier_is_already_loaded_with_that_model")),
     ("S04 lms se llama con ErrorActionPreference=Stop: el stderr aborta el guion", START,
@@ -189,7 +191,7 @@ MUTANTS = [
      '    if ($false) {',
      only("test_start_refuses_to_unload_what_the_user_has_loaded_without_the_switch")),
     ("S07 start.ps1 da por bueno cualquier modelo bajo el identificador", START,
-     'if ($mine.Count -gt 0 -and $mine[0].Model -ieq $Model) {',
+     'if ($mine.Count -gt 0 -and (Test-SameModel $mine[0].Model $Model)) {',
      'if ($mine.Count -gt 0) {',
      only("test_start_checks_the_model_behind_an_identifier_that_is_already_loaded")),
     ("S08 el codigo de salida de lms ps se ignora", START,
@@ -224,6 +226,52 @@ MUTANTS = [
      'exec powershell -NoProfile -ExecutionPolicy Bypass -File',
      'exec powershell -NoProfile -File',
      only("test_each_ps1_has_a_posix_wrapper_that_passes_bypass")),
+
+    # --- r8 (review of r7: GUI-R7-01..04, -08, -09, -12, -13, PM-17) ---------------------------------
+    ("B32 el banco acepta medir bajo el identificador del respaldo del router", BENCH,
+     "if ($Identifier -eq $RouterIdentifier) {",
+     "if ($false) {",
+     only("test_bench_refuses_to_measure_under_the_identifier_of_the_routers_fallback")),
+    ("B33 tras descargar lo suyo el banco no comprueba que se fue", BENCH,
+     "    return (@(Get-LoadedIdentifiers) -contains $Identifier)",
+     "    return $false",
+     only("test_bench_stops_when_its_own_identifier_is_still_loaded_after_an_unload")),
+    ("B34 un cmh-bench de una corrida caida se descarga sin decirlo", BENCH,
+     "if ($loadedNow -contains $Identifier) {",
+     "if ($false) {",
+     only("test_a_leftover_cmh_bench_from_a_crashed_run_is_its_own_and_is_said")),
+    ("B35 un cmh-bench viejo cuenta como modelo ajeno", BENCH,
+     "$others = @($loadedNow | Where-Object { $_ -ne $Identifier })",
+     "$others = @($loadedNow)",
+     only("test_a_leftover_cmh_bench_does_not_count_as_somebody_elses_model")),
+    ("B36 el primer token cuenta en la velocidad", BENCH,
+     "$rateTokens += ($r.Tokens - 1)",
+     "$rateTokens += $r.Tokens",
+     only("test_the_rate_leaves_out_the_first_token_of_each_measured_round")),
+    ("B37 el modelo sin velocidad medible se ordena primero", BENCH,
+     "{ if ($null -eq $_.TokensPerSec) { -1 } else { $_.TokensPerSec } }",
+     "{ if ($null -eq $_.TokensPerSec) { 1000000 } else { $_.TokensPerSec } }",
+     only("test_a_model_with_no_measurable_speed_ranks_last_and_the_output_says_so")),
+    ("B38 el ganador sin velocidad medible se anuncia con un hueco", BENCH,
+     "$speed = if ($null -eq $winner.TokensPerSec) {",
+     "$speed = if ($false) {",
+     only("test_a_model_with_no_measurable_speed_ranks_last_and_the_output_says_so")),
+    ("B39 los modelos de la lista ya no se recortan", BENCH,
+     "ForEach-Object { $_.Trim() }",
+     "ForEach-Object { $_ }",
+     only("test_a_comma_separated_list_binds_as_several_models_even_through_file")),
+    ("S17 start.ps1 exige igualdad estricta del modelo (la clave parcial falla)", START,
+     "    return ($Loaded.IndexOf($Asked, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or",
+     "    return $false -or",
+     only("test_start_accepts_a_partial_key_that_lms_resolved")),
+    ("S18 start.ps1 no acepta una clave con espacios partida por celdas", START,
+     "           ($Asked.IndexOf($Loaded, [StringComparison]::OrdinalIgnoreCase) -ge 0)",
+     "           $false",
+     only("test_start_accepts_a_model_key_with_spaces")),
+    ("S19 start.ps1 dice Ya esta cargado con otro modelo en la memoria", START,
+     "    if ($extra.Count -eq 0) {",
+     "    if ($true) {",
+     only("test_start_does_not_say_already_loaded_while_another_model_shares_the_memory")),
 ]
 
 

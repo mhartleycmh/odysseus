@@ -159,6 +159,28 @@ MUTANTS = [
      '        "no_step_in_error": not any(s["status"] == "error" for s in steps),',
      '        "no_step_in_error": True,',
      [f"{REPORT}::test_each_way_of_failing_the_criterion_is_seen"]),
+
+    # --- r8 (review of r7: GUI-R7-05, -07, PM-15, PM-16) ---------------------------------------------
+    ("RR33 un endpoint_id que es una URL se imprime con sus credenciales", SCRIPT,
+     '        shown_id = _scheme_host(endpoint_id) if endpoint_id and "://" in str(endpoint_id) else endpoint_id',
+     "        shown_id = endpoint_id",
+     [f"{REPORT}::test_a_step_whose_endpoint_id_is_a_url_with_credentials_prints_no_credential"]),
+    ("RR34 una aprobacion anterior al inicio de la ejecucion se acepta", SCRIPT,
+     "        if run_started is not None and at < run_started:",
+     "        if False:",
+     [f"{REPORT}::test_an_approval_dated_before_the_run_began_is_not_an_approval_of_this_run"]),
+    ("RR35 una aprobacion a la misma hora que el inicio del paso se rechaza", SCRIPT,
+     "        if at > started:",
+     "        if at >= started:",
+     [f"{REPORT}::test_an_approval_at_the_very_second_the_reviewer_started_is_still_before_it"]),
+    ("RR36 un revisor sin hora de inicio deja de avisarse", SCRIPT,
+     '        if started is None:\n            return "el paso no tiene hora de inicio"',
+     '        if False:\n            return "el paso no tiene hora de inicio"',
+     [f"{REPORT}::test_a_reviewer_with_no_start_time_cannot_be_shown_to_have_been_approved_first"]),
+    ("RR37 --latest sobre una base sin ejecuciones sale en verde", SCRIPT,
+     '            print("No hay ejecuciones en la base.")\n            return 1',
+     '            print("No hay ejecuciones en la base.")\n            return 0',
+     [f"{REPORT}::test_latest_on_a_database_with_no_runs_says_so_and_is_not_green"]),
 ]
 
 

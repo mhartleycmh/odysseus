@@ -205,8 +205,12 @@ MUTANTS = [
      "        if False:\n            raise ZeroCostViolation(",
      SITE_TESTS),
     ("SI07 el router lista un proveedor de nube sin pasar la compuerta", ROUTER,
-     "                if not is_zero_cost_endpoint(row, model):\n                    continue",
-     "                if False:\n                    continue",
+     '                if not is_zero_cost_endpoint(row, model):\n'
+     '                    _note_dropped(dropped, row, host, "cost_gate")\n'
+     '                    continue',
+     '                if False:\n'
+     '                    _note_dropped(dropped, row, host, "cost_gate")\n'
+     '                    continue',
      SITE_TESTS),
     ("SI08 el router lista como local cualquier endpoint habilitado", ROUTER,
      "        if not is_local_endpoint(row):\n            continue",

@@ -30,6 +30,8 @@ PROXY_TESTS = ["tests/test_cmh_llm_core_proxy.py"]
 SEED_TESTS = ["tests/test_cmh_seed_scripts.py"]
 
 POLICY = "src/cmh_cost_policy.py"
+WF_ROUTES = "routes/cmh_workflow_routes.py"
+ENDPOINT_RESOLVER = "src/endpoint_resolver.py"
 ROUTER = "src/cmh_provider_router.py"
 MODEL_ROUTES = "routes/model_routes.py"
 LLM_CORE = "src/llm_core.py"
@@ -38,25 +40,41 @@ SEED = "scripts/cmh_seed_agents.py"
 #: (name, file, text to replace, replacement, test modules that must fall)
 MUTANTS = [
     # --- what a run freezes carries no credential ----------------------------------
-    ("F01 strip_userinfo conserva usuario y clave", POLICY,
-     '    return parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1]).geturl()',
-     "    return base_url",
+    ("F01 has_userinfo nunca ve una credencial", POLICY,
+     '        return "@" in urlparse(base_url or "").netloc',
+     "        return False",
+     POLICY_TESTS + FREEZE_TESTS),
+    ("F02 has_userinfo busca la arroba en toda la URL y no solo en la autoridad", POLICY,
+     '        return "@" in urlparse(base_url or "").netloc',
+     '        return "@" in (base_url or "")',
      POLICY_TESTS),
-    ("F02 strip_userinfo tambien borra la query", POLICY,
-     '    return parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1]).geturl()',
-     '    return parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1], query="").geturl()',
-     POLICY_TESTS),
-    ("F03 el candidato de nube se congela con la URL de la fila tal cual", ROUTER,
-     '                                   "endpoint_url": strip_userinfo(row.base_url),\n'
-     '                                   "model": model, "host": host})',
-     '                                   "endpoint_url": row.base_url,\n'
-     '                                   "model": model, "host": host})',
+    ("F03 la fila de nube con credencial se congela", ROUTER,
+     '                if has_userinfo(row.base_url):\n'
+     '                    _note_dropped(dropped, row, host, "credential_in_url")\n'
+     '                    continue\n',
+     "",
      FREEZE_TESTS),
-    ("F04 el candidato local se congela con la URL de la fila tal cual", ROUTER,
-     '                           "endpoint_url": strip_userinfo(row.base_url),\n'
-     '                           "model": model, "host": endpoint_host(row.base_url)})',
-     '                           "endpoint_url": row.base_url,\n'
-     '                           "model": model, "host": endpoint_host(row.base_url)})',
+    ("F04 la fila local con credencial se congela", ROUTER,
+     '        if has_userinfo(row.base_url):\n'
+     '            _note_dropped(dropped, row, endpoint_host(row.base_url), "credential_in_url")\n'
+     '            continue\n',
+     "",
+     FREEZE_TESTS),
+    ("F05 la fila que rechaza la compuerta se descarta sin decirlo", ROUTER,
+     '                    _note_dropped(dropped, row, host, "cost_gate")',
+     "                    pass",
+     FREEZE_TESTS),
+    ("F06 un run con una fila de credencial ya no se rechaza", WF_ROUTES,
+     '        if note["reason"] == "credential_in_url":',
+     "        if False:",
+     FREEZE_TESTS),
+    ("F07 el run no deja evento de la fila descartada", WF_ROUTES,
+     "            for note in dropped_notes:",
+     "            for note in []:",
+     FREEZE_TESTS),
+    ("F08 el descubrimiento consulta una URL que lleva credencial", ROUTER,
+     '    if has_userinfo(getattr(row, "base_url", "")):\n        # httpx would turn',
+     '    if False:\n        # httpx would turn',
      FREEZE_TESTS),
 
     # --- PATCH lifts the credential out of a base_url -------------------------------
@@ -79,6 +97,24 @@ MUTANTS = [
     ("P05 un base_url vacio borra el guardado", MODEL_ROUTES,
      "    if not base:\n        return\n    ep.base_url = base",
      "    ep.base_url = base",
+     PATCH_TESTS),
+
+    ("P06 la ruta PATCH deja de llamar al ayudante que levanta la credencial", MODEL_ROUTES,
+     "                _apply_base_url_update(ep, body)",
+     "                pass",
+     PATCH_TESTS),
+    ("P07 build_headers envuelve siempre en Bearer, tambien un Basic ya armado", ENDPOINT_RESOLVER,
+     '        headers["Authorization"] = (api_key if api_key.startswith("Basic ")\n'
+     '                                    else f"Bearer {api_key}")',
+     '        headers["Authorization"] = f"Bearer {api_key}"',
+     PATCH_TESTS),
+    ("P08 la ruta POST deja la credencial en la URL", MODEL_ROUTES,
+     "        base_url, url_key = split_url_credentials(base_url)",
+     "        url_key = None",
+     PATCH_TESTS),
+    ("P09 build_headers deja pasar cualquier clave sin Bearer", ENDPOINT_RESOLVER,
+     '        headers["Authorization"] = (api_key if api_key.startswith("Basic ")',
+     '        headers["Authorization"] = (api_key if True',
      PATCH_TESTS),
 
     # --- a local route never goes through a system proxy ----------------------------
@@ -109,25 +145,47 @@ MUTANTS = [
      "        pass",
      SEED_TESTS),
     ("Z04 un endpoint local basta para sembrar bajo free-cloud-first", SEED,
-     "    return any(candidate.get(\"host\") in FREE_HOSTS for candidate in candidates)",
+     '    return any(candidate.get("host") in FREE_HOSTS\n'
+     '               and (keyed is None or candidate.get("endpoint_id") in keyed)\n'
+     '               for candidate in candidates)',
      "    return bool(candidates)",
      SEED_TESTS),
     ("Z05 bajo local-only se exige un endpoint de nube", SEED,
      "    if policy == LOCAL_ONLY:\n        return bool(candidates)",
      "    if False:\n        return bool(candidates)",
      SEED_TESTS),
-    ("Z06 sembrar sin candidato utilizable ya no se detiene", SEED,
-     "    if not usable and not args.allow_pending:",
-     "    if False:",
-     SEED_TESTS),
-    ("Z07 --allow-pending deja de permitir sembrar", SEED,
-     "    if not usable and not args.allow_pending:",
-     "    if not usable:",
-     SEED_TESTS),
+    # Z06 and Z07 were SD08 and SD09 of round7 under another name (same file, pattern and
+    # replacement): counted twice in r7's "239". They stay in round7 only.
     ("Z08 el mensaje vuelve a decir que la copia previa se puede borrar", SEED,
      '        print("Abrir la base para calcular esto pudo migrarla (init_db): la copia previa de "\n'
      '              "arriba es de ANTES de abrirla. Conservala.")',
      '        print("La copia previa de arriba se hizo antes de abrir la base; puedes borrarla.")',
+     SEED_TESTS),
+    ("Z09 la simulacion abre la base con una URI sin escapar", SEED,
+     '        source = _read_only(db_path)\n        destination = sqlite3.connect(str(scratch))',
+     '        source = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)\n'
+     '        destination = sqlite3.connect(str(scratch))',
+     SEED_TESTS),
+    ("Z10 la comprobacion posterior a --apply abre la base con una URI sin escapar", SEED,
+     '        check = _read_only(db_path)\n        print("integrity_check posterior:",',
+     '        check = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)\n'
+     '        print("integrity_check posterior:",',
+     SEED_TESTS),
+    ("Z11 --apply sobre una base que no existe la siembra en memoria", SEED,
+     "    elif not args.apply:",
+     "    elif True:",
+     SEED_TESTS),
+    ("Z12 un endpoint de nube sin clave cuenta como ruta utilizable", SEED,
+     '               and (keyed is None or candidate.get("endpoint_id") in keyed)',
+     "               and True",
+     SEED_TESTS),
+    ("Z13 la guarda de la siembra no mira que claves hay", SEED,
+     '    usable = has_usable_route(rows[0]["candidates"], policy, keyed)',
+     '    usable = has_usable_route(rows[0]["candidates"], policy)',
+     SEED_TESTS),
+    ("Z14 la simulacion no dice que fila se descarto", SEED,
+     '    for note in rows[0]["dropped"]:',
+     "    for note in []:",
      SEED_TESTS),
 ]
 
