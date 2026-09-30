@@ -176,15 +176,23 @@ def test_the_baseline_runs_the_union_of_every_mutants_tests_not_just_the_first(t
 
 
 def test_the_summary_line_counts_every_outcome_and_keeps_them_in_the_total(tmp_path, capsys):
+    """Four DIFFERENT counts (1, 2, 3, 4): with one of each, swapping any two labels of the line
+    printed the same text and the mutant T15 of round4 survived (measured on r8)."""
     root = toy(tmp_path)
     code = run(root,
                mutant("CAUGHT", "return x * 2", "return x * 3"),
-               mutant("SURVIVED", "return x + 1", "return x + 2"),
-               mutant("BROKEN", "return len(label)", "return len(label) +"),
-               mutant("OBSOLETE", "return x * 99", "return x * 100"))
+               mutant("SURVIVED-1", "return x + 1", "return x + 2"),
+               mutant("SURVIVED-2", "return x + 1", "return x + 3"),
+               mutant("BROKEN-1", "return len(label)", "return len(label) +"),
+               mutant("BROKEN-2", "return len(label)", "return len(label) -"),
+               mutant("BROKEN-3", "return len(label)", "return len(label) *"),
+               mutant("OBSOLETE-1", "return x * 99", "return x * 100"),
+               mutant("OBSOLETE-2", "return x * 98", "return x * 100"),
+               mutant("OBSOLETE-3", "return x * 97", "return x * 100"),
+               mutant("OBSOLETE-4", "return x * 96", "return x * 100"))
     out = capsys.readouterr().out
     assert code == 1
-    assert "1 CAUGHT - 1 SURVIVED - 1 INVALIDOS - 1 NO APLICABLE (de 4;" in out
+    assert "1 CAUGHT - 2 SURVIVED - 3 INVALIDOS - 4 NO APLICABLE (de 10;" in out
 
 
 @pytest.mark.parametrize("escape", ["../outside.py", "ABSOLUTE"])
