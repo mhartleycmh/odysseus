@@ -422,7 +422,12 @@ def build_headers(api_key: Optional[str], base: str) -> Dict[str, str]:
         from src.chatgpt_subscription import chatgpt_headers
         return chatgpt_headers(api_key)
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        # A credential lifted out of a URL (split_url_credentials) is already a complete
+        # ``Basic <base64>`` value. Wrapping it in "Bearer " sent ``Bearer Basic ...``,
+        # which no server accepts: the endpoint registered or edited with user:pass@ got
+        # a 401 that the URL form (httpx turns userinfo into Basic at send time) never did.
+        headers["Authorization"] = (api_key if api_key.startswith("Basic ")
+                                    else f"Bearer {api_key}")
     if provider == "openrouter":
         headers.setdefault("HTTP-Referer", "https://github.com/odysseus-dev/odysseus")
         headers.setdefault("X-OpenRouter-Title", "Odysseus")
