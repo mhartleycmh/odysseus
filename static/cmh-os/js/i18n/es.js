@@ -221,7 +221,7 @@ export default {
     kpi: {
       success: 'Tasa de éxito', successContext: '{n} ejecuciones terminadas', toolLatency: 'Latencia media de herramienta', toolLatencyContext: '{n} llamadas medidas',
       modelLatency: 'Latencia media del modelo', modelLatencyContext: '{n} respuestas medidas', tokens: 'Tokens', noCost: 'sin precio informado',
-      errors: 'Errores', errorsContext: 'pasos y herramientas con error',
+      errors: 'Errores', errorsContext: 'pasos, herramientas e intentos de modelo con error',
     },
     col: { duration: 'Duración', errors: 'Errores', time: 'Hora', call: 'Llamada', status: 'Estado', latency: 'Latencia' },
     tokensTitle: 'Tokens por paso', tokensByStep: '«{step}» concentra el mayor consumo de tokens',

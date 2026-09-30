@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request, HttpError, callMetrics } from '../../../static/cmh-os/js/services/http.js';
-import { applyEvent, resetCounters, buildTrace, topoOrder, isFresh, TERMINAL_RUN_EVENTS, RUN_EVENT_KINDS } from '../../../static/cmh-os/js/services/run-state.js';
+import { applyEvent, resetCounters, buildTrace, topoOrder, isFresh, modelResponseSpans, TERMINAL_RUN_EVENTS, RUN_EVENT_KINDS } from '../../../static/cmh-os/js/services/run-state.js';
 import { createSimulation } from '../../../static/cmh-os/js/services/simulator.js';
 import { createDemoSource } from '../../../static/cmh-os/js/services/demo.js';
 import { createLiveSource, mapMcpServer, mapProvider } from '../../../static/cmh-os/js/services/live.js';
@@ -606,4 +606,18 @@ test('free text reaches the model only when enabled and supported', async () => 
   assert.equal(on.answeredBy, 'modelo');
   assert.equal(on.text, 'ok modelo');
   assert.equal(asked, 1);
+});
+
+test('a dead model attempt is not a measured response and stays out of the latency average', () => {
+  // r8 drew the dead attempt as an error but the observability view still averaged its 0 s and
+  // counted it: one dead attempt of 0 s and one answer of 10 s read as "5 s over 2 responses".
+  const traces = /** @type {any[]} */ ([{ spans: [
+    { kind: 'modelo', status: 'error', durationMs: 0, tokens: 30, stepKey: 'a' },
+    { kind: 'modelo', status: 'ok', durationMs: 10000, tokens: 50, stepKey: 'b' },
+    { kind: 'herramienta', status: 'ok', durationMs: 5, tokens: 0, stepKey: 'a' },
+  ] }, { spans: [] }]);
+  const answered = modelResponseSpans(traces);
+  assert.equal(answered.length, 1);
+  assert.equal(answered.reduce((sum, span) => sum + span.durationMs, 0) / answered.length, 10000);
+  assert.equal(answered[0].tokens, 50);
 });

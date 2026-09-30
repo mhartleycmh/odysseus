@@ -78,3 +78,8 @@ test('interface copy avoids exclamation marks and emoji (CMH executive style)', 
   assert.doesNotMatch(dictionary, /[!¡]/);
   assert.doesNotMatch(dictionary, /[\u{1F300}-\u{1FAFF}]/u);
 });
+
+test('the errors KPI says it counts model attempts as well as steps and tools', () => {
+  // A run that completed through a fallback shows errors = 1: the label has to say what that counts.
+  assert.match(t('observability.kpi.errorsContext'), /intentos de modelo/);
+});

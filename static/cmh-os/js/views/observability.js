@@ -5,6 +5,7 @@ import { t } from '../core/i18n.js';
 import { formatDateTime, formatDuration, formatNumber, formatPercent, formatUsd, formatTime, shortId } from '../core/format.js';
 import { recentLogs } from '../core/log.js';
 import { callMetrics } from '../services/http.js';
+import { modelResponseSpans } from '../services/run-state.js';
 import { panel, viewHeader, kpi, definitionList, mutableHeader } from '../components/panel.js';
 import { asyncView, emptyState } from '../components/states.js';
 import { executionBadge, statusBadge } from '../components/badge.js';
@@ -50,7 +51,7 @@ export function renderList(ctx, match) {
       const rows = filterTraces(traces, formValues(toolbar));
       const finished = rows.filter((r) => r.status === 'completed' || r.status === 'error');
       const toolSpans = rows.flatMap((r) => r.spans.filter((s) => s.kind === 'herramienta' && s.status !== 'running'));
-      const modelSpans = rows.flatMap((r) => r.spans.filter((s) => s.kind === 'modelo'));
+      const modelSpans = modelResponseSpans(rows);
       const cost = rows.some((r) => r.costUsd !== null) ? rows.reduce((sum, r) => sum + (r.costUsd || 0), 0) : null;
       count.textContent = t('observability.count', { shown: rows.length, total: traces.length });
       mount(kpis,

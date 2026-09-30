@@ -311,3 +311,15 @@ export function buildTrace(execution, events) {
     origin: execution.origin,
   };
 }
+
+/**
+ * The model spans that are a MEASURED RESPONSE. A dead attempt (status 'error', duration 0
+ * because it never produced a response) is drawn in the trace and its tokens were spent, but it
+ * is not a response: it stays out of the latency average and out of the "respuestas medidas"
+ * count. The tokens per step chart still counts it, because those tokens were spent.
+ * @param {{spans: Span[]}[]} traces
+ * @returns {Span[]}
+ */
+export function modelResponseSpans(traces) {
+  return traces.flatMap((trace) => trace.spans.filter((span) => span.kind === 'modelo' && span.status !== 'error'));
+}
