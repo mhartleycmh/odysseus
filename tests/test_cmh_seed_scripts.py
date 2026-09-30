@@ -832,3 +832,61 @@ def test_apply_on_a_database_that_does_not_exist_writes_it_to_disk_and_not_to_me
     assert missing.exists()
     assert len(_stored(missing)["agents"]) == 5
     assert "en memoria" not in result.stdout
+
+
+# --- review of revision-fase1-r8 -----------------------------------------------------------------
+
+def test_apply_on_a_database_that_does_not_exist_and_with_no_usable_route_creates_nothing(tmp_path):
+    """It opened core.database first, which CREATES a full database at the path, and only then
+    refused, printing 'Conservala' about a copy that never existed. A typo in DATABASE_URL with
+    --apply left an empty database in the wrong place."""
+    folder = tmp_path / "vacio"
+    folder.mkdir()
+    missing = folder / "app.db"
+    env = _seed_env(tmp_path, missing)
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+    result = _run_script(APPLY, env)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "no existe" in result.stdout and "--allow-pending" in result.stdout
+    assert "Conservala" not in result.stdout                     # there is no copy to keep
+    assert not missing.exists()
+    assert sorted(str(p) for p in tmp_path.rglob("*")) == before
+
+
+def test_a_key_of_only_spaces_is_no_key(tmp_path):
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [(GROQ_URL, "api", "   ")])
+    assert "SIN clave" in _run_script([], _seed_env(tmp_path, live)).stdout
+    assert _run_script(APPLY, _seed_env(tmp_path, live)).returncode == 2
+
+
+def test_the_plan_says_how_to_clear_a_row_that_carries_credentials_and_never_prints_them(tmp_path):
+    """Registering a NEW endpoint does not clear the old row: it stays enabled with its
+    user:password@ and every run is refused again. Only an edit of that row (PATCH with the same
+    URL), deleting it or disabling it does."""
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [("https://bob:s3cret@api.groq.com/openai/v1", "api")])
+    result = _run_script([], _seed_env(tmp_path, live))
+    out = result.stdout + result.stderr
+    assert "DESCARTADO: endpoint e0 (api.groq.com)" in out, out
+    assert "PATCH" in out and "registrar uno nuevo no basta" in out
+    assert "s3cret" not in out
+
+
+def test_openrouter_alone_is_said_not_to_count_for_the_seed(tmp_path):
+    """The seed never has an OpenRouter candidate: its model is discovered when each run is
+    created. The plan said 'ningun endpoint gratuito registrado' with one registered and keyed."""
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [("https://openrouter.ai/api/v1", "api")])
+    dry = _run_script([], _seed_env(tmp_path, live))
+    assert "OpenRouter no cuenta" in dry.stdout, dry.stdout + dry.stderr
+    assert "ningun endpoint gratuito registrado" not in dry.stdout
+    assert _run_script(APPLY, _seed_env(tmp_path, live)).returncode == 2
+
+
+def test_with_nothing_registered_at_all_the_plan_still_says_so(tmp_path):
+    live = tmp_path / "app.db"
+    _database_with_endpoints(live, [])
+    dry = _run_script([], _seed_env(tmp_path, live))
+    assert "ningun endpoint gratuito registrado" in dry.stdout, dry.stdout + dry.stderr
+    assert "OpenRouter no cuenta" not in dry.stdout

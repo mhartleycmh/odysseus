@@ -177,6 +177,14 @@ MUTANTS = [
      ('    if args.apply:\n'
      '        if db_path.is_file():\n'
      '            backup_database(db_path, "before-seed-agents")\n'
+     '        elif not args.allow_pending:\n'
+     '            # The candidates come from this database: with no file there are none, and opening\n'
+     '            # core.database below would CREATE an empty one at this path (a typo in DATABASE_URL\n'
+     '            # left it in the wrong place and the message talked about a copy that never existed).\n'
+     '            print(f"La base real ({db_path}) no existe: no hay endpoints que sembrar y abrirla la "\n'
+     '                  f"crearia vacia. No se sembro nada.")\n'
+     '            print("Revisa DATABASE_URL, o usa --allow-pending para crearla y sembrar igual.")\n'
+     '            return 2\n'
      '    elif db_path.is_file():\n'
      '        scratch = pathlib.Path(tempfile.gettempdir()) / f"cmh-seed-dryrun-{os.getpid()}.db"\n'
      "        _SCRATCH[0] = scratch   # removed in main()'s finally, however this ends\n"
@@ -223,6 +231,31 @@ MUTANTS = [
     ("Z14 la simulacion no dice que fila se descarto", SEED,
      '    for note in rows[0]["dropped"]:',
      "    for note in []:",
+     SEED_TESTS),
+    # --- the seed script, r9 --------------------------------------------------------
+    ("Z15 --apply sobre una base que no existe la abre (y la crea vacia) antes de negarse", SEED,
+     "        elif not args.allow_pending:",
+     "        elif False:",
+     SEED_TESTS),
+    ("Z16 una clave de solo espacios cuenta como clave registrada", SEED,
+     '                 if str(getattr(ep, "api_key", None) or "").strip()}',
+     '                 if str(getattr(ep, "api_key", None) or "")}',
+     SEED_TESTS),
+    ("Z17 el aviso de una fila con credenciales vuelve a decir que registrar otra basta", SEED,
+     '"no basta, la fila vieja sigue habilitada"),',
+     '"basta"),',
+     SEED_TESTS),
+    ("Z18 el aviso de una fila con credenciales ya no nombra el PATCH", SEED,
+     "editalo (un PATCH con esa misma URL pasa las ",
+     "editalo (con esa misma URL pasa las ",
+     SEED_TESTS),
+    ("Z19 el plan vuelve a decir que no hay endpoint gratuito cuando solo hay OpenRouter", SEED,
+     "        elif registered_hosts & _free_hosts():",
+     "        elif False:",
+     SEED_TESTS),
+    ("Z20 el plan dice que OpenRouter no cuenta aunque no haya nada registrado", SEED,
+     "        elif registered_hosts & _free_hosts():",
+     "        elif True:",
      SEED_TESTS),
     # --- the header a workflow step REALLY sends (r9) -------------------------------
     # task_scheduler.py builds it twice with the same line: in _run_agent_loop (what every

@@ -145,7 +145,9 @@ def backup_database(db_path: pathlib.Path, reason: str) -> pathlib.Path:
 
 #: What each reason the router gives for leaving a row out of the list means, in words.
 DROPPED_TEXT = {
-    "credential_in_url": "su URL lleva usuario y clave; vuelve a registrarlo para que pasen a la api_key",
+    "credential_in_url": ("su URL lleva usuario y clave; editalo (un PATCH con esa misma URL pasa las "
+                          "credenciales a la api_key), o eliminalo o deshabilitalo: registrar uno nuevo "
+                          "no basta, la fila vieja sigue habilitada"),
     "cost_gate": "la compuerta de costo cero lo rechaza (http en un host gratuito, o un modelo que no es :free)",
 }
 
@@ -421,6 +423,14 @@ def _main() -> int:
     if args.apply:
         if db_path.is_file():
             backup_database(db_path, "before-seed-agents")
+        elif not args.allow_pending:
+            # The candidates come from this database: with no file there are none, and opening
+            # core.database below would CREATE an empty one at this path (a typo in DATABASE_URL
+            # left it in the wrong place and the message talked about a copy that never existed).
+            print(f"La base real ({db_path}) no existe: no hay endpoints que sembrar y abrirla la "
+                  f"crearia vacia. No se sembro nada.")
+            print("Revisa DATABASE_URL, o usa --allow-pending para crearla y sembrar igual.")
+            return 2
     elif db_path.is_file():
         scratch = pathlib.Path(tempfile.gettempdir()) / f"cmh-seed-dryrun-{os.getpid()}.db"
         _SCRATCH[0] = scratch   # removed in main()'s finally, however this ends
@@ -451,8 +461,11 @@ def _main() -> int:
         preserved = db.query(CMHAgent).filter(CMHAgent.name == PRESERVE).first()
         # Ids only: whether a key EXISTS is all this needs, and it is never printed.
         from core.database import ModelEndpoint
-        keyed = {ep.id for ep in db.query(ModelEndpoint).all()
+        from src.cmh_cost_policy import endpoint_host
+        registered = db.query(ModelEndpoint).all()
+        keyed = {ep.id for ep in registered
                  if str(getattr(ep, "api_key", None) or "").strip()}
+        registered_hosts = {endpoint_host(ep.base_url) for ep in registered}
 
     print(f"Base: {db_path}")
     print(f"Owner: {owner} · proyecto: {args.project} · politica: {policy}")
@@ -473,6 +486,10 @@ def _main() -> int:
                   f"'{policy}' necesita al menos uno gratuito de nube (Groq, U1). Un Ollama "
                   "habilitado cuenta como candidato local y no basta: los agentes quedarian "
                   "apuntando a un runtime que nadie sirve.")
+        elif registered_hosts & _free_hosts():
+            print("  PENDIENTE: hay endpoints gratuitos registrados pero ninguno queda como candidato "
+                  "de siembra (mira las lineas DESCARTADO de arriba). OpenRouter no cuenta aqui: su "
+                  "modelo se descubre al crear cada run, asi que la siembra exige Groq con clave (U1).")
         else:
             print("  PENDIENTE: no hay ningun endpoint gratuito registrado todavia. "
                   "Los agentes quedarian sin modelo y ningun flujo podria ejecutarse.")
