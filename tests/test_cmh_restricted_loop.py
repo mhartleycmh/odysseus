@@ -209,9 +209,11 @@ async def test_workflow_step_declares_itself_foreground_controlled(monkeypatch, 
     # Connects the wire: without this, the fix above is unreachable from a flow.
     #
     # It brings its own database. It used to read whatever core.database.SessionLocal
-    # was bound to, an in-memory database that the seed script's engine.dispose()
-    # empties: run after tests/test_cmh_seed_scripts.py it failed with "no such table:
-    # model_endpoints", and only the alphabetical order hid it.
+    # was bound to, an in-memory database that the seed script's engine.dispose() empties
+    # (a probe that does exactly that leaves 0 tables: "no such table: model_endpoints"). A
+    # risk by construction, not a failure anyone reproduced: the review of r8 ran the seed
+    # tests and then this one on r6 and got 40 of 40, and the order that breaks it was never
+    # recorded.
     import core.database as cdb
     import src.cmh_workflows as cmh_workflows
     from sqlalchemy import create_engine

@@ -4,8 +4,8 @@ Each mutant names the ONE test that must fall, by node id, so a campaign takes
 minutes instead of a full pass of the module per mutant. The test that is named is
 the one that claims to pin the behaviour. The pass that closes the campaign runs the
 UNION of the named tests, not the whole module: "Arbol restaurado: N passed" counts
-those (40 of the module's tests when r7 closed), and three tests of r6 are named by
-no mutant (see ADR-036).
+those. Every test of the module is named by some mutant (r9 gave one to the four that no
+mutant named: three of r6 and one of r8; see ADR-038).
 
 Run it against an EXPORT of a commit, never the live tree. The runner refuses a
 directory that contains .git (see _target.py).
@@ -305,6 +305,23 @@ MUTANTS = [
      "    if ($extra.Count -eq 0) {",
      "    if ($true) {",
      only("test_start_does_not_say_already_loaded_while_another_model_shares_the_memory")),
+    # --- r9: the four tests no mutant named -----------------------------------------
+    ("B48 con -UnloadOthers el banco no descarga lo ajeno", BENCH,
+     '    $unloaded = Invoke-Lms @("unload", "--all")',
+     '    $unloaded = [pscustomobject]@{ ExitCode = 0; Output = "" }',
+     only("test_it_unloads_the_others_only_when_asked_to")),
+    ("B49 -All deja de medir todos los LLM del disco", BENCH,
+     "} elseif ($All) {",
+     "} elseif ($false) {",
+     only("test_all_measures_every_llm_on_disk_and_never_the_embedding_model")),
+    ("B50 los tokens estimados dejan de marcarse como estimados", BENCH,
+     "            if ($r.TokensEstimated) { $estimatedTokens = $true }",
+     "            if ($false) { $estimatedTokens = $true }",
+     only("test_tokens_are_estimated_and_flagged_when_the_server_reports_no_usage")),
+    ("S25 start.ps1 da por igual cualquier modelo", START,
+     '    if ($Loaded.Equals($Asked, $ic)) { return $true }',
+     "    return $true",
+     only("test_start_does_not_take_an_unrelated_model_for_the_one_asked")),
     # --- r9: Test-SameModel, three rules and no free containment -------------------
     ("S20 start.ps1 vuelve a dar por igual un modelo que solo CONTIENE al pedido", START,
      '    if ($Loaded.Equals($Asked, $ic)) { return $true }\n'

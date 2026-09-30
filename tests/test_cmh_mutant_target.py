@@ -92,5 +92,12 @@ def test_every_runner_hands_its_mutants_to_campaign_and_has_no_loop_of_its_own(r
     a runner ending in sys.exit(0) would mutate nothing and exit green, and pass every test
     here."""
     source = (MUTANTS / runner).read_text(encoding="utf-8")
-    assert re.search(r"^\s*sys\.exit\(campaign\(.*\bREPO, PY\)\)", source, re.MULTILINE), runner
+    # The exact call, on the last lines of the file, under the __main__ guard. A runner that
+    # truncated its list (MUTANTS[:1]), passed an empty one or had the guard switched off
+    # still passed the looser pattern this used to be (measured by the review of r8).
+    # (round2 and round3 list (name, file, old, new) and add their tests when they call it, and
+    # keep a comment line under the guard.)
+    assert re.search(r'\nif __name__ == "__main__":\n(?:    #[^\n]*\n)?'
+                     r'    sys\.exit\(campaign\((?:MUTANTS|\[\(\*m, TESTS\) for m in MUTANTS\]), REPO, PY\)\)\s*$',
+                     source), runner
     assert "subprocess" not in source and "write_text" not in source, runner

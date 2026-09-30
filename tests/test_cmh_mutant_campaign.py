@@ -266,3 +266,37 @@ def test_progress_is_flushed_and_the_file_being_mutated_is_announced(tmp_path, m
     assert "(mutando mod.py para M1)" in out
     assert "Arbol restaurado (las pruebas que designan los mutantes, no el modulo entero)" in out
     assert _Recorder.flushes >= 5          # header, announcement, verdict, summary, restored tree
+
+
+# --- review of revision-fase1-r8 ------------------------------------------------------------------
+
+def test_the_path_guard_looks_at_every_mutant_not_just_the_first(tmp_path):
+    """The loop that applies the guard could be cut to the first mutant and every test stayed
+    green, because the one test of the guard had a single mutant in its list."""
+    root = toy(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("def f(x):\n    return x * 2\n", encoding="utf-8")
+    before = ((root / "mod.py").read_bytes(), outside.read_bytes())
+    with pytest.raises(SystemExit, match="fuera del repositorio"):
+        run(root, mutant("M1", "return x * 2", "return x * 3"),
+            ("ESC", "../outside.py", "x * 2", "x * 99", TESTS))
+    assert ((root / "mod.py").read_bytes(), outside.read_bytes()) == before
+
+
+def test_the_file_is_announced_before_it_is_mutated(tmp_path, monkeypatch):
+    """A campaign killed from outside between the announcement and the write leaves the file
+    mutated (Windows gives no handler to prevent it), and the log must already say which.
+    Announcing AFTER the write leaves a window with a mutant and no notice."""
+    root = toy(tmp_path)
+    original = (root / "mod.py").read_bytes()
+    intact_when_announced = []
+    real_say = target.say
+
+    def spy(*parts):
+        if parts and "mutando" in str(parts[0]):
+            intact_when_announced.append((root / "mod.py").read_bytes() == original)
+        real_say(*parts)
+
+    monkeypatch.setattr(target, "say", spy)
+    run(root, mutant("M1", "return x * 2", "return x * 3"))
+    assert intact_when_announced == [True]
