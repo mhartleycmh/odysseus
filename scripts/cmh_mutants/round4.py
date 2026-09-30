@@ -28,6 +28,7 @@ if not PY.exists() or "python" not in PY.name.lower():
 TARGET_TESTS = ["tests/test_cmh_mutant_target.py"]
 CAMPAIGN_TESTS = ["tests/test_cmh_mutant_campaign.py"]
 STEP_FAILURE_TESTS = ["tests/test_cmh_step_provider_failures.py"]
+LOOP_TESTS = ["tests/test_cmh_restricted_loop.py"]
 DISCOVERY_TESTS = ["tests/test_cmh_provider_discovery.py"]
 
 TARGET = "scripts/cmh_mutants/_target.py"
@@ -291,6 +292,41 @@ MUTANTS = [
      '                            safe_metrics["rounds"] = len(buckets)',
      '                            safe_metrics["rounds"] = 0',
      STEP_FAILURE_TESTS),
+
+    # --- 3.3b.4b an attempt that dies mid-run is charged what it spent ----------
+    # (review of 2026-09-29: COR-C1, PRU-F23, PRU-F24)
+    ("Q09 el planificador ignora lo que un intento fallido gasto antes de morir", SCHED,
+     '                    elif kind in ("metrics", "agent_terminal"):',
+     '                    elif kind == "metrics":',
+     STEP_FAILURE_TESTS + LOOP_TESTS),
+    ("Q10 un intento fallido cuenta solo las rondas que completo", SCHED,
+     '                            safe_metrics["rounds"] = (len(texts) if isinstance(texts, list) and texts\n'
+     '                                                      else safe_metrics.get("rounds", 0) + 1)',
+     '                            safe_metrics["rounds"] = safe_metrics.get("rounds", 0)',
+     STEP_FAILURE_TESTS + LOOP_TESTS),
+    ("Q11 un intento fallido suma una peticion aunque la ruta directa ya la contaba", SCHED,
+     '                            safe_metrics["rounds"] = (len(texts) if isinstance(texts, list) and texts\n'
+     '                                                      else safe_metrics.get("rounds", 0) + 1)',
+     '                            safe_metrics["rounds"] = safe_metrics.get("rounds", 0) + 1',
+     STEP_FAILURE_TESTS + LOOP_TESTS),
+    ("Q12 el evento de un intento fallido no dice que fallo", SCHED,
+     '                            safe_metrics["failed"] = True',
+     "                            pass",
+     LOOP_TESTS),
+    ("Q13 rounds se emite aunque el bucle no informara ninguna ronda", SCHED,
+     "                        if isinstance(buckets, list) and buckets:",
+     "                        if isinstance(buckets, list):",
+     LOOP_TESTS),
+    ("Q14 el error de un proveedor vuelve a llevar el texto del chunk", SCHED,
+     "                raise RestrictedStreamError(_stream_error_status(event_str))",
+     "                error = RestrictedStreamError(_stream_error_status(event_str))\n"
+     "                error.args = (event_str,)\n"
+     "                raise error",
+     STEP_FAILURE_TESTS),
+    ("Q15 el planificador trata igual un fin normal y uno fallido", SCHED,
+     '                        if kind == "agent_terminal":',
+     "                        if False:",
+     STEP_FAILURE_TESTS + LOOP_TESTS),
 ]
 
 

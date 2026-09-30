@@ -33,6 +33,7 @@ def run(monkeypatch, tmp_path):
                 yield item
         monkeypatch.setattr(agent_loop, "stream_agent_loop", fake_stream)
         events = []
+        execute.events = events      # still readable when the attempt raises
         task = SimpleNamespace(owner="admin", name="constructor", prompt="p", workspace=str(workspace),
                                allowed_tools=None if allowed_tools is None else json.dumps(list(allowed_tools)),
                                max_steps=12)
@@ -232,6 +233,60 @@ async def test_workflow_step_declares_itself_foreground_controlled(monkeypatch, 
               "endpoint_url": "http://127.0.0.1:59999/v1", "instructions": "x"}
     assert await cmh_workflows.call_model(config, "objetivo") == "artefacto"
     assert seen["foreground_controlled"] is True
+
+
+async def test_metrics_with_no_usage_buckets_do_not_claim_rounds(run):
+    """Unknown is not zero: a loop that reported no buckets must not turn into 'rounds=0'."""
+    _, events = await run([
+        chunk({"type": "metrics", "data": {"input_tokens": 4, "output_tokens": 2,
+                                           "usage_buckets": []}}),
+        chunk({"delta": "Listo."}),
+        "data: [DONE]\n\n",
+    ])
+    forwarded = [payload["metrics"] for kind, payload in events if kind == "model_metrics"]
+    assert len(forwarded) == 1 and "rounds" not in forwarded[0]
+    assert forwarded[0]["input_tokens"] == 4
+
+
+async def test_a_failed_attempt_reports_what_it_had_spent_before_the_error(run):
+    """The loop yields an agent_terminal chunk, with its totals so far, and then the error
+    chunk. Two rounds had completed (two buckets) and the third took the 429: three
+    requests, and the tokens of the two that answered."""
+    terminal = {"failed": True, "failure": {"status": 429, "message": "rate limited"},
+                "round_texts": ["uno", "dos", "[Agent stopped: rate limited]"],
+                "input_tokens": 20, "output_tokens": 10, "total_tokens": 30,
+                "usage_source": "real",
+                "usage_buckets": [{"input_tokens": 10, "output_tokens": 5},
+                                  {"input_tokens": 10, "output_tokens": 5}]}
+    with pytest.raises(RuntimeError):
+        await run([chunk({"type": "agent_terminal", "data": terminal}),
+                   'event: error\ndata: {"error": "rate limited", "status": 429}\n\n'])
+    forwarded = [payload["metrics"] for kind, payload in run.events if kind == "model_metrics"]
+    assert forwarded == [{"input_tokens": 20, "output_tokens": 10, "total_tokens": 30,
+                          "usage_source": "real", "rounds": 3, "failed": True}]
+
+
+async def test_a_failure_of_the_direct_path_counts_its_one_request_once(run):
+    """The direct path puts its single request in one bucket AND one round text: adding
+    one for 'the request that failed' would count it twice."""
+    terminal = {"failed": True, "failure": {"status": 503, "message": "down"},
+                "round_texts": ["[Agent stopped: down]"],
+                "input_tokens": 3, "output_tokens": 0, "total_tokens": 3, "usage_source": "estimated",
+                "usage_buckets": [{"input_tokens": 3, "output_tokens": 0}]}
+    with pytest.raises(RuntimeError):
+        await run([chunk({"type": "agent_terminal", "data": terminal}),
+                   'event: error\ndata: {"error": "down", "status": 503}\n\n'])
+    forwarded = [payload["metrics"] for kind, payload in run.events if kind == "model_metrics"]
+    assert [m["rounds"] for m in forwarded] == [1]
+
+
+async def test_a_failure_before_any_round_still_counts_the_request_that_was_refused(run):
+    terminal = {"failed": True, "failure": {"status": 429, "message": "limited"}}
+    with pytest.raises(RuntimeError):
+        await run([chunk({"type": "agent_terminal", "data": terminal}),
+                   'event: error\ndata: {"error": "limited", "status": 429}\n\n'])
+    forwarded = [payload["metrics"] for kind, payload in run.events if kind == "model_metrics"]
+    assert [m["rounds"] for m in forwarded] == [1]
 
 
 async def test_tool_finished_carries_the_numeric_exit_code(run):

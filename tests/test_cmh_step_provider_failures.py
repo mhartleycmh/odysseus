@@ -45,23 +45,45 @@ def _sse(text, model):
     return (f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(done)}\n\ndata: [DONE]\n\n").encode()
 
 
+def _tool_round(model):
+    """One round of a step that asks for a tool (``ls``) and reports 10 in / 5 out."""
+    call = {"index": 0, "id": "call_1", "type": "function",
+            "function": {"name": "ls", "arguments": json.dumps({"path": "."})}}
+    first = {"id": "x", "object": "chat.completion.chunk", "model": model,
+             "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [call]},
+                          "finish_reason": None}]}
+    last = {"id": "x", "object": "chat.completion.chunk", "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
+    return (f"data: {json.dumps(first)}\n\ndata: {json.dumps(last)}\n\ndata: [DONE]\n\n").encode()
+
+
 class Network:
     """What each host does when the step calls it. Records who was actually hit."""
 
     def __init__(self):
         self.groq = "ok"
         self.hits = []
+        self.error_body = "simulated"
+        self.groq_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.hits.append(request.url.host)
         if request.url.host == "api.groq.com":
+            self.groq_calls += 1
             mode = self.groq
+            if mode == "two_tool_rounds_then_429":
+                # Two rounds that ask for a tool and spend 10/5 each, then a refusal.
+                if self.groq_calls <= 2:
+                    return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                          content=_tool_round("m-groq"))
+                return httpx.Response(429, json={"error": {"message": self.error_body}})
             if mode == "ReadTimeout":
                 raise httpx.ReadTimeout("simulated", request=request)
             if mode == "ConnectError":
                 raise httpx.ConnectError("simulated", request=request)
             if mode != "ok":
-                return httpx.Response(int(mode), json={"error": {"message": "simulated"}})
+                return httpx.Response(int(mode), json={"error": {"message": self.error_body}})
             return httpx.Response(200, headers={"content-type": "text/event-stream"},
                                   content=_sse("RESPUESTA_DE_GROQ", "m-groq"))
         return httpx.Response(200, headers={"content-type": "text/event-stream"},
@@ -185,6 +207,37 @@ async def test_a_refused_attempt_costs_one_request_and_no_tokens_and_the_answer_
     refused, answered = _day(factory, "groq"), _day(factory, "openrouter")
     assert (refused["requests"], refused["tokens_in"], refused["tokens_out"]) == (1, 0, 0)
     assert (answered["requests"], answered["tokens_in"], answered["tokens_out"]) == (1, 3, 2)
+
+
+async def test_an_attempt_that_dies_mid_run_is_charged_what_it_spent(chain):
+    """Groq answers two tool rounds (10 in / 5 out each) and refuses the third. Three
+    requests reached it and 20 / 10 tokens were spent; the step used to be charged one
+    request and nothing, because only a loop that FINISHES sends its totals. That
+    under-counted exactly the windows (tpm, tpd, rpd) the router protects."""
+    net, factory, workspace = chain
+    net.groq = "two_tool_rounds_then_429"
+    assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_OPENROUTER"
+    assert net.groq_calls == 3
+    day = _day(factory, "groq")
+    assert (day["requests"], day["tokens_in"], day["tokens_out"]) == (3, 20, 10)
+    answered = _day(factory, "openrouter")
+    assert (answered["requests"], answered["tokens_in"], answered["tokens_out"]) == (1, 3, 2)
+
+
+async def test_a_provider_error_body_never_reaches_the_exception_or_the_events(chain):
+    """ADR-011: a provider's 401 can echo part of the key it rejected, and the message
+    ends up in a step's error column and in the SSE stream. Only the integer is kept."""
+    net, factory, workspace = chain
+    net.groq = "401"
+    secret = "sk-SENTINEL-KEY-123456"
+    net.error_body = f"Incorrect API key provided: {secret}."
+    with pytest.raises(RuntimeError) as caught:
+        await flow.call_model(_config(workspace), "p")
+    assert getattr(caught.value, "status_code", None) == 401
+    assert secret not in str(caught.value) and secret not in repr(caught.value.args)
+    with factory() as session:
+        stored = " ".join(e.payload for e in session.query(cdb.CMHWorkflowEvent).all())
+    assert secret not in stored
 
 
 async def test_a_token_limit_now_takes_a_provider_out_of_the_list(chain, monkeypatch):

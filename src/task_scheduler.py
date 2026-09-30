@@ -2087,7 +2087,7 @@ class TaskScheduler:
                                    error=observed.get("exit_code") not in (None, 0),
                                    exit_code=observed.get("exit_code"),
                                    duration_seconds=round(time.monotonic()-started, 3) if started else None)
-                    elif kind == "metrics":
+                    elif kind in ("metrics", "agent_terminal"):
                         raw_metrics = observed.get("data") or {}
                         safe_metrics = {k: raw_metrics[k] for k in ("model", "input_tokens", "output_tokens",
                                                                     "total_tokens", "response_time", "usage_source")
@@ -2100,6 +2100,18 @@ class TaskScheduler:
                             # forwarded (per-route attribution has no business in an event).
                             # Absent when the loop reported none: unknown is not zero.
                             safe_metrics["rounds"] = len(buckets)
+                        if kind == "agent_terminal":
+                            # The attempt died. A loop that finishes reports its totals in a
+                            # ``metrics`` chunk; one that fails reports what it had spent so
+                            # far here, before the error chunk (ADR-030 said the totals
+                            # exist only at the end: they do not). The request that failed
+                            # reached the provider too, so the count is one round text per
+                            # HTTP round, the failed one last. Without this a step whose
+                            # third request took a 429 was charged one request, no tokens.
+                            texts = raw_metrics.get("round_texts") if isinstance(raw_metrics, dict) else None
+                            safe_metrics["rounds"] = (len(texts) if isinstance(texts, list) and texts
+                                                      else safe_metrics.get("rounds", 0) + 1)
+                            safe_metrics["failed"] = True
                         event_sink("model_metrics", metrics=safe_metrics)
                 except (ValueError, TypeError, KeyError, AttributeError):
                     pass
