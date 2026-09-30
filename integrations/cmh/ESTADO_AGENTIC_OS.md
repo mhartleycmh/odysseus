@@ -110,24 +110,45 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Punto en curso — Fase 1 (2026-09-30)
 
-**La Fase 1 NO está cerrada: 0 de 7 pasos HECHOS.** Bloqueada por el usuario en 3.1 (claves y
+**La Fase 1 NO está cerrada: 0 de 7 pasos HECHOS** (los seis del blueprint, 3.1 a 3.6, más el 3.3b,
+que se insertó en la sesión para el modelo local). Bloqueada por el usuario en 3.1 (claves y
 LM Studio) y en 3.5 (autorización de la siembra); 3.6 depende de ambos. Sin una ejecución real no hay
 punto limpio 10.
 
-- **Git.** Rama `dev`, **40 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6 y 9 de r7: 8 de código y pruebas y 1 de documentación).
-  Etiquetas de revisión: `revision-fase1-r2` a `r6`; `revision-fase1-r7` congela el commit de documentación de r7.
+- **Git.** Rama `dev`, **50 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6, 9 de r7 y 10 de r8: 9 de código, pruebas y mutantes y 1 de documentos).
+  Etiquetas de revisión: `revision-fase1-r2` a `r7` y `revision-fase1-r8`, que congela el commit de documentos de r8.
 - **Revisión independiente de `revision-fase1-r6` (`ea4eee18`): DEVUELTO**, 0 P1, 19 P2 y 66 P3. r7 los
   corrige en ocho commits, cada uno con sus pruebas y sus mutantes (resumen y límites en ADR-036):
   `bea9b262` (bucle de mutantes), `249daeec` (compuerta), `352ebde8` (descubrimiento), `a0048662` (cuota de
   un intento que muere a medias), `00f6dc52` (informe del run), `10ad364f` (guiones locales), `c1f34f40`
-  (credenciales, proxy y siembra) y `82176e19` (una prueba que dependía del `%TEMP%` compartido). La segunda revisión, sobre `revision-fase1-r7`, se lanza a continuación: su veredicto se registra aquí y en ADR-036.
+  (credenciales, proxy y siembra) y `82176e19` (una prueba que dependía del `%TEMP%` compartido).
+- **Revisión independiente de `revision-fase1-r7` (`662e141e`): DEVUELTO**, 0 P1, **3 P2** confirmados por
+  refutador y 49 P3 (59 hallazgos brutos de cinco lentes; de 7 P2 brutos, 2 se refutaron y 1 bajó a P3). De
+  los 19 P2 de r6, 18 reprodujeron como corregidos y 1 seguía abierto, el nº6 (credencial en el PATCH), por
+  una corrección mía que enviaba `Bearer Basic`. Ninguna lente pudo medir Groq, OpenRouter ni LM Studio reales.
+- **r8 corrige los 3 P2 y la mayor parte de los P3** en nueve commits, cada uno con sus pruebas; lo que r8
+  NO cierra y lo que no se midió está declarado en ADR-037, y cuatro de los cinco commits intermedios no pasan
+  `test_cmh_mutant_validity` (medido; los mutantes van juntos en `b68ab6a9`): `9a2a94b4` (cabecera
+  `Basic` enviada como `Bearer Basic`: P2 nº1 y nº2), `eef71964` (fila con credenciales, `provider_dropped`,
+  siembra con clave), `43166b55` (guiones locales), `819579a1` (informe), `7d0e466e` (evento de cuota e
+  interfaz), `b68ab6a9` (mutantes, herramienta de campañas, guarda de `httpx`), `efe02b56` (pruebas del PATCH
+  de U1), `a0cb586a` (mutante T15) y `754cf669` (mutante Z11). La tercera revisión, sobre `revision-fase1-r8`,
+  se lanza a continuación: su veredicto se registra aquí y en ADR-037.
 - **Medido** sobre un export limpio de `c1f34f40` (sin `.git`): `tests/test_cmh_*.py` = **629 aprobadas,
   0 fallidas**, 1 advertencia, 26 min 59 s. Campañas de mutantes sobre exports separados: `round3` 13/13, `round4` 64/64, `round5` 39/39, `round6` 45/45, `round7` 13/13, `round8` 32/32 y `round9` 20/20 sobre `c1f34f40`; `round2` no dio veredicto allí (línea base roja por una prueba que miraba el `%TEMP%` compartido; corregida en `82176e19`) y sobre `82176e19` dio 13/13, con `round3`, `round7` y `round9` repetidas: 13/13, 13/13 y 20/20. En total 239 mutantes, 0 sobrevivientes, 0 inválidos y 0 obsoletos, con el árbol restaurado en verde en las ocho.
+- **Medido en r8** (detalle y límites en ADR-037). Sobre un export de `64756140` (árbol de `b68ab6a9`): suite =
+  **949 aprobadas, 1 fallida** (`test_rewrites_loopback_when_in_docker`, preexistente: falla si algo escucha
+  en el 1234) y las ocho campañas = **277 capturados, 2 sobrevivientes, 0 inválidos, 0 obsoletos, de 279**; los
+  dos (T15 de `round4`, Z11 de `round9`) eran defectos de mi prueba y de mi mutante, y se corrigieron en
+  `a0cb586a` y `754cf669`. Sobre un export de la punta `754cf669`: suite = **953 aprobadas, 1 fallida** (la
+  misma), los 21 mutantes `T` de `round4` = 21 de 21, y T15 y Z11 caen. No se repitieron sobre la punta las
+  otras siete campañas (código y pruebas designadas idénticos: se infiere, no se midió).
 - **Base activa** (solo lectura, `integrity_check=ok`, 811 008 bytes): 1 agente (`CMH Researcher`, pausado),
   0 definiciones, 0 ejecuciones, 3 endpoints (dos Ollama habilitados y Anthropic), ninguna clave gratuita
   registrada. **La siembra no se ha ejecutado nunca contra ella.** Copias previas en
-  `%LOCALAPPDATA%\Odysseus\backups\` (la última, `app-antes-de-pytest-r7-r2-20260929-2310.db`, con
-  `integrity_check=ok` en origen y copia y 42 tablas sin diferencia de conteo).
+  `%LOCALAPPDATA%\Odysseus\backups\` (la última, `app-antes-de-pytest-r8-20260930-1131.db`, 811 008 bytes,
+  con `integrity_check=ok` en origen y copia; la anterior, `app-antes-de-pytest-r7-r2-20260929-2310.db`, con
+  42 tablas sin diferencia de conteo).
 - **Servidor** del puerto 7000: corre el código del 25.09; no se reinició.
 - **No se hizo, y no está autorizado:** push, borrado de filas o copias, mover `data/`, `cmh_seed_agents.py
   --apply`, `migrate-data.ps1`, aprobar o rechazar un paso en nombre del usuario.
@@ -136,9 +157,21 @@ punto limpio 10.
 
 1. **U1 · Groq.** Settings → Add Models → Add API Models (Endpoint) → Provider *Groq* → pegar la clave →
    Add. En console.groq.com → Data Controls, activar Zero Data Retention. Dictar en el chat los cuatro
-   límites del panel (rpm, rpd, tpm, tpd). Opcional: `supports_tools` no tiene control en la interfaz; se
-   pone con un PATCH a `/api/model-endpoints/{id}` desde la consola del navegador (**no verificado en vivo**).
-2. **U2 · OpenRouter.** Cuenta sin créditos; en su privacidad, no entrenar ni retener; decidir §10.5.
+   límites del panel (rpm, rpd, tpm, tpd). **Recomendado:** `supports_tools` no tiene control en la
+   interfaz; se pone con un PATCH a `/api/model-endpoints/{id}` (el `id` sale de `GET /api/model-endpoints`)
+   desde la consola del navegador, con el cuerpo EXACTO `{"supports_tools": true}`:
+   `fetch('/api/model-endpoints/<id>', {method:'PATCH', headers:{'Content-Type':'application/json'},
+   credentials:'same-origin', body: JSON.stringify({supports_tools:true})}).then(r=>r.json()).then(console.log)`.
+   **Cuidado:** un PATCH sin cuerpo, con JSON mal formado o con `{}` NO da error: alterna `is_enabled` y deja
+   el endpoint deshabilitado. Comprobar en la respuesta `is_enabled: true` y `supports_tools: true`; si salió
+   `is_enabled: false`, repetir el PATCH sin cambiar nada más para volver a habilitarlo. *Medido en r8 con una
+   sonda ASGI sobre base en memoria (5 de 5), no en vivo: la sesión y las cabeceras reales no se probaron;
+   la interfaz de administración hace sus PATCH con ese mismo patrón.* Sin `supports_tools`, el bucle usa
+   llamadas a herramientas en bloques de texto (ADR-037), una ruta distinta de la nativa.
+2. **U2 · OpenRouter.** Crear la cuenta sin cargar créditos; en su configuración de privacidad, no
+   entrenar ni retener; crear una clave (*API Keys*) y **registrarla** igual que la de Groq (Provider
+   *OpenRouter*); decidir §10.5. Sin la clave registrada, la siembra no cuenta a OpenRouter como ruta
+   utilizable (solo cuentan los endpoints con clave, ADR-037).
 3. **U3 · Confirmar que ninguna cuenta (Groq, OpenRouter) tiene método de pago** (canon 06, fila 412).
 4. **U4 · LM Studio.** Descargar Qwen3.5-4B Q4_K_M y Phi-4-mini Q4_K_M. Registrar `http://127.0.0.1:1234/v1`
    como tipo local. Correr `powershell -NoProfile -ExecutionPolicy Bypass -File
@@ -151,7 +184,7 @@ punto limpio 10.
 7. **U7 · Reinicio del servidor.** Lo hace el agente, con copia previa y `--host 127.0.0.1 --port 7000`;
    `CMH_OS_DEFAULT_MODE` admite `auto|demo`.
 8. **U8 · Decidir el traslado de `data/` fuera de OneDrive** (22.1).
-9. **U9 · Autorizar el push** de los 40 commits.
+9. **U9 · Autorizar el push** de los 50 commits.
 10. **U10 · Decidir sobre el stash y las copias de seguridad acumuladas.**
 11. **U11 · Revisar `/cmh/os` con datos propios** tras el reinicio.
 
@@ -187,7 +220,7 @@ respaldo, REVERTIDA la de modelos locales solo en verificador, orden de fases,
 Ollama retirado, aprobación por conteos). Escribirlas de nuevo al cerrar la
 fase las **duplica**.
 
-Además, el canon ya tiene cinco filas del **2026-09-29** que el encargo pedía
+Además, el canon ya tiene seis filas del **2026-09-29** que el encargo pedía
 como VERIFICAR y que no hay que repetir (líneas 366–371):
 
 | Línea | Contenido |
