@@ -850,3 +850,45 @@ def test_start_does_not_say_already_loaded_while_another_model_shares_the_memory
     assert result.returncode != 0 and "qwen/qwen3.8-27b" in said(result)
     assert "Ya esta cargado" not in result.stdout
     assert not any(c.startswith(("load", "unload")) for c in lms.calls())
+
+
+# --- start.ps1, r9: a model that merely CONTAINS the one asked is not the one asked -----------
+#
+# The third review (revision-fase1-r8) measured that the comparison of r8 (one key contained in
+# the other, in both directions) declared "Ya esta cargado" for microsoft/phi-4-mini-reasoning
+# when phi-4-mini was asked, and left the script exiting 0 with nothing loaded. Three rules
+# remain: the same key, the same key without its publisher on one side, and the first word of a
+# key with spaces. Each case below is tied to the rule it keeps honest.
+
+@pytest.mark.parametrize("loaded_model, asked", [
+    ("microsoft/phi-4-mini-reasoning", "phi-4-mini"),       # the asked key inside the loaded one
+    ("phi-4-mini", "microsoft/phi-4-mini-reasoning"),       # the loaded key inside the asked one
+    ("qwen3-4b", "qwen3-4b-2507"),                          # a version suffix on the asked key
+    ("phi-4-mini", "phi-4-mini-reasoning"),                 # a free prefix: no publisher, no space
+    ("google/gemma-4-e4b", "gemma-4"),                      # the asked key is a prefix of the name
+], ids=["asked-inside-loaded", "loaded-inside-asked", "version-suffix", "free-prefix", "name-prefix"])
+def test_start_does_not_take_a_model_that_merely_contains_the_one_asked(
+        lms, server, loaded_model, asked):
+    lms.set_state(loaded=[{"identifier": "cmh-local", "model": loaded_model}])
+    refused = start(lms, server, model=asked)
+    assert refused.returncode != 0, said(refused)
+    assert loaded_model in said(refused) and "-UnloadOthers" in said(refused)
+    assert "Ya esta cargado" not in refused.stdout
+    assert not any(c.startswith(("load", "unload")) for c in lms.calls())
+
+    replaced = start(lms, server, model=asked, UnloadOthers=True)
+    assert replaced.returncode == 0, said(replaced)
+    calls = lms.calls()
+    assert "unload --all" in calls and any(c.startswith("load ") and asked in c for c in calls)
+
+
+@pytest.mark.parametrize("loaded_model, asked", [
+    ("gemma-4-e4b", "google/gemma-4-e4b"),                  # loaded without publisher, asked with it
+    ("google/gemma-4-e4b", "GOOGLE/Gemma-4-E4B"),           # the same key in other capitals
+], ids=["publisher-only-when-asked", "other-capitals"])
+def test_start_takes_the_same_key_with_or_without_its_publisher_or_in_other_capitals(
+        lms, server, loaded_model, asked):
+    lms.set_state(loaded=[{"identifier": "cmh-local", "model": loaded_model}])
+    result = start(lms, server, model=asked)
+    assert result.returncode == 0 and "Ya esta cargado" in result.stdout, said(result)
+    assert not any(c.startswith(("load", "unload")) for c in lms.calls())

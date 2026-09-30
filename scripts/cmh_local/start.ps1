@@ -67,12 +67,19 @@ function Invoke-Lms {
 function Test-SameModel {
     # lms acepta una clave parcial ("gemma-4-e4b" por "google/gemma-4-e4b") y `lms ps` imprime
     # la completa; una clave con espacios llega partida por celdas. Igualdad estricta daba por
-    # fallida una carga que habia salido bien. Se acepta que una contenga a la otra, nunca
-    # vacia: con una cadena vacia cualquier modelo "coincidiria".
+    # fallida una carga que habia salido bien. Tres reglas, y solo esas:
+    #   1. la misma clave, sin distinguir mayusculas;
+    #   2. la misma clave sin su publicador en uno de los dos lados (termina en "/" + la otra);
+    #   3. `lms ps` se lee por espacios: la clave con espacios llega como su primera palabra.
+    # NUNCA una contencion libre: "phi-4-mini" esta contenida en "microsoft/phi-4-mini-reasoning"
+    # y son modelos distintos; darlos por iguales dejaba el guion diciendo "Ya esta cargado"
+    # sin cargar nada (revision de r8). Con un lado vacio ninguna de las tres reglas coincide,
+    # y -Model es obligatorio y no vacio.
     param([string] $Loaded, [string] $Asked)
-    if (-not $Loaded -or -not $Asked) { return $false }
-    return ($Loaded.IndexOf($Asked, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or
-           ($Asked.IndexOf($Loaded, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    $ic = [StringComparison]::OrdinalIgnoreCase
+    if ($Loaded.Equals($Asked, $ic)) { return $true }
+    if ($Loaded.EndsWith("/" + $Asked, $ic) -or $Asked.EndsWith("/" + $Loaded, $ic)) { return $true }
+    return $Asked.StartsWith($Loaded + " ", $ic)
 }
 
 function Get-Loaded {
