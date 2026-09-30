@@ -188,3 +188,42 @@ def test_build_headers_still_wraps_anything_else_in_bearer():
     assert build_headers("gsk-abc", "https://api.groq.com/openai/v1")["Authorization"] == \
         "Bearer gsk-abc"
     assert "Authorization" not in build_headers(None, "http://127.0.0.1:1234/v1")
+
+
+# --- the PATCH that ESTADO_AGENTIC_OS tells the user to send (U1) ---------------------------------
+#
+# supports_tools has no control in the interface, so U1 asks the user to PATCH it from the browser
+# console. The route ALTERNATES is_enabled when the body is missing, empty or malformed, so a typo
+# disables the endpoint instead of failing. The instruction rests on that behaviour of Odysseus's
+# own route (routes/model_routes.py, toggle_model_endpoint): if an upgrade changes it, U1 must
+# change with it. Measured in memory, through the real route; not against a live session.
+
+
+async def _patch_state(routes_and_db, **request):
+    client, factory, cdb = routes_and_db
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="g1", name="groq", base_url="https://api.groq.com/openai/v1",
+                                 endpoint_kind="api", is_enabled=True, api_key="gsk-TEST-DUMMY"))
+        db.commit()
+    async with client:
+        response = await client.patch("/api/model-endpoints/g1", **request)
+    assert response.status_code == 200, response.text
+    with factory() as db:
+        row = db.get(cdb.ModelEndpoint, "g1")
+        return row.is_enabled, row.supports_tools
+
+
+async def test_the_body_u1_names_sets_supports_tools_and_leaves_the_endpoint_enabled(routes_and_db):
+    assert await _patch_state(routes_and_db, json={"supports_tools": True}) == (True, True)
+
+
+@pytest.mark.parametrize("request_kwargs", [
+    {},                                                                    # no body at all
+    {"json": {}},                                                          # an empty object
+    {"content": b'{"supports_tools": tru',                                 # a typo in the JSON
+     "headers": {"content-type": "application/json"}},
+], ids=["no body", "empty object", "malformed json"])
+async def test_a_patch_without_a_usable_body_disables_the_endpoint_instead_of_failing(
+        routes_and_db, request_kwargs):
+    enabled, supports_tools = await _patch_state(routes_and_db, **request_kwargs)
+    assert enabled is False and supports_tools is None
