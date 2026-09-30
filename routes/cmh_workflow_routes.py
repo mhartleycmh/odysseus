@@ -175,12 +175,12 @@ def _snapshot(db, owner, project_id, spec, discovered=None, notes=None):
     # working authentication — measured, httpx turns userinfo into
     # Authorization: Basic at send time — and keeping it would persist the
     # secret in the run's frozen config and stream it to the browser.
-    from src.endpoint_resolver import split_url_credentials
-    if split_url_credentials(task.endpoint_url or "")[1]:
-        raise HTTPException(400, f"Step {spec['key']}: la URL del endpoint lleva "
-                                 f"credenciales embebidas. Vuelve a registrar el "
-                                 f"endpoint para que la credencial pase a su api_key: "
-                                 f"aqui no se recorta en silencio.")
+    from src.cmh_cost_policy import has_userinfo
+    if has_userinfo(task.endpoint_url or ""):
+        raise HTTPException(400, f"Step {spec['key']}: la URL de la tarea del agente lleva "
+                                 f"credenciales embebidas. Corrigela: la credencial va en la "
+                                 f"api_key del endpoint registrado, no en la URL. Aqui no se "
+                                 f"recorta en silencio.")
 
     # Freeze the ordered candidate list here, where the run is born. Resolving
     # it per attempt would let a step's route change under it mid-run, which is
@@ -202,12 +202,21 @@ def _snapshot(db, owner, project_id, spec, discovered=None, notes=None):
     # is above, and for the same reason: freezing it would persist the credential, and
     # stripping it would leave the runner unable to find the row by URL, so the step would
     # go out with no Authorization at all (where the URL form authenticated).
+    #
+    # Two limits, both declared in ADR-038. It applies to the row the router would have CHOSEN:
+    # with a clean row for the same host listed first the run is created and the credentialed
+    # row is ignored (it is never frozen, so nothing leaks). And it comes after the catalogue
+    # query of discovery, which is a catalogue and not a chat: it costs nothing.
     for note in dropped:
         if note["reason"] == "credential_in_url":
             raise HTTPException(400, f"Step {spec['key']}: el endpoint {note['endpoint_id']} "
-                                     f"lleva credenciales embebidas en su URL. Vuelve a "
-                                     f"registrarlo para que la credencial pase a su api_key: "
-                                     f"aqui no se recorta en silencio.")
+                                     f"lleva credenciales embebidas en su URL. Editalo (un PATCH "
+                                     f"con esa misma URL pasa la credencial a su api_key), o "
+                                     f"eliminalo o deshabilitalo: registrar otro nuevo no basta, "
+                                     f"porque este sigue habilitado. Aqui no se recorta en "
+                                     f"silencio.")
+    # provider_dropped is per ROW: a provider can be dropped on one row and still be in the
+    # frozen list through another (two Groq rows, one over http and one over https).
     if notes is not None:
         notes.extend(n for n in dropped if n not in notes)
     task_row = endpoint_for_url(db, task.endpoint_url, owner, agent.model)

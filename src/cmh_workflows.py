@@ -22,6 +22,15 @@ def now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _event_id(endpoint_id):
+    """An endpoint id as an EVENT or a log line shows it. A config frozen in the old shape uses
+    the URL as the id, and that URL may carry user:password@: the accounting keeps the value,
+    what is published never does."""
+    from src.cmh_cost_policy import redact_url
+    text = str(endpoint_id) if endpoint_id is not None else ""
+    return redact_url(text) if "://" in text else endpoint_id
+
+
 def validate_dag(steps: list[dict]) -> list[dict]:
     if not isinstance(steps, list) or not 1 <= len(steps) <= 20:
         raise ValueError("Workflow needs 1 to 20 steps")
@@ -298,7 +307,7 @@ async def call_model(config: dict, prompt: str) -> str:
     with SessionLocal() as db:
         ready, skipped = usable_candidates(db, free)
     for candidate in skipped:
-        record("provider_fallback", **{"from": candidate.get("endpoint_id"),
+        record("provider_fallback", **{"from": _event_id(candidate.get("endpoint_id")),
                                        "to": None, "reason": candidate["reason"]})
     if not ready:
         raise RuntimeError(
@@ -318,9 +327,10 @@ async def call_model(config: dict, prompt: str) -> str:
                 record_usage(db, candidate["endpoint_id"], **usage)
                 db.commit()
         except Exception as exc:
-            logger.exception("Could not charge quota to endpoint %s", candidate.get("endpoint_id"))
+            logger.exception("Could not charge quota to endpoint %s",
+                             _event_id(candidate.get("endpoint_id")))
             try:
-                record("quota_write_failed", endpoint_id=candidate.get("endpoint_id"),
+                record("quota_write_failed", endpoint_id=_event_id(candidate.get("endpoint_id")),
                        error_type=type(exc).__name__)
             except Exception:
                 logger.exception("Could not record quota_write_failed for run %s", config.get("run_id"))
@@ -373,8 +383,8 @@ async def call_model(config: dict, prompt: str) -> str:
             if reason is None:
                 raise  # a configuration fault the next provider would hit too
             following = ready[index + 1]["endpoint_id"] if index + 1 < len(ready) else None
-            record("provider_fallback", **{"from": candidate.get("endpoint_id"),
-                                           "to": following, "reason": reason})
+            record("provider_fallback", **{"from": _event_id(candidate.get("endpoint_id")),
+                                           "to": _event_id(following), "reason": reason})
             last_error = exc
             continue
         # Tell the caller which candidate produced this, so the artifact it

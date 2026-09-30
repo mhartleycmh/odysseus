@@ -314,11 +314,18 @@ def split_url_credentials(url: str) -> Tuple[str, Optional[str]]:
         return url or "", None
     if not (parsed.username or parsed.password):
         return url or "", None
+    try:
+        port = parsed.port
+    except ValueError:
+        # An out-of-range port leaves nothing to rebuild the URL from. It comes back untouched
+        # and the callers that cannot keep a credential in it (has_userinfo) refuse it; this
+        # used to raise here, outside any try, and POST, PATCH and create_run answered 500.
+        return url or "", None
     host = parsed.hostname or ""
     if ":" in host:                       # IPv6 literal
         host = f"[{host}]"
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
+    if port:
+        host = f"{host}:{port}"
     clean = urlunparse((parsed.scheme, host, parsed.path,
                         parsed.params, parsed.query, parsed.fragment))
     raw = f"{unquote(parsed.username or '')}:{unquote(parsed.password or '')}"
@@ -426,6 +433,8 @@ def build_headers(api_key: Optional[str], base: str) -> Dict[str, str]:
         # ``Basic <base64>`` value. Wrapping it in "Bearer " sent ``Bearer Basic ...``,
         # which no server accepts: the endpoint registered or edited with user:pass@ got
         # a 401 that the URL form (httpx turns userinfo into Basic at send time) never did.
+        # Only a value that starts with exactly "Basic " (capital B, one space) is sent as it
+        # is; anything else, a value that already says "Bearer " included, is wrapped.
         headers["Authorization"] = (api_key if api_key.startswith("Basic ")
                                     else f"Bearer {api_key}")
     if provider == "openrouter":

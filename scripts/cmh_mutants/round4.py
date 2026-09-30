@@ -372,7 +372,7 @@ MUTANTS = [
 
     # --- r8: a failing quota write is said in the run; failure_ttl_s is read from the config ---
     ("Q16 un fallo al escribir la cuota deja de decirse en el run", FLOW,
-     '                record("quota_write_failed", endpoint_id=candidate.get("endpoint_id"),\n'
+     '                record("quota_write_failed", endpoint_id=_event_id(candidate.get("endpoint_id")),\n'
      '                       error_type=type(exc).__name__)',
      "                pass",
      STEP_FAILURE_TESTS),
@@ -380,6 +380,19 @@ MUTANTS = [
      '            ttl = knobs["failure_ttl_s"]',
      '            ttl = _DEFAULT_DISCOVERY["failure_ttl_s"]',
      DISCOVERY_TESTS),
+    # --- r9: an event never carries a URL as an endpoint id; the inner guard of the charge -----
+    ("Q17 el evento de cuota vuelve a publicar el id del endpoint sin recortar", FLOW,
+     '                record("quota_write_failed", endpoint_id=_event_id(candidate.get("endpoint_id")),',
+     '                record("quota_write_failed", endpoint_id=candidate.get("endpoint_id"),',
+     STEP_FAILURE_TESTS),
+    ("Q18 _event_id deja pasar una URL con credenciales", FLOW,
+     '    return redact_url(text) if "://" in text else endpoint_id',
+     "    return endpoint_id",
+     STEP_FAILURE_TESTS),
+    ("Q19 si falla el evento de cuota tambien, el paso muere", FLOW,
+     '            except Exception:\n                logger.exception("Could not record quota_write_failed',
+     '            except KeyError:\n                logger.exception("Could not record quota_write_failed',
+     STEP_FAILURE_TESTS),
 ]
 
 

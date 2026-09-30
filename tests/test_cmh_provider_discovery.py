@@ -776,3 +776,90 @@ async def test_under_local_only_the_only_candidate_is_the_local_one_with_its_ide
     frozen = json.loads(config)["candidates"]
     assert [(c["endpoint_id"], c["model"]) for c in frozen] == [("lms", "cmh-local")]
     assert net.requests == []  # nothing left the machine, not even a catalogue query
+
+
+# --- review of revision-fase1-r8 ------------------------------------------------------------------
+
+async def _refused_run(client):
+    definition = await client.post("/api/cmh/workflows", json={
+        "name": "synthetic", "project_id": "project",
+        "steps": [{"key": "a", "agent_id": "agent-a"}]})
+    return await client.post(f"/api/cmh/workflows/{definition.json()['id']}/runs",
+                             json={"initial_input": "synthetic input"})
+
+
+async def test_the_refusal_of_a_credential_row_names_the_way_out_that_works(api):
+    """Registering another endpoint does not clear the old row: it stays enabled with its
+    user:password@ and every run is refused again. Only an edit, a delete or a disable does."""
+    client, factory, net = api
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "lms").base_url = "http://lmsuser:hunter2@127.0.0.1:59999/v1"
+        db.commit()
+    async with client:
+        refused = await _refused_run(client)
+    detail = refused.json()["detail"]
+    assert refused.status_code == 400, refused.text
+    assert "PATCH" in detail and "registrar otro nuevo no basta" in detail
+    assert "hunter2" not in refused.text
+
+
+async def test_a_task_url_with_credentials_and_an_out_of_range_port_is_a_400(api):
+    """split_url_credentials called parsed.port outside its try: ValueError, HTTP 500."""
+    client, factory, net = api
+    with factory() as db:
+        db.get(cdb.ScheduledTask, "task-a").endpoint_url = "http://u:p@127.0.0.1:99999/v1"
+        db.commit()
+    async with client:
+        refused = await _refused_run(client)
+    assert refused.status_code == 400, refused.text
+    assert "credenciales" in refused.json()["detail"] and "la URL de la tarea" in refused.json()["detail"]
+
+
+def _pinned_openrouter(model):
+    return {"threshold": 0.9, "discovery": {"ttl_s": 21600, "timeout_s": 15}, "providers": [
+        {"endpoint_host": "api.groq.com", "order": 1, "model": "openai/gpt-oss-120b", "limits": {}},
+        {"endpoint_host": "openrouter.ai", "order": 2, "model": model, "limits": {}}]}
+
+
+async def test_a_five_step_flow_says_a_dropped_row_once_not_once_per_step(api, monkeypatch):
+    """The notes of every step are merged with `if n not in notes`; a flow has several steps."""
+    client, factory, net = api
+    monkeypatch.setattr(router, "load_quota_config",
+                        lambda path=None: _pinned_openrouter("pinned/model:free"))
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "orr").base_url = "http://openrouter.ai/api/v1"
+        db.commit()
+    async with client:
+        definition = await client.post("/api/cmh/workflows", json={
+            "name": "three", "project_id": "project", "steps": [
+                {"key": "a", "agent_id": "agent-a"},
+                {"key": "b", "agent_id": "agent-a", "depends_on": ["a"]},
+                {"key": "c", "agent_id": "agent-a", "depends_on": ["b"]}]})
+        assert definition.status_code == 201, definition.text
+        run = await client.post(f"/api/cmh/workflows/{definition.json()['id']}/runs",
+                                json={"initial_input": "synthetic input"})
+        assert run.status_code == 201, run.text
+        run_id = run.json()["id"]
+        for _ in range(300):
+            if run_id not in flow._ACTIVE:
+                break
+            await asyncio.sleep(0.01)
+    with factory() as db:
+        steps = db.query(cdb.CMHWorkflowStep).filter(cdb.CMHWorkflowStep.run_id == run_id).count()
+        dropped = [json.loads(e.payload) for e in db.query(cdb.CMHWorkflowEvent).filter(
+            cdb.CMHWorkflowEvent.run_id == run_id,
+            cdb.CMHWorkflowEvent.kind == "provider_dropped").all()]
+    assert steps == 3
+    assert dropped == [{"endpoint_id": "orr", "host": "openrouter.ai", "reason": "cost_gate"}]
+
+
+async def test_a_model_that_is_not_free_on_openrouter_is_dropped_by_the_gate_and_said(api, monkeypatch):
+    """The second cause of cost_gate, apart from plain http on a free host."""
+    client, factory, net = api
+    monkeypatch.setattr(router, "load_quota_config", lambda path=None: _pinned_openrouter("paid/model"))
+    async with client:
+        run_id = await _create_run(client)
+    config, events = _stored(factory, run_id)
+    dropped = [payload for kind, payload in events if kind == "provider_dropped"]
+    assert dropped == [{"endpoint_id": "orr", "host": "openrouter.ai", "reason": "cost_gate"}]
+    assert "orr" not in [c["endpoint_id"] for c in json.loads(config)["candidates"]]

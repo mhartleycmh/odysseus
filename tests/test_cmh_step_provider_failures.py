@@ -393,3 +393,51 @@ async def test_a_credential_lifted_from_the_url_reaches_the_provider_as_basic(ke
     _set_keys(factory, groq=BASIC)
     assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_GROQ"
     assert net.authorization["api.groq.com"] == BASIC
+
+
+# --- review of revision-fase1-r8 ------------------------------------------------------------------
+
+async def test_a_failing_quota_write_never_puts_a_credential_in_the_event(chain, monkeypatch):
+    """A config frozen in the old shape (no 'candidates') uses the URL as the endpoint id, and
+    that URL may carry user:password@. The accounting keeps the value; the EVENT never does."""
+    net, factory, workspace = chain
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(router, "record_usage", broken)
+    config = _config(workspace)
+    config.pop("candidates")
+    config["endpoint_url"] = "http://legacyuser:LEGACYPASS@127.0.0.1:59999/v1"
+    await flow.call_model(config, "p")
+    with factory() as session:
+        events = [json.loads(e.payload) for e in session.query(cdb.CMHWorkflowEvent).filter(
+            cdb.CMHWorkflowEvent.kind == "quota_write_failed").all()]
+    assert len(events) == 1
+    assert "LEGACYPASS" not in json.dumps(events) and "legacyuser" not in json.dumps(events)
+    assert events[0]["endpoint_id"].startswith("http://127.0.0.1:59999")
+
+
+async def test_the_step_survives_a_quota_write_AND_its_event_failing_together(
+        chain, monkeypatch, caplog):
+    """The inner guard of the quota write exists for the day the database itself failed: then
+    the event cannot be written either, and the log is all there is. The step must still
+    return its answer."""
+    import logging
+    net, factory, workspace = chain
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    real_event = flow.event
+
+    def flaky_event(db, run_id, kind, *args, **kwargs):
+        if kind == "quota_write_failed":
+            raise RuntimeError("the event store is gone too")
+        return real_event(db, run_id, kind, *args, **kwargs)
+
+    monkeypatch.setattr(router, "record_usage", broken)
+    monkeypatch.setattr(flow, "event", flaky_event)
+    with caplog.at_level(logging.ERROR, logger="src.cmh_workflows"):
+        assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_GROQ"
+    assert "Could not record quota_write_failed" in caplog.text

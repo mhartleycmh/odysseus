@@ -200,6 +200,12 @@ def test_redact_url_drops_userinfo_query_and_fragment(url, expected):
     ("https://host.example/v1?email=a@b.com", False),          # an @ in the QUERY is not userinfo
     ("https://host.example/v1/@handle", False),                # nor one in the path
     ("http://127.0.0.1:1234/v1", False), ("", False), (None, False),
+    ("https://token@host.example/v1", True),                   # a user with no password is one too
+    ("http://@host.example/v1", False),                        # an EMPTY userinfo is not a credential:
+    ("https://:@host.example/v1", False),                      # split_url_credentials agrees, so a
+                                                               # refusal can always be cleared
+    ("http://[::1/", False),                                   # unreadable: endpoint_host is "", no
+                                                               # row like that can be a candidate
 ])
 def test_has_userinfo_sees_a_credential_only_in_the_authority(url, expected):
     assert has_userinfo(url) is expected

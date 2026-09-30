@@ -210,6 +210,9 @@ async def _patch_state(routes_and_db, **request):
     assert response.status_code == 200, response.text
     with factory() as db:
         row = db.get(cdb.ModelEndpoint, "g1")
+        # U1 tells the user to CHECK THE RESPONSE, so the response is what is asserted too
+        assert response.json()["is_enabled"] is row.is_enabled
+        assert response.json()["supports_tools"] == row.supports_tools
         return row.is_enabled, row.supports_tools
 
 
@@ -227,3 +230,44 @@ async def test_a_patch_without_a_usable_body_disables_the_endpoint_instead_of_fa
         routes_and_db, request_kwargs):
     enabled, supports_tools = await _patch_state(routes_and_db, **request_kwargs)
     assert enabled is False and supports_tools is None
+
+
+# --- review of revision-fase1-r8 ------------------------------------------------------------------
+
+@pytest.mark.parametrize("value, sent", [
+    ("BasicAuthToken123", "Bearer BasicAuthToken123"),    # no space after "Basic": not a scheme
+    ("basic abc123", "Bearer basic abc123"),              # only "Basic " with a capital passes
+])
+def test_build_headers_lets_through_only_the_basic_scheme_written_with_its_space(value, sent):
+    """The rule is `startswith("Basic ")`, exactly. A value that already says "Bearer " is
+    wrapped again (inherited from before r7, deliberately not pinned here)."""
+    from src.endpoint_resolver import build_headers
+    assert build_headers(value, "https://api.groq.com/openai/v1")["Authorization"] == sent
+
+
+def test_split_url_credentials_does_not_raise_on_an_out_of_range_port():
+    from src.endpoint_resolver import split_url_credentials
+    url = "http://bob:s3cret@127.0.0.1:99999/v1"
+    assert split_url_credentials(url) == (url, None)        # nothing it can rebuild: callers check
+
+
+async def test_credentials_with_an_out_of_range_port_are_a_400_and_nothing_is_stored(routes_and_db):
+    """`parsed.port` raises ValueError outside the try, and POST, PATCH and create_run answered
+    HTTP 500 where a 400 was due; with the new rule the credential the URL carries must also
+    never reach the database."""
+    client, factory, cdb = routes_and_db
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="p1", name="x", base_url="http://127.0.0.1:59990/v1",
+                                 endpoint_kind="local", is_enabled=True, api_key="keep-me"))
+        db.commit()
+    bad = "http://bob:s3cret@127.0.0.1:99999/v1"
+    async with client:
+        created = await client.post("/api/model-endpoints", data={
+            "base_url": bad, "endpoint_kind": "local", "skip_probe": "true", "name": "gw"})
+        patched = await client.patch("/api/model-endpoints/p1", json={"base_url": bad})
+    assert created.status_code == 400 and patched.status_code == 400, (created.text, patched.text)
+    assert "s3cret" not in created.text + patched.text
+    with factory() as db:
+        assert db.query(cdb.ModelEndpoint).count() == 1               # nothing was created
+        row = db.get(cdb.ModelEndpoint, "p1")
+        assert (row.base_url, row.api_key) == ("http://127.0.0.1:59990/v1", "keep-me")

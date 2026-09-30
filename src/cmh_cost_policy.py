@@ -121,10 +121,16 @@ def has_userinfo(base_url: Optional[str]) -> bool:
     (``cmh_workflow_steps.config`` and the event stream would carry it) nor quietly
     strip it (the runner finds the row by URL and would send no Authorization at all,
     where the URL form used to authenticate): such a row is refused, with a message
-    that asks for it to be registered again.
+    that says how to clear it (edit that row, delete it or disable it: registering another
+    one does not touch the old).
+
+    An EMPTY userinfo (``http://@host``) is not a credential: ``split_url_credentials``
+    agrees, so a refusal can always be cleared. A URL that cannot be parsed answers False:
+    ``endpoint_host`` is "" for it, and no row like that can be a candidate.
     """
     try:
-        return "@" in urlparse(base_url or "").netloc
+        parsed = urlparse(base_url or "")
+        return bool(parsed.username or parsed.password)
     except ValueError:
         return False
 
