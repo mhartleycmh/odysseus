@@ -525,3 +525,64 @@ def test_latest_on_a_database_with_no_runs_says_so_and_is_not_green(tmp_path, ca
     engine.dispose()
     assert report_mod.main(["--latest", "--db", str(path)]) == 1
     assert "No hay ejecuciones en la base." in capsys.readouterr().out
+
+
+# --- review of revision-fase1-r8 -----------------------------------------------------------
+
+def _add_events_and_error(path, events, error):
+    engine = create_engine(f"sqlite:///{path.as_posix()}")
+    factory = sessionmaker(bind=engine)
+    with factory() as db:
+        for key, kind, payload in events:
+            db.add(cdb.CMHWorkflowEvent(run_id="run-1", step_key=key, kind=kind,
+                                        payload=json.dumps(payload)))
+        if error is not None:
+            db.query(cdb.CMHWorkflowStep).filter(
+                cdb.CMHWorkflowStep.step_key == "constructor").update({"error": error})
+        db.commit()
+    engine.dispose()
+
+
+def test_a_fallback_a_quota_skip_and_an_error_never_print_a_credential(tmp_path, capsys):
+    """r8 shortened the endpoint id of the step only. The ids in the fallbacks and the quota
+    skips, and the URL an error message quotes, reached the report and --json raw."""
+    path = tmp_path / "app.db"
+    build(path)
+    groq = "https://rvuser:RVPASS@api.groq.com/openai/v1"
+    _add_events_and_error(path, [
+        ("constructor", "provider_fallback", {"from": groq, "to": "https://u2:PW2@openrouter.ai/api/v1",
+                                              "reason": "http:429"}),
+        ("constructor", "provider_fallback", {"from": groq, "to": None, "reason": "quota:tpd"}),
+    ], f"HTTP 401 from {groq}/chat/completions")
+    step = {s["key"]: s for s in report(path)["steps"]}["constructor"]
+    assert any(f["from"] == "https://api.groq.com" and f["to"] == "https://openrouter.ai"
+               for f in step["fallbacks"])
+    assert any(f["from"] == "https://api.groq.com" for f in step["quota_skips"])
+    assert step["error"] == "HTTP 401 from https://api.groq.com"           # the rest is kept
+    for argv in (["run-1", "--db", str(path)], ["run-1", "--db", str(path), "--json"]):
+        report_mod.main(argv)
+        out = capsys.readouterr().out
+        assert "RVPASS" not in out and "PW2" not in out and "rvuser" not in out
+
+
+def test_an_error_that_quotes_no_credential_is_kept_as_it_is(tmp_path):
+    path = tmp_path / "app.db"
+    build(path)
+    _add_events_and_error(path, [], "HTTP 429 from https://api.groq.com/openai/v1/chat/completions")
+    step = {s["key"]: s for s in report(path)["steps"]}["constructor"]
+    assert step["error"] == "HTTP 429 from https://api.groq.com/openai/v1/chat/completions"
+
+
+def test_a_run_without_a_start_time_does_not_let_a_1999_approval_through(tmp_path):
+    """The lower bound was skipped in silence when the run had no started_at, which brought the
+    altered-clock case back; the step already said 'no tiene hora de inicio' in the same case."""
+    path = tmp_path / "app.db"
+    build(path, decision_at="1999-01-01T00:00:00Z")
+    con = sqlite3.connect(str(path))
+    con.execute("UPDATE cmh_workflow_runs SET started_at = NULL")
+    con.commit()
+    con.close()
+    criteria = report(path)["criteria"]
+    assert criteria["human_approval_recorded"] is False
+    assert criteria["human_approval_note"] == "revisor: la ejecucion no tiene hora de inicio"
+    assert criteria["all_met"] is False

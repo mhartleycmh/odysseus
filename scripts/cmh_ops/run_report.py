@@ -22,6 +22,7 @@ import argparse
 import importlib.util
 import json
 import pathlib
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -89,6 +90,29 @@ def _scheme_host(url):
         return f"{parts.scheme}://{parts.hostname}" if parts.hostname else "URL sin host"
     except ValueError:
         return "URL no interpretable"
+
+
+def _shown(value):
+    """An endpoint id as the report shows it: one that is itself a URL (a run frozen before
+    the rows carried ids) is cut to scheme://host, credentials and all."""
+    return _scheme_host(value) if isinstance(value, str) and "://" in value else value
+
+
+_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>)]+")
+
+
+def _without_url_credentials(text):
+    """A step's error message may quote the URL that failed, userinfo included. Those URLs are
+    cut to scheme://host; every other word, and every URL without credentials, is kept."""
+    if not isinstance(text, str):
+        return text
+
+    def cut(match):
+        url = match.group(0)
+        authority = url.split("://", 1)[1].split("/", 1)[0]
+        return _scheme_host(url) if "@" in authority else url
+
+    return _URL_IN_TEXT.sub(cut, text)
 
 
 def latest_run_id(con):
@@ -167,7 +191,8 @@ def build_report(con, run_id: str) -> dict:
         usage_source = (None if not sources
                         else sources[0] if len(set(sources)) == 1 else "mixed")
         completed = next((p for kind, p in step_events if kind == "step_completed"), {})
-        fallbacks = [{"from": p.get("from"), "to": p.get("to"), "reason": p.get("reason")}
+        fallbacks = [{"from": _shown(p.get("from")), "to": _shown(p.get("to")),
+                      "reason": p.get("reason")}
                      for kind, p in step_events if kind == "provider_fallback"]
         blocked = [{"endpoint_url": _scheme_host(p.get("endpoint_url")),
                     "model": p.get("candidate_model")}
@@ -179,7 +204,7 @@ def build_report(con, run_id: str) -> dict:
             unverifiable.append(key)
         declared = config.get("require_tool_evidence")
         needs_evidence = (key in DEFAULT_EVIDENCE) if declared is None else bool(declared)
-        shown_id = _scheme_host(endpoint_id) if endpoint_id and "://" in str(endpoint_id) else endpoint_id
+        shown_id = _shown(endpoint_id)
         steps.append({
             "key": key, "agent": agents.get(agent_id, agent_id), "status": status,
             "model": model, "endpoint_id": shown_id, "host": host,
@@ -195,7 +220,7 @@ def build_report(con, run_id: str) -> dict:
             "artifact_model": artifacts.get(key, {}).get("model"),
             "requires_evidence": needs_evidence,
             "requires_approval": bool(config.get("requires_approval")),
-            "decision": _json(decision, None), "error": error,
+            "decision": _json(decision, None), "error": _without_url_credentials(error),
         })
 
     discovery = [p for p in (pl for kind, pl in events.get(None, []) if kind == "provider_discovery")]
@@ -212,7 +237,8 @@ def build_report(con, run_id: str) -> dict:
 
     # Approval: the reviewer must be gated, and every gated step must carry an
     # approved decision with a who, and a when that is not after the step started
-    # (the engine sets started_at only once the approval has been given).
+    # (the engine sets started_at only once the approval has been given) and not before the
+    # RUN started (an approval dated 1999 is not one given in this run).
     gated = {s["key"]: s for s in steps if s["requires_approval"]}
     approvals = {key: s["decision"] for key, s in gated.items()}
 
@@ -231,7 +257,9 @@ def build_report(con, run_id: str) -> dict:
             return "el paso no tiene hora de inicio"
         if at > started:
             return "la aprobacion es posterior al inicio del paso"
-        if run_started is not None and at < run_started:
+        if run_started is None:
+            return "la ejecucion no tiene hora de inicio"
+        if at < run_started:
             # An approval dated 1999 or 1970 is not one given in this run. The engine cannot
             # write such a date (it stamps the moment of approval), so it means the database
             # was altered, or the clock was wrong.

@@ -162,11 +162,11 @@ MUTANTS = [
 
     # --- r8 (review of r7: GUI-R7-05, -07, PM-15, PM-16) ---------------------------------------------
     ("RR33 un endpoint_id que es una URL se imprime con sus credenciales", SCRIPT,
-     '        shown_id = _scheme_host(endpoint_id) if endpoint_id and "://" in str(endpoint_id) else endpoint_id',
+     "        shown_id = _shown(endpoint_id)",
      "        shown_id = endpoint_id",
      [f"{REPORT}::test_a_step_whose_endpoint_id_is_a_url_with_credentials_prints_no_credential"]),
     ("RR34 una aprobacion anterior al inicio de la ejecucion se acepta", SCRIPT,
-     "        if run_started is not None and at < run_started:",
+     "        if at < run_started:",
      "        if False:",
      [f"{REPORT}::test_an_approval_dated_before_the_run_began_is_not_an_approval_of_this_run"]),
     ("RR35 una aprobacion a la misma hora que el inicio del paso se rechaza", SCRIPT,
@@ -181,6 +181,23 @@ MUTANTS = [
      '            print("No hay ejecuciones en la base.")\n            return 1',
      '            print("No hay ejecuciones en la base.")\n            return 0',
      [f"{REPORT}::test_latest_on_a_database_with_no_runs_says_so_and_is_not_green"]),
+    # --- r9: no credential in the ids of a fallback or in an error; no silent lower bound ---------
+    ("RR38 los ids de un salto de proveedor se imprimen con sus credenciales", SCRIPT,
+     '        fallbacks = [{"from": _shown(p.get("from")), "to": _shown(p.get("to")),',
+     '        fallbacks = [{"from": p.get("from"), "to": p.get("to"),',
+     [f"{REPORT}::test_a_fallback_a_quota_skip_and_an_error_never_print_a_credential"]),
+    ("RR39 el error de un paso se imprime con la URL y sus credenciales", SCRIPT,
+     '"error": _without_url_credentials(error),',
+     '"error": error,',
+     [f"{REPORT}::test_a_fallback_a_quota_skip_and_an_error_never_print_a_credential"]),
+    ("RR40 una ejecucion sin hora de inicio deja pasar una aprobacion de 1999", SCRIPT,
+     '        if run_started is None:\n            return "la ejecucion no tiene hora de inicio"',
+     '        if False:\n            return "la ejecucion no tiene hora de inicio"',
+     [f"{REPORT}::test_a_run_without_a_start_time_does_not_let_a_1999_approval_through"]),
+    ("RR41 un error que cita una URL sin credenciales pierde su ruta", SCRIPT,
+     '        return _scheme_host(url) if "@" in authority else url',
+     "        return _scheme_host(url)",
+     [f"{REPORT}::test_an_error_that_quotes_no_credential_is_kept_as_it_is"]),
 ]
 
 
