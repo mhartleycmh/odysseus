@@ -13,8 +13,11 @@ other clients. That is why the threshold is below 1.0 — the margin absorbs the
 difference instead of pretending there is none.
 """
 
+import asyncio
+import hashlib
 import json
 import logging
+import math
 import os
 import pathlib
 import uuid
@@ -309,9 +312,12 @@ def pick_openrouter_free_model(models: Any) -> Optional[str]:
     # two ever disagreed, the router would freeze a model the gate then blocks.
     from src.cmh_cost_policy import _FREE_SUFFIX
 
-    # `or []` on both branches: a provider that answers {"data": null} is a
-    # bad payload, not a crash in the step that asked which model to use.
-    entries = (models.get("data") if isinstance(models, dict) else models) or []
+    # A payload of the wrong shape is "no model", never an exception: a provider
+    # that answers {"data": null}, {"data": 5} or a context_length of 1e999 is a bad
+    # payload, not a crash in the run that asked which model to use.
+    entries = models.get("data") if isinstance(models, dict) else models
+    if not isinstance(entries, list):
+        return None
     usable = []
     for entry in entries:
         if not isinstance(entry, dict):
@@ -319,12 +325,12 @@ def pick_openrouter_free_model(models: Any) -> Optional[str]:
         model_id = str(entry.get("id") or "")
         if not model_id.lower().endswith(_FREE_SUFFIX):
             continue
-        supported = entry.get("supported_parameters") or []
-        if "tools" not in [str(p).lower() for p in supported]:
+        supported = entry.get("supported_parameters")
+        if not isinstance(supported, list) or "tools" not in [str(p).lower() for p in supported]:
             continue
         try:
             context = int(entry.get("context_length") or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             context = 0
         usable.append((-context, model_id))
     usable.sort()
@@ -339,13 +345,67 @@ _DISCOVERY_RULES = {"openrouter.ai": pick_openrouter_free_model}
 
 #: Starting values, proposed and parametrizable under "discovery" in
 #: config/cmh_free_quotas.json. The catalogue changes slowly, so it is asked for
-#: at most once per TTL; the timeout bounds how long creating a run can wait.
-_DEFAULT_DISCOVERY = {"ttl_s": 21600, "timeout_s": 15}
+#: at most once per TTL. ``timeout_s`` is the TOTAL time one provider may keep the
+#: creation of a run waiting, both requests included. A failure is remembered for
+#: ``failure_ttl_s`` so a provider that is down does not cost every new run the
+#: full timeout, and a choice made from the general list, which the account's
+#: settings did not filter, is trusted for ``unfiltered_ttl_s`` only.
+_DEFAULT_DISCOVERY = {"ttl_s": 21600, "timeout_s": 15, "failure_ttl_s": 60,
+                      "unfiltered_ttl_s": 900}
 _DISCOVERY_CACHE: dict = {}
 
 
 def clear_discovery_cache() -> None:
     _DISCOVERY_CACHE.clear()
+
+
+def discovery_knobs(settings: dict) -> dict:
+    """The discovery knobs: the config's, where it wrote a positive number.
+
+    ``ttl_s: null`` used to raise TypeError after a successful discovery and
+    ``timeout_s: null`` reached httpx as "no limit". Anything that is not a finite
+    positive number is ignored, with a warning, and the default stays.
+    """
+    knobs = dict(_DEFAULT_DISCOVERY)
+    for name, value in ((settings or {}).get("discovery") or {}).items():
+        if name not in knobs:
+            continue
+        valid = (isinstance(value, (int, float)) and not isinstance(value, bool)
+                 and math.isfinite(value) and value > 0)
+        if not valid:
+            logger.warning("cmh_free_quotas.json: discovery.%s = %r no es un numero positivo; "
+                           "se usa %s", name, value, knobs[name])
+            continue
+        knobs[name] = float(value)
+    return knobs
+
+
+def _cache_key(row) -> tuple:
+    """One entry per (row, URL, key): rotating the key or repointing the row starts over.
+
+    Indexing by row id alone served the previous account's model for up to six
+    hours after the key changed. Only a hash of the key is kept, never the key.
+    """
+    secret = str(getattr(row, "api_key", None) or "")
+    return (getattr(row, "id", None), getattr(row, "base_url", None),
+            hashlib.sha256(secret.encode("utf-8")).hexdigest()[:16])
+
+
+async def _get_json(client, url: str, headers: dict, timeout: float):
+    """``(payload, reason, status)``: a JSON body, or why there is none. Never raises."""
+    import httpx
+    try:
+        response = await client.get(url, headers=headers, timeout=timeout)
+    except httpx.InvalidURL:
+        return None, "invalid url", None
+    except httpx.HTTPError as exc:
+        return None, f"connection:{type(exc).__name__}", None
+    if response.status_code != 200:
+        return None, f"http:{response.status_code}", response.status_code
+    try:
+        return response.json(), None, 200
+    except ValueError:
+        return None, "invalid json", 200
 
 
 async def _discover_one(row, rule, knobs: dict) -> dict:
@@ -354,48 +414,53 @@ async def _discover_one(row, rule, knobs: dict) -> dict:
     The account's own list (``/models/user``) is asked first: it is filtered by
     the account's provider preferences and privacy settings, which is what makes
     the setting the user is asked to change in U2 decide which ``:free`` models
-    are eligible. It is a different route from ``/models``, so when it is not
-    there (any non-200) the general list is used.
+    are eligible. The general list (``/models``) is used ONLY when that route is
+    not there, that is when it answers 404. Any other failure (401, 403, 429, 5xx,
+    a timeout, an invalid body) fails the discovery: widening on those would pick
+    a model the account's own settings exclude, exactly when the filtered list
+    could not be read.
 
-    A 200 with nothing eligible is NOT a reason to widen to the general list:
-    that answer is the account saying no, and asking the unfiltered catalogue
-    would pick a model the account's own settings exclude. Nothing here ever
-    reads the key: it goes into the request headers and nowhere else.
+    Nothing is sent without the registered key, and never over plain http. Nothing
+    here ever reads the key into a note: it goes into the request headers only.
     """
-    import httpx
     from src import llm_core
+    from src.cmh_cost_policy import endpoint_scheme
     from src.endpoint_resolver import build_headers, build_models_url, normalize_base
 
-    base = normalize_base(getattr(row, "base_url", ""))
-    models_url = build_models_url(base)
+    api_key = str(getattr(row, "api_key", None) or "").strip()
+    if not api_key:
+        return {"model": None, "source": None, "reason": "no api key"}
+    if endpoint_scheme(getattr(row, "base_url", "")) != "https":
+        return {"model": None, "source": None, "reason": "not https"}
+    try:
+        base = normalize_base(getattr(row, "base_url", ""))
+        models_url = build_models_url(base)
+    except ValueError:
+        return {"model": None, "source": None, "reason": "invalid url"}
     if not models_url:
         return {"model": None, "source": None, "reason": "no models url"}
-    headers = build_headers(getattr(row, "api_key", None), base)
+    headers = build_headers(api_key, base)
     client = llm_core._get_http_client()
-    reason = "unreachable"
-    for suffix, source in (("/user", "models/user"), ("", "models")):
-        try:
-            response = await client.get(models_url + suffix, headers=headers,
-                                        timeout=knobs["timeout_s"])
-        except httpx.HTTPError as exc:
-            reason = f"connection:{type(exc).__name__}"
-            continue
-        if response.status_code != 200:
-            reason = f"http:{response.status_code}"
-            continue
-        try:
-            payload = response.json()
-        except ValueError:
-            reason = "invalid json"
-            continue
+
+    payload, reason, status = await _get_json(client, models_url + "/user", headers,
+                                              knobs["timeout_s"])
+    source, note = "models/user", None
+    if status == 404:
+        payload, reason, status = await _get_json(client, models_url, headers, knobs["timeout_s"])
+        source = "models"
+        note = "models/user no existe (404): se uso el listado general, sin el filtro de la cuenta"
+    if reason:
+        return {"model": None, "source": None, "reason": reason}
+    try:
         model = rule(payload)
-        if model:
-            return {"model": model, "source": source, "reason": None}
-        if suffix == "/user":
-            return {"model": None, "source": source,
-                    "reason": "no eligible model in the account's own list"}
-        reason = "no eligible model"
-    return {"model": None, "source": None, "reason": reason}
+    except Exception as exc:  # a rule is code we wrote, a payload is not
+        return {"model": None, "source": source,
+                "reason": f"unexpected payload:{type(exc).__name__}"}
+    if model:
+        return {"model": model, "source": source, "reason": note}
+    return {"model": None, "source": source,
+            "reason": ("no eligible model in the account's own list" if source == "models/user"
+                       else "no eligible model")}
 
 
 async def discover_free_models(db, owner: Optional[str] = None,
@@ -412,7 +477,7 @@ async def discover_free_models(db, owner: Optional[str] = None,
     from src.cmh_cost_policy import endpoint_host
 
     settings = config or load_quota_config()
-    knobs = {**_DEFAULT_DISCOVERY, **(settings.get("discovery") or {})}
+    knobs = discovery_knobs(settings)
     moment = at or now()
     found: dict = {}
     notes: list[dict] = []
@@ -427,18 +492,29 @@ async def discover_free_models(db, owner: Optional[str] = None,
         row = next((r for r in rows if endpoint_host(getattr(r, "base_url", "")) == host), None)
         if row is None:
             continue  # no account registered yet: absence is already visible
-        cached = _DISCOVERY_CACHE.get(row.id)
+        key = _cache_key(row)
+        cached = _DISCOVERY_CACHE.get(key)
         if cached and cached["expires"] > moment:
-            found[host] = cached["model"]
-            notes.append({"provider": host, "outcome": "cached", "model": cached["model"],
-                          "source": cached["source"], "reason": None})
+            if cached["model"]:
+                found[host] = cached["model"]
+                notes.append({"provider": host, "outcome": "cached", "model": cached["model"],
+                              "source": cached["source"], "reason": cached["reason"]})
+            else:
+                notes.append({"provider": host, "outcome": "failed", "model": None,
+                              "source": cached["source"],
+                              "reason": f"{cached['reason']} (fallo reciente, no se reintenta aun)"})
             continue
-        result = await _discover_one(row, rule, knobs)
+        try:
+            result = await asyncio.wait_for(_discover_one(row, rule, knobs),
+                                            timeout=knobs["timeout_s"])
+        except asyncio.TimeoutError:
+            result = {"model": None, "source": None, "reason": "timeout"}
         if result["model"]:
             found[host] = result["model"]
-            _DISCOVERY_CACHE[row.id] = {
-                "model": result["model"], "source": result["source"],
-                "expires": moment + timedelta(seconds=float(knobs["ttl_s"]))}
+            ttl = knobs["ttl_s"] if result["source"] == "models/user" else knobs["unfiltered_ttl_s"]
+        else:
+            ttl = knobs["failure_ttl_s"]
+        _DISCOVERY_CACHE[key] = {**result, "expires": moment + timedelta(seconds=ttl)}
         notes.append({"provider": host, "outcome": "ok" if result["model"] else "failed",
                       "model": result["model"], "source": result["source"],
                       "reason": result["reason"]})

@@ -206,7 +206,20 @@ async def test_scheduled_path_keeps_yielding_to_the_foreground(scheduled):
 
 async def test_workflow_step_declares_itself_foreground_controlled(monkeypatch, tmp_path):
     # Connects the wire: without this, the fix above is unreachable from a flow.
+    #
+    # It brings its own database. It used to read whatever core.database.SessionLocal
+    # was bound to, an in-memory database that the seed script's engine.dispose()
+    # empties: run after tests/test_cmh_seed_scripts.py it failed with "no such table:
+    # model_endpoints", and only the alphabetical order hid it.
+    import core.database as cdb
     import src.cmh_workflows as cmh_workflows
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    cdb.Base.metadata.create_all(engine)
+    monkeypatch.setattr(cmh_workflows, "SessionLocal", sessionmaker(bind=engine))
     seen = {}
 
     async def fake_loop(self, endpoint_url, model, task, session_id, **kwargs):

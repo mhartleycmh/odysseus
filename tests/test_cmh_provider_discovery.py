@@ -140,6 +140,7 @@ async def test_the_general_list_is_used_only_when_the_accounts_list_is_not_there
     assert found == {"openrouter.ai": "big/model:free"}
     assert net.paths() == [USER_PATH, GENERAL_PATH]
     assert notes[0]["source"] == "models"
+    assert "404" in notes[0]["reason"] and "sin el filtro de la cuenta" in notes[0]["reason"]
 
 
 async def test_an_empty_accounts_list_does_not_widen_to_the_general_one(world):
@@ -155,6 +156,280 @@ async def test_an_empty_accounts_list_does_not_widen_to_the_general_one(world):
     assert notes[0]["outcome"] == "failed" and "account" in notes[0]["reason"]
 
 
+# --- the general list is a fallback for a missing route, not for a failing one -----
+
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+async def test_a_failing_accounts_list_does_not_widen_to_the_general_one(world, status):
+    """ADR-028 says the general list is used 'only if that route does not exist'.
+    Every non-200 used to widen it, and the choice was then cached for six hours as if
+    the account's filter had been applied."""
+    factory, net, _ = world
+    net.responses[USER_PATH] = (status, {"error": "no"})
+    net.responses[GENERAL_PATH] = (200, CATALOGUE)      # would offer a model the account excludes
+    with factory() as db:
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {}
+    assert net.paths() == [USER_PATH]
+    assert notes[0]["outcome"] == "failed" and notes[0]["reason"] == f"http:{status}"
+
+
+@pytest.mark.parametrize("error, reason", [
+    (lambda request: httpx.ReadTimeout("slow", request=request), "connection:ReadTimeout"),
+    (lambda request: httpx.ConnectTimeout("slow", request=request), "connection:ConnectTimeout"),
+    (lambda request: httpx.RemoteProtocolError("garbled", request=request),
+     "connection:RemoteProtocolError"),
+])
+async def test_any_network_failure_of_the_accounts_list_leaves_the_provider_out(world, error, reason):
+    """ReadTimeout is the failure timeout_s exists for; narrowing the except to
+    ConnectError let it escape create_run and no test noticed."""
+    factory, net, _ = world
+    net.responses[USER_PATH] = error
+    net.responses[GENERAL_PATH] = (200, CATALOGUE)
+    with factory() as db:
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and net.paths() == [USER_PATH]
+    assert notes[0]["reason"] == reason
+
+
+async def test_a_200_that_is_not_json_is_reported_and_does_not_widen(world, monkeypatch):
+    factory, net, _ = world
+
+    def handler(request):
+        net.requests.append((request.url.path, request.headers.get("authorization")))
+        if request.url.path == USER_PATH:
+            return httpx.Response(200, content=b"<html>not json</html>")
+        return httpx.Response(200, json=CATALOGUE)
+
+    monkeypatch.setattr(llm_core, "_get_http_client",
+                        lambda *a, **k: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with factory() as db:
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and notes[0]["reason"] == "invalid json"
+    assert GENERAL_PATH not in net.paths()
+
+
+@pytest.mark.parametrize("payload", [{"data": 5}, {"data": None}, {"data": "x"}, [], 7,
+                                     {"data": [{"id": "a:free", "supported_parameters": "tools"}]}])
+async def test_a_payload_of_the_wrong_shape_is_no_model_and_no_exception(world, payload):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, payload)
+    with factory() as db:
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and notes[0]["outcome"] == "failed"
+    assert notes[0]["reason"] == "no eligible model in the account's own list"
+
+
+def test_an_infinite_context_length_does_not_break_the_pick():
+    """int(float('inf')) is an OverflowError, and 1e999 parses to inf."""
+    entry = {"id": "x/y:free", "supported_parameters": ["tools"], "context_length": float("inf")}
+    assert router.pick_openrouter_free_model({"data": [entry]}) == "x/y:free"
+
+
+async def test_a_rule_that_raises_is_a_failed_discovery_not_a_failed_run(world, monkeypatch):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+
+    def broken(payload):
+        raise TypeError("boom")
+
+    monkeypatch.setitem(router._DISCOVERY_RULES, "openrouter.ai", broken)
+    with factory() as db:
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and notes[0]["reason"] == "unexpected payload:TypeError"
+
+
+# --- nothing is sent without the key, nor over http, nor to a malformed URL ---------
+
+@pytest.mark.parametrize("key", [None, "", "   "])
+async def test_no_key_means_no_request_and_the_note_says_so(world, key):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "orr").api_key = key
+        db.commit()
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and net.requests == []
+    assert notes[0]["outcome"] == "failed" and notes[0]["reason"] == "no api key"
+
+
+async def test_the_key_is_never_sent_over_plain_http(world):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "orr").base_url = "http://openrouter.ai/api/v1"
+        db.commit()
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and net.requests == []
+    assert notes[0]["reason"] == "not https"
+
+
+@pytest.mark.parametrize("url", ["https://openrouter.ai:notaport/api/v1",
+                                 "https://openrouter.ai:99999999/api/v1"])
+async def test_a_malformed_base_url_leaves_the_provider_out_instead_of_failing_the_run(world, url):
+    factory, net, _ = world
+    with factory() as db:
+        db.get(cdb.ModelEndpoint, "orr").base_url = url
+        db.commit()
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and net.requests == []
+    assert notes[0]["outcome"] == "failed" and notes[0]["reason"] == "invalid url"
+
+
+# --- the knobs: read from the config, validated, and the timeout is a total ---------
+
+@pytest.mark.parametrize("bad", [None, 0, -5, True, "15", float("inf"), float("nan"), [], {}])
+def test_a_knob_that_is_not_a_positive_number_falls_back_to_the_default(bad):
+    for name in ("ttl_s", "timeout_s", "failure_ttl_s", "unfiltered_ttl_s"):
+        knobs = router.discovery_knobs({"discovery": {name: bad}})
+        assert knobs == router._DEFAULT_DISCOVERY, (name, bad)
+
+
+def test_a_valid_knob_replaces_the_default_and_an_unknown_one_is_ignored():
+    knobs = router.discovery_knobs({"discovery": {"ttl_s": 1000, "timeout_s": 7.5, "novel": 3}})
+    assert knobs["ttl_s"] == 1000.0 and knobs["timeout_s"] == 7.5
+    assert "novel" not in knobs
+
+
+async def test_a_null_ttl_in_the_config_does_not_fail_after_a_successful_discovery(world):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+    with factory() as db:
+        found, _ = await discover_free_models(
+            db, config={**CONFIG, "discovery": {"ttl_s": None, "timeout_s": None}}, at=T0)
+    assert found == {"openrouter.ai": "big/model:free"}
+
+
+async def test_the_ttl_comes_from_the_config_and_its_edges_hold(world):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+    config = {**CONFIG, "discovery": {"ttl_s": 1000, "timeout_s": 15}}   # not the default
+    with factory() as db:
+        await discover_free_models(db, config=config, at=T0)
+        _, at_edge = await discover_free_models(db, config=config, at=T0 + timedelta(seconds=999))
+        assert at_edge[0]["outcome"] == "cached" and len(net.requests) == 1
+        _, past = await discover_free_models(db, config=config, at=T0 + timedelta(seconds=1001))
+    assert past[0]["outcome"] == "ok" and len(net.requests) == 2
+
+
+async def test_a_failure_is_remembered_briefly_and_then_asked_again(world):
+    """While a provider is down every new run used to wait the full timeout again."""
+    factory, net, _ = world
+    with factory() as db:                                      # both routes answer 404
+        await discover_free_models(db, config=CONFIG, at=T0)
+        asked = len(net.requests)
+        _, recent = await discover_free_models(db, config=CONFIG, at=T0 + timedelta(seconds=59))
+        assert len(net.requests) == asked
+        assert recent[0]["outcome"] == "failed" and "fallo reciente" in recent[0]["reason"]
+        net.responses[USER_PATH] = (200, CATALOGUE)
+        found, later = await discover_free_models(db, config=CONFIG,
+                                                  at=T0 + timedelta(seconds=61))
+    assert found == {"openrouter.ai": "big/model:free"} and later[0]["outcome"] == "ok"
+
+
+async def test_a_choice_from_the_unfiltered_list_is_trusted_for_a_shorter_time(world):
+    factory, net, _ = world
+    net.responses[GENERAL_PATH] = (200, CATALOGUE)              # /models/user answers 404
+    config = {**CONFIG, "discovery": {"ttl_s": 21600, "timeout_s": 15, "unfiltered_ttl_s": 100}}
+    with factory() as db:
+        _, first = await discover_free_models(db, config=config, at=T0)
+        assert first[0]["source"] == "models" and "404" in first[0]["reason"]
+        before = len(net.requests)
+        _, inside = await discover_free_models(db, config=config, at=T0 + timedelta(seconds=99))
+        assert inside[0]["outcome"] == "cached" and len(net.requests) == before
+        _, outside = await discover_free_models(db, config=config, at=T0 + timedelta(seconds=101))
+    assert outside[0]["outcome"] == "ok" and len(net.requests) > before
+
+
+async def test_rotating_the_key_does_not_serve_the_previous_accounts_model(world):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+    with factory() as db:
+        await discover_free_models(db, config=CONFIG, at=T0)
+        db.get(cdb.ModelEndpoint, "orr").api_key = "sk-or-ROTATED-KEY"
+        db.commit()
+        _, notes = await discover_free_models(db, config=CONFIG, at=T0 + timedelta(hours=1))
+    assert notes[0]["outcome"] == "ok" and len(net.requests) == 2
+    assert net.requests[1][1] == "Bearer sk-or-ROTATED-KEY"
+
+
+async def test_timeout_s_is_passed_to_the_request(world, monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request.extensions["timeout"])
+        return httpx.Response(200, json=CATALOGUE)
+
+    factory, _, _ = world
+    monkeypatch.setattr(llm_core, "_get_http_client",
+                        lambda *a, **k: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    config = {**CONFIG, "discovery": {"ttl_s": 21600, "timeout_s": 7}}
+    with factory() as db:
+        await discover_free_models(db, config=config, at=T0)
+    assert seen == [{"connect": 7.0, "read": 7.0, "write": 7.0, "pool": 7.0}]
+
+
+async def test_timeout_s_bounds_the_whole_discovery_even_if_the_server_drips(world, monkeypatch):
+    """httpx applies its timeout per phase: a server that keeps answering slowly never
+    trips it. The total budget is enforced around the whole attempt."""
+    async def slow(request):
+        await asyncio.sleep(5)
+        return httpx.Response(200, json=CATALOGUE)
+
+    factory, _, _ = world
+    monkeypatch.setattr(llm_core, "_get_http_client",
+                        lambda *a, **k: httpx.AsyncClient(transport=httpx.MockTransport(slow)))
+    config = {**CONFIG, "discovery": {"ttl_s": 21600, "timeout_s": 0.2}}
+    started = asyncio.get_running_loop().time()
+    with factory() as db:
+        found, notes = await discover_free_models(db, config=config, at=T0)
+    assert asyncio.get_running_loop().time() - started < 2
+    assert found == {} and notes[0]["reason"] == "timeout"
+
+
+async def test_an_invalid_url_error_from_the_client_is_a_failed_discovery(world, monkeypatch):
+    """httpx.InvalidURL is not an httpx.HTTPError: narrowing to HTTPError alone would
+    let it escape create_run."""
+    factory, net, _ = world
+
+    class Client:
+        async def get(self, *args, **kwargs):
+            raise httpx.InvalidURL("bad url")
+
+    monkeypatch.setattr(llm_core, "_get_http_client", lambda *a, **k: Client())
+    with factory() as db:
+        found, notes = await discover_free_models(db, config=CONFIG, at=T0)
+    assert found == {} and notes[0]["reason"] == "invalid url"
+
+
+async def test_repointing_the_row_does_not_serve_the_model_of_the_previous_url(world):
+    factory, net, _ = world
+    net.responses[USER_PATH] = (200, CATALOGUE)
+    with factory() as db:
+        await discover_free_models(db, config=CONFIG, at=T0)
+        db.get(cdb.ModelEndpoint, "orr").base_url = "https://openrouter.ai/api/v2"
+        db.commit()
+        _, notes = await discover_free_models(db, config=CONFIG, at=T0 + timedelta(hours=1))
+    assert notes[0]["outcome"] != "cached"
+
+
+async def test_timeout_s_reaches_the_second_request_too(world, monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request.extensions["timeout"])
+        if request.url.path == USER_PATH:
+            return httpx.Response(404, json={"error": "no such route"})
+        return httpx.Response(200, json=CATALOGUE)
+
+    factory, _, _ = world
+    monkeypatch.setattr(llm_core, "_get_http_client",
+                        lambda *a, **k: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    config = {**CONFIG, "discovery": {"ttl_s": 21600, "timeout_s": 7}}
+    with factory() as db:
+        await discover_free_models(db, config=config, at=T0)
+    assert seen == [{"connect": 7.0, "read": 7.0, "write": 7.0, "pool": 7.0}] * 2
+
+
 # --- failures leave the provider out and say why ----------------------------
 
 async def test_a_rejected_key_fails_the_discovery_and_says_why_without_the_key(world):
@@ -165,6 +440,7 @@ async def test_a_rejected_key_fails_the_discovery_and_says_why_without_the_key(w
         found, notes = await discover_free_models(db, config=CONFIG, at=T0)
     assert found == {}
     assert notes[0]["outcome"] == "failed" and notes[0]["reason"] == "http:401"
+    assert net.paths() == [USER_PATH]      # a rejection is not "the route is missing"
     assert SECRET not in json.dumps(notes)
 
 
@@ -176,15 +452,6 @@ async def test_a_network_failure_does_not_raise_and_is_reported(world):
         found, notes = await discover_free_models(db, config=CONFIG, at=T0)
     assert found == {}
     assert notes[0]["reason"] == "connection:ConnectError"
-
-
-async def test_a_failed_discovery_is_not_cached(world):
-    factory, net, _ = world
-    with factory() as db:
-        await discover_free_models(db, config=CONFIG, at=T0)
-        net.responses[USER_PATH] = (200, CATALOGUE)
-        found, _ = await discover_free_models(db, config=CONFIG, at=T0 + timedelta(seconds=5))
-    assert found == {"openrouter.ai": "big/model:free"}
 
 
 # --- cost, cache, precedence -------------------------------------------------
@@ -244,7 +511,9 @@ def test_the_cost_gate_still_refuses_a_discovered_model_that_is_not_free(world):
 def test_the_shipped_config_declares_the_discovery_knobs_and_leaves_openrouter_open():
     """The file is what runs. A rule with no knob would fall back to code constants."""
     settings = router.load_quota_config()
-    assert set(settings["discovery"]) == {"ttl_s", "timeout_s"}
+    assert set(settings["discovery"]) == {"ttl_s", "timeout_s", "failure_ttl_s",
+                                          "unfiltered_ttl_s"}
+    assert router.discovery_knobs(settings) == {k: float(v) for k, v in settings["discovery"].items()}
     openrouter = router.provider_for_host(settings, "openrouter.ai")
     assert openrouter["model"] is None
 
