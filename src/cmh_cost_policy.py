@@ -22,11 +22,16 @@ heuristic would block every free provider.
 """
 
 import ipaddress
+import logging
 import os
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
-_TRUE = {"1", "true", "yes", "on"}
+logger = logging.getLogger(__name__)
+
+#: The only values that switch the gate off. Everything else, including a typo or
+#: an empty string, leaves it ON: a switch that guards money fails closed.
+_OFF = {"0", "false", "no", "off"}
 
 #: Hosts whose free tier the CMH chain is allowed to use. Exact host match,
 #: never a suffix match: ``api.groq.com.example.net`` is not Groq.
@@ -50,10 +55,13 @@ _FREE_SUFFIX = ":free"
 _EXTERNAL_KINDS = frozenset({"api", "proxy"})
 _LOOPBACK_HOSTS = frozenset({"localhost", "0.0.0.0", "host.docker.internal"})
 
-#: What "a private network" means for ``local-only`` (ADR-026): RFC1918, link-local,
-#: and the IPv6 unique-local range, which is RFC1918's analogue. Loopback is judged
-#: separately. Not 100.64.0.0/10 (carrier-grade NAT, where Tailscale lives): a GPU
-#: there is rejected on purpose, as ADR-026 says.
+#: What "a private network" means for ``local-only``. ADR-026 sets the rule (loopback
+#: or a private network) and ADR-032 fixes the list: RFC1918, link-local, and the
+#: IPv6 unique-local range, which is RFC1918's analogue. Loopback is judged
+#: separately, and the names in ``_LOOPBACK_HOSTS`` and ``*.local`` are ADR-032's too.
+#: NOT 100.64.0.0/10 (carrier-grade NAT, where Tailscale lives). That is an ASSUMPTION
+#: of ADR-032, not something ADR-026 says: a GPU behind Tailscale is outside
+#: ``local-only`` until someone decides otherwise.
 _PRIVATE_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
     "169.254.0.0/16", "fe80::/10",
@@ -66,12 +74,15 @@ class ZeroCostViolation(Exception):
 
 
 def enforced() -> bool:
-    """CMH_ZERO_COST (default true) turns the gate from blocking into logging.
+    """CMH_ZERO_COST (default on) turns the gate from blocking into logging.
 
-    ``false`` is a diagnostic setting: the violation is recorded and the call
-    proceeds. It is never an operating mode.
+    Only ``0``, ``false``, ``no`` or ``off`` switch it off; any other value, a
+    typo or an empty string included, leaves it enforcing. It used to be the other
+    way round (only ``1/true/yes/on`` kept it on), so ``CMH_ZERO_COST=enabled``
+    silently turned the gate off. Switching off is a diagnostic setting: the
+    violation is logged and the call proceeds. It is never an operating mode.
     """
-    return os.environ.get("CMH_ZERO_COST", "true").strip().lower() in _TRUE
+    return os.environ.get("CMH_ZERO_COST", "true").strip().lower() not in _OFF
 
 
 def _field(endpoint: Any, name: str) -> Optional[str]:
@@ -92,6 +103,31 @@ def endpoint_host(base_url: Optional[str]) -> str:
     except ValueError:
         return ""
     return host.strip().lower().rstrip(".")
+
+
+def endpoint_scheme(base_url: Optional[str]) -> str:
+    """Scheme of a base URL (``urlparse`` already lowercases it), or "" if unparsable."""
+    try:
+        return urlparse(base_url or "").scheme
+    except ValueError:
+        return ""
+
+
+def redact_url(base_url: Optional[str]) -> str:
+    """The URL without credentials, query or fragment: safe for a message or an event.
+
+    A base URL may carry ``user:pass@`` (ADR-026 moves it to ``api_key`` on the way
+    in, but a row written before that, or by a path that does not split it, still
+    has it) or a key in the query string. Anything that prints a URL goes through here.
+    """
+    if not base_url:
+        return ""
+    try:
+        parts = urlparse(base_url)
+        host = parts.netloc.rsplit("@", 1)[-1]
+        return urlunparse((parts.scheme, host, parts.path, "", "", ""))
+    except ValueError:
+        return "URL no interpretable"
 
 
 def is_reachable_without_leaving_the_network(host: str) -> bool:
@@ -119,7 +155,7 @@ def is_reachable_without_leaving_the_network(host: str) -> bool:
     # between releases. It also made ``is_link_local`` redundant, which is how a
     # mutant dropping link-local survived: the measured 2026-09-29 result was that
     # nothing distinguished the two. This gate is where "costs nothing" is decided,
-    # so it says exactly what ADR-026 says.
+    # so it says exactly what ADR-032 lists (ADR-026 plus fc00::/7 and the names).
     return bool(address.is_loopback or any(
         address.version == network.version and address in network
         for network in _PRIVATE_NETWORKS))
@@ -143,14 +179,19 @@ def is_local_endpoint(endpoint: Any) -> bool:
 def is_zero_cost_endpoint(endpoint: Any, model: Optional[str] = None) -> bool:
     """Whether this endpoint, for this model, costs nothing to call.
 
-    True for a local runtime, or for a host in :data:`FREE_HOSTS`. On OpenRouter
-    the model must additionally end in ``:free``; an unknown model fails closed,
-    because the gate cannot confirm what it cannot see.
+    True for a local runtime, or for a host in :data:`FREE_HOSTS` reached over
+    https: a free host over plain http would send the API key in the clear, and the
+    gate does not call that route free. On OpenRouter the model must additionally
+    end in ``:free``; an unknown model fails closed, because the gate cannot
+    confirm what it cannot see.
     """
     if is_local_endpoint(endpoint):
         return True
-    host = endpoint_host(_field(endpoint, "base_url"))
+    base_url = _field(endpoint, "base_url")
+    host = endpoint_host(base_url)
     if host not in FREE_HOSTS:
+        return False
+    if endpoint_scheme(base_url) != "https":
         return False
     if host in FREE_MODEL_SUFFIX_HOSTS:
         name = (model or "").strip().lower()
@@ -159,25 +200,33 @@ def is_zero_cost_endpoint(endpoint: Any, model: Optional[str] = None) -> bool:
 
 
 def describe(endpoint: Any, model: Optional[str] = None) -> str:
-    """Short identification of a route, for messages and events. No secrets."""
+    """Short identification of a route, for messages and events. No secrets.
+
+    The URL goes through :func:`redact_url`: this used to promise "no secrets" and
+    print ``user:pass@host`` as stored, and the text of a ZeroCostViolation ends up
+    in the detail of an HTTP 400.
+    """
     endpoint_id = _field(endpoint, "id") or "sin id"
-    base_url = _field(endpoint, "base_url") or "sin URL"
+    base_url = redact_url(_field(endpoint, "base_url")) or "sin URL"
     return f"endpoint {endpoint_id} ({base_url}), modelo {model or 'sin modelo'}"
 
 
 def assert_zero_cost(endpoint: Any, model: Optional[str] = None) -> None:
     """Raise :class:`ZeroCostViolation` unless the route is free.
 
-    Honours :func:`enforced`: with ``CMH_ZERO_COST=false`` the caller is
-    responsible for recording the violation and continuing.
+    Honours :func:`enforced`: with the gate switched off (``CMH_ZERO_COST=false``)
+    the violation is written to the log and the call proceeds, so switching it off
+    leaves a trace instead of being silent.
     """
     if is_zero_cost_endpoint(endpoint, model):
         return
     if not enforced():
+        logger.warning("Costo cero (D1) DESACTIVADO por CMH_ZERO_COST: se deja pasar %s",
+                       describe(endpoint, model))
         return
     raise ZeroCostViolation(
         f"Costo cero (D1): {describe(endpoint, model)} no es gratuito. "
-        f"Permitidos: endpoints locales y {', '.join(sorted(FREE_HOSTS))} "
+        f"Permitidos: endpoints locales y {', '.join(sorted(FREE_HOSTS))} por https "
         f"(en openrouter.ai, solo modelos terminados en '{_FREE_SUFFIX}')."
     )
 
@@ -186,14 +235,20 @@ def endpoint_for_url(db, endpoint_url: Optional[str], owner: Optional[str] = Non
                      model: Optional[str] = None):
     """The enabled endpoint row a URL resolves to, ON THE SAME HOST, or None.
 
-    Uses the runner's own ranking (``select_endpoint_for_url``) so the row this
-    gate judges is the row the call will use — but that function matches by
-    SUBSTRING, which is right for its job (picking among rows that share a base
+    Starts from the runner's own ranking (``select_endpoint_for_url``), which
+    matches by SUBSTRING: right for its job (picking among rows that share a base
     URL) and wrong for this one. A row for ``https://api.groq.com``
     substring-matches a task pointed at ``https://api.groq.com.attacker.example
     /v1``: the gate would clear the free row while the call dialled the other
     host. So a winner on a different host is discarded and the bare URL is
     judged on its own, where ``FREE_HOSTS`` refuses it by exact match.
+
+    What this does NOT do: the runner (``task_scheduler._run_agent_loop``) still
+    picks the row for its request headers with ``select_endpoint_for_url`` alone,
+    so on a URL like that one it would attach the Groq key to the other host. The
+    call never gets there, because this gate refuses the URL first and every CMH
+    step passes through the gate; a task outside the CMH chain does not. That is
+    upstream Odysseus behaviour and it is left as it is (reported by the review of 2026-09-29, P3 #32).
     """
     from core.database import ModelEndpoint
     from src.auth_helpers import owner_filter

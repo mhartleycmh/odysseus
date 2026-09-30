@@ -221,7 +221,9 @@ def _zero_cost_candidates(config: dict, record) -> list[dict]:
     Each survivor is completed with the endpoint id and host the quota
     accounting needs, so the row we charge is the row we called.
     """
-    from src.cmh_cost_policy import endpoint_for_url, endpoint_host, is_zero_cost_endpoint
+    from src.cmh_cost_policy import (
+        endpoint_for_url, endpoint_host, is_zero_cost_endpoint, redact_url,
+    )
 
     allowed = []
     with SessionLocal() as db:
@@ -230,7 +232,8 @@ def _zero_cost_candidates(config: dict, record) -> list[dict]:
             row = endpoint_for_url(db, url, config.get("owner"), model)
             endpoint = row or {"base_url": url, "endpoint_kind": "auto", "id": "no registrado"}
             if not is_zero_cost_endpoint(endpoint, model):
-                record("zero_cost_blocked", endpoint_url=url, candidate_model=model)
+                # The event goes to the run's SSE stream and to the report: no credentials.
+                record("zero_cost_blocked", endpoint_url=redact_url(url), candidate_model=model)
                 continue
             # A registered row's id wins over the URL placeholder that
             # _frozen_candidates filled in: quota is charged per endpoint row,
