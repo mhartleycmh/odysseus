@@ -799,7 +799,10 @@ async def test_the_refusal_of_a_credential_row_names_the_way_out_that_works(api)
         refused = await _refused_run(client)
     detail = refused.json()["detail"]
     assert refused.status_code == 400, refused.text
-    assert "PATCH" in detail and "registrar otro nuevo no basta" in detail
+    # The word PATCH appears twice now (the way out, and the case where PATCH itself refuses), so
+    # the way out is asserted by its whole phrase: mutant W2 survived the bare word.
+    assert "Editalo (un PATCH con esa misma URL" in detail
+    assert "registrar otro nuevo no basta" in detail
     assert "eliminalo" in detail and "deshabilitalo" in detail     # the three ways out, all named
     assert "puerto fuera de rango" in detail                       # and the case where PATCH refuses
     assert "hunter2" not in refused.text
