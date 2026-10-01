@@ -119,7 +119,7 @@ del candidato local y cuota), definidas en `scripts/cmh_mutants/round4.py`. Bloq
 (claves) y en 3.5 (autorización de la siembra); 3.6 depende de ambos. Sin una ejecución real no hay punto
 limpio 10.
 
-- **Git.** Rama `dev`; el fix de credenciales quedó en el commit local sin push `9a65ec72`, junto con los cambios e2e de foco y limpieza de Edge. La revisión independiente del candidato posterior a r9 sigue pendiente.
+- **Git.** Rama `dev`; `origin/dev` ya contiene `9a65ec72` (fix y e2e) y `fe9d6732` (validación). El registro de estado `0c91cbfc` permanece local y sin push. La revisión independiente del candidato posterior a r9 sigue pendiente.
   Etiquetas de revisión: `revision-fase1-r2` a `r8` y `revision-fase1-r9`, que congela el commit de documentos de r9.
 - **Revisión independiente de `revision-fase1-r6` (`ea4eee18`): DEVUELTO**, 0 P1, 19 P2 y 66 P3. r7
   corrige los 19 P2 y 59 de los 66 P3 (los otros 7 quedan declarados como límites en ADR-036), en ocho
