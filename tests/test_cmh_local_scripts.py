@@ -80,7 +80,13 @@ if args[0] == "ls":
     print(state["ls"])
 elif args[0] == "ps":
     loaded = state["loaded"]
-    if not loaded:
+    if state.get("raw_ps"):
+        # rows printed as given (a row of ONE cell, say): the real format was never seen
+        print("")
+        print("IDENTIFIER          MODEL               STATUS    SIZE        CONTEXT    PARALLEL    DEVICE    TTL")
+        for line in state["raw_ps"]:
+            print(line)
+    elif not loaded:
         print("No models are currently loaded.")
     else:
         print("")
@@ -274,12 +280,13 @@ def lms(tmp_path):
 
         @staticmethod
         def set_state(loaded=(), ls=LS_TEXT, fail=(), noop_load=False, sticky=False,
-                      aliases=None, sticky_names=(), ps_fail_after=None):
+                      aliases=None, sticky_names=(), ps_fail_after=None, raw_ps=()):
             (root / "state" / "state.json").write_text(
                 json.dumps({"loaded": list(loaded), "ls": ls, "fail": list(fail),
                             "noop_load": noop_load, "sticky": sticky,
                             "aliases": aliases or {}, "sticky_names": list(sticky_names),
-                            "ps_fail_after": ps_fail_after, "ps_calls": 0}),
+                            "ps_fail_after": ps_fail_after, "ps_calls": 0,
+                            "raw_ps": list(raw_ps)}),
                 encoding="utf-8")
 
         @staticmethod
@@ -872,7 +879,15 @@ def test_start_does_not_say_already_loaded_while_another_model_shares_the_memory
     ("qwen3-4b", "qwen3-4b-2507"),                          # a version suffix on the asked key
     ("phi-4-mini", "phi-4-mini-reasoning"),                 # a free prefix: no publisher, no space
     ("google/gemma-4-e4b", "gemma-4"),                      # the asked key is a prefix of the name
-], ids=["asked-inside-loaded", "loaded-inside-asked", "version-suffix", "free-prefix", "name-prefix"])
+    ("unsloth/vl-qwen3-4b", "qwen3-4b"),                    # the name ends with the asked key but is another model
+    ("microsoft/phi-4-mini", "unsloth/phi-4-mini"),         # the same name from ANOTHER publisher
+    ("microsoft/tinyphi-4-mini", "phi-4-mini"),
+    ("x-phi-4-mini", "phi-4-mini"),                         # no slash: a longer name, not a publisher
+    ("phi-4-mini", "x-phi-4-mini"),
+    ("qwen3-4b", "unsloth/vl-qwen3-4b"),
+], ids=["asked-inside-loaded", "loaded-inside-asked", "version-suffix", "free-prefix", "name-prefix",
+        "suffix-of-another-model", "other-publisher", "tinyphi", "no-slash", "no-slash-reversed",
+        "suffix-reversed"])
 def test_start_does_not_take_a_model_that_merely_contains_the_one_asked(
         lms, server, loaded_model, asked):
     lms.set_state(loaded=[{"identifier": "cmh-local", "model": loaded_model}])
@@ -972,3 +987,60 @@ def test_bench_guards_both_the_identifier_in_the_config_and_the_default_cmh_loca
                             Identifier=identifier)
         assert result.returncode != 0 and "respaldo local del router" in said(result), identifier
     assert lms.calls() == [] and server.requests == []
+
+
+# --- start.ps1, r10 (fourth review of revision-fase1-r9) -----------------------------------------
+#
+# r9 kept a third rule (the first word of a key with spaces) that took ".../My Model Q8" for
+# ".../My Model Q4", and it compared the model AFTER its own load, so a partial key that lms
+# resolves by prefix ("gemma-4", "qwen3.5") failed after a load that had worked. Now only the two
+# exact rules decide whether to skip a load; after a load of its own the script accepts what lms
+# put under cmh-local and PRINTS it.
+
+@pytest.mark.parametrize("loaded_model, asked", [
+    ("my-org/My Model Q8", "my-org/My Model Q4"),           # the same first words, another model
+    ("phi", "phi 4 mini"),
+    ("gemma", "gemma 4 e4b"),
+], ids=["same-first-words", "one-word-prefix", "one-word-prefix-2"])
+def test_start_does_not_take_a_key_with_spaces_for_another_that_shares_its_first_words(
+        lms, server, loaded_model, asked):
+    lms.set_state(loaded=[{"identifier": "cmh-local", "model": loaded_model}])
+    refused = start(lms, server, model=asked)
+    assert refused.returncode != 0, said(refused)
+    assert "Ya esta cargado" not in refused.stdout and "-UnloadOthers" in said(refused)
+    assert not any(c.startswith(("load", "unload")) for c in lms.calls())
+    replaced = start(lms, server, model=asked, UnloadOthers=True)
+    assert replaced.returncode == 0, said(replaced)
+    calls = lms.calls()
+    assert "unload --all" in calls and any(c.startswith("load ") and asked in c for c in calls)
+
+
+@pytest.mark.parametrize("asked, resolved", [
+    ("gemma-4", GEMMA),                  # a prefix of the name: lms loads "the first one"
+    ("e4b", GEMMA),                      # an infix
+    ("qwen3.5", "qwen/qwen3.5-9b"),
+], ids=["prefix", "infix", "version-prefix"])
+def test_start_accepts_what_lms_resolved_from_a_partial_key_after_loading_and_says_it(
+        lms, server, asked, resolved):
+    lms.set_state(aliases={asked: resolved})
+    result = start(lms, server, model=asked)
+    assert result.returncode == 0 and "Listo" in result.stdout, said(result)
+    assert resolved in result.stdout                         # it prints what lms loaded
+    assert "AVISO" in result.stdout and "clave completa" in result.stdout
+
+
+def test_start_does_not_warn_when_what_lms_loaded_is_the_key_that_was_asked(lms, server):
+    result = start(lms, server)
+    assert result.returncode == 0 and "AVISO" not in result.stdout, said(result)
+
+
+def test_a_row_of_lms_ps_with_one_cell_is_not_a_model_and_is_never_taken_for_the_one_asked(
+        lms, server):
+    """No model cell: both sides must be non-empty for any rule to match. With the guard
+    removed, 'google/' ends with the '/' that '' + '/' gives, and the script said 'Ya esta
+    cargado' about a row that names no model."""
+    lms.set_state(raw_ps=["cmh-local"])
+    result = start(lms, server, model="google/")
+    assert result.returncode != 0, said(result)
+    assert "Ya esta cargado" not in result.stdout and "-UnloadOthers" in said(result)
+    assert not any(c.startswith(("load", "unload")) for c in lms.calls())

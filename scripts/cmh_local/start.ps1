@@ -67,19 +67,22 @@ function Invoke-Lms {
 function Test-SameModel {
     # lms acepta una clave parcial ("gemma-4-e4b" por "google/gemma-4-e4b") y `lms ps` imprime
     # la completa; una clave con espacios llega partida por celdas. Igualdad estricta daba por
-    # fallida una carga que habia salido bien. Tres reglas, y solo esas:
+    # fallida una carga que habia salido bien. Dos reglas exactas, y solo esas:
     #   1. la misma clave, sin distinguir mayusculas;
-    #   2. la misma clave sin su publicador en uno de los dos lados (termina en "/" + la otra);
-    #   3. `lms ps` se lee por espacios: la clave con espacios llega como su primera palabra.
+    #   2. la misma clave sin su publicador en uno de los dos lados (termina en "/" + la otra).
     # NUNCA una contencion libre: "phi-4-mini" esta contenida en "microsoft/phi-4-mini-reasoning"
     # y son modelos distintos; darlos por iguales dejaba el guion diciendo "Ya esta cargado"
-    # sin cargar nada (revision de r8). Con un lado vacio ninguna de las tres reglas coincide,
-    # y -Model es obligatorio y no vacio.
+    # sin cargar nada (revision de r8). Tampoco una tercera regla para claves con espacios:
+    # `lms ps` se lee por espacios, asi que de "my-org/My Model Q8" solo llega la primera
+    # palabra, y aceptar "la primera palabra" daba por igual el Q8 y el Q4 (revision de r9).
+    # La clave con espacios no se reconoce al REPETIR el guion (pide -UnloadOthers); tras una
+    # carga propia se acepta lo que lms puso bajo el identificador (ver mas abajo).
+    # Con un lado vacio nada coincide: una fila de `lms ps` de una sola celda no es un modelo.
     param([string] $Loaded, [string] $Asked)
+    if (-not $Loaded -or -not $Asked) { return $false }
     $ic = [StringComparison]::OrdinalIgnoreCase
     if ($Loaded.Equals($Asked, $ic)) { return $true }
-    if ($Loaded.EndsWith("/" + $Asked, $ic) -or $Asked.EndsWith("/" + $Loaded, $ic)) { return $true }
-    return $Asked.StartsWith($Loaded + " ", $ic)
+    return ($Loaded.EndsWith("/" + $Asked, $ic) -or $Asked.EndsWith("/" + $Loaded, $ic))
 }
 
 function Get-Loaded {
@@ -132,11 +135,19 @@ $load = Invoke-Lms @("load", $Model, "--gpu", $Gpu, "-c", "$ContextLength", "--i
 Write-Host $load.Output
 if ($load.ExitCode -ne 0) { throw "La carga fallo con exit $($load.ExitCode). Baja -Gpu (0.3) o el contexto." }
 
-# No se dice "Listo" sin verlo: 'cmh-local' presente, con el modelo pedido, y nada mas.
+# No se dice "Listo" sin verlo: 'cmh-local' presente y nada mas. `lms load` resuelve una clave
+# parcial ("gemma-4" -> google/gemma-4-e4b, "qwen3.5" -> qwen/qwen3.5-9b) y carga "el primero":
+# esta llamada acaba de crear la fila bajo $Identifier, asi que lo que muestra ES lo que se cargo.
+# No se compara por nombre (un prefijo no es una igualdad): se IMPRIME, y si no se parece a lo
+# pedido se avisa.
 $after = @(Get-Loaded)
-$serving = @($after | Where-Object { $_.Identifier -eq $Identifier -and (Test-SameModel $_.Model $Model) })
+$serving = @($after | Where-Object { $_.Identifier -eq $Identifier })
 if ($serving.Count -eq 0) {
-    throw "La carga termino sin error pero '$Identifier' no aparece en 'lms ps' con el modelo $Model."
+    throw "La carga termino sin error pero '$Identifier' no aparece en 'lms ps' (se pidio $Model)."
+}
+if (-not (Test-SameModel $serving[0].Model $Model)) {
+    Write-Host ("AVISO: lms cargo '$($serving[0].Model)' al pedirle '$Model'. Comprueba que es el modelo " +
+                "que querias; con la clave completa de 'lms ls' no se depende de como lms resuelve un nombre parcial.") -ForegroundColor Yellow
 }
 $left = @($after | Where-Object { $_.Identifier -ne $Identifier })
 if ($left.Count -gt 0) {
