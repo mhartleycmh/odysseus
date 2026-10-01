@@ -166,19 +166,23 @@ limpio 10.
   añadidos, 0 quitados, 14 cambiados); prueba de validez de mutantes **13 de 13 en los nueve árboles** (la
   base de r8 y los ocho commits de r9). Interfaz en r9: tipos 0 errores, lint 0, unitarias 62 de 62; e2e
   31 de 32.
-- **Base activa** (solo lectura, `integrity_check=ok`, 811 008 bytes): 1 agente (`CMH Researcher`, pausado),
-  0 definiciones, 0 ejecuciones, 3 endpoints (dos Ollama habilitados y Anthropic), ninguna clave gratuita
-  registrada. **La siembra no se ha ejecutado nunca contra ella.** Copias previas en
+- **Base local verificada en solo lectura (2026-10-01)** (`odysseus/data/app.db`, `integrity_check=ok`,
+  811 008 bytes, 42 tablas): 1 agente (`CMH Researcher`, pausado); 0 definiciones y 0 ejecuciones de
+  workflow; 17 tareas programadas (5 activas, 12 pausadas). Hay 3 endpoints: Ollama `c6a553e7` habilitado
+  con `supports_tools=1`, Anthropic `9a76d7a3` habilitado con clave registrada y Ollama `2345ab42` habilitado
+  sin `supports_tools`; no aparecen Groq ni OpenRouter. **La siembra no se ha ejecutado nunca contra ella.**
+  Copias previas en
   `%LOCALAPPDATA%\Odysseus\backups\` (la última, `app-antes-de-pytest-r8-20260930-1131.db`, 811 008 bytes,
   con `integrity_check=ok` en origen y copia; la anterior, `app-antes-de-pytest-r7-r2-20260929-2310.db`, con
   42 tablas sin diferencia de conteo).
-- **Servidor** del puerto 7000: al 30.09 15:59 no había ningún proceso escuchando (`Get-NetTCPConnection`);
-  la última vez que corrió era el código del 25.09. No se reinició. LM Studio sí sirve el 1234.
+- **Servicios locales verificados (2026-10-01).** Puerto 7000 no escucha. `GET http://127.0.0.1:1234/v1/models`
+  falla con `URLError`; LM Studio no está sirviendo en el puerto esperado y no hay endpoint local LM Studio
+  registrado. No intenté arrancarlo ni descargar modelos.
 - **Seguimiento e2e (2026-10-01).** Los cambios locales en `cdp.mjs` y `run.mjs` corrigen la limpieza del
   proceso de Edge y muestrean el foco al montar el detalle y tras cargarlo. Suite e2e ejecutada: **32
   comprobaciones, 32 aprobadas, 0 fallidas**, incluida «A11y: abrir un detalle con Enter lleva el foco a su
-  h1». Ambos archivos quedaron incluidos en `9a65ec72`; la revisión independiente del código de r9 y de los commits posteriores
-  posteriores sigue pendiente. No se cuenta como cerrada la revisión de Fase 1.
+  h1». Ambos archivos quedaron incluidos en `9a65ec72`; la revisión independiente del código de r9 y de los
+  commits posteriores sigue pendiente. No se cuenta como cerrada la revisión de Fase 1.
 - **Pruebas focalizadas posteriores a r9 (2026-10-01).** Cinco módulos (`test_cmh_provider_discovery.py`,
   `test_cmh_endpoint_patch.py`, `test_cmh_cost_policy.py`, `test_cmh_workflow_routes.py` y
   `test_cmh_step_provider_failures.py`): **284 aprobadas, 0 fallidas**, 1 advertencia. Ocho pruebas
