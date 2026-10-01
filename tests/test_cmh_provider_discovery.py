@@ -885,3 +885,22 @@ async def test_a_task_url_with_credentials_and_no_scheme_is_a_400_that_does_not_
             f"/api/cmh/workflows/{definition.json()['id']}/runs", json={"initial_input": "x"})
     assert refused.status_code == 400, refused.text
     assert "S3CRET" not in refused.text
+
+
+async def test_a_task_url_with_credentials_and_no_scheme_is_refused_when_cost_gate_is_disabled(
+        api, monkeypatch):
+    """Disabling the cost gate must not disable credential protection."""
+    client, factory, net = api
+    monkeypatch.setenv("CMH_ZERO_COST", "false")
+    secret_url = "u:S3CRET@127.0.0.1:59999"
+    with factory() as db:
+        db.get(cdb.ScheduledTask, "task-a").endpoint_url = secret_url
+        db.commit()
+    async with client:
+        definition = await client.post("/api/cmh/workflows", json={
+            "name": "synthetic", "project_id": "project",
+            "steps": [{"key": "a", "agent_id": "agent-a"}]})
+        refused = definition if definition.status_code != 201 else await client.post(
+            f"/api/cmh/workflows/{definition.json()['id']}/runs", json={"initial_input": "x"})
+    assert refused.status_code == 400, refused.text
+    assert "S3CRET" not in refused.text

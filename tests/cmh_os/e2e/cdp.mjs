@@ -1,6 +1,6 @@
 // Minimal Chrome DevTools Protocol client for headless Edge/Chrome, using the
 // WebSocket and fetch built into Node 24 (no Playwright/Puppeteer install).
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,24 @@ const CANDIDATES = [
 /** @param {number} ms */
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * The PID spawn() returns is Edge's launcher, which exits once the real browser is up, so killing it did nothing and
+ * every run left a headless Edge (plus its helpers) running until the machine ran low on memory. The process that
+ * listens on the DevTools port is the browser itself, and the OS says so even when the page no longer answers over CDP.
+ * @param {number} port
+ * @returns {number|null}
+ */
+function listenerPid(port) {
+  if (process.platform !== 'win32') return null;
+  try {
+    const rows = execFileSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' }).split(/\r?\n/);
+    const row = rows.find((line) => line.includes(`127.0.0.1:${port} `) && line.includes('LISTENING'));
+    return row ? Number(row.trim().split(/\s+/).pop()) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function launchBrowser() {
   const executable = CANDIDATES.find((path) => existsSync(path));
   if (!executable) throw new Error('No Chromium-based browser found; set CMH_OS_BROWSER');
@@ -23,19 +41,30 @@ export async function launchBrowser() {
   const profile = mkdtempSync(join(tmpdir(), 'cmh-os-e2e-'));
   const child = spawn(executable, ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run',
     '--no-default-browser-check', '--disable-extensions', '--disable-gpu', '--hide-scrollbars', 'about:blank'], { stdio: 'ignore' });
+  const stop = () => {
+    const pid = listenerPid(port);
+    if (pid) { try { process.kill(pid); } catch { /* already gone */ } }
+    child.kill();
+  };
   let targets = null;
   for (let i = 0; i < 80 && !targets; i += 1) {
     await sleep(150);
     try { targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(); } catch { targets = null; }
   }
-  if (!targets) { child.kill(); throw new Error('Browser did not expose DevTools'); }
-  const target = targets.find((t) => t.type === 'page');
-  const page = await Page.connect(target.webSocketDebuggerUrl);
+  if (!targets) { stop(); throw new Error('Browser did not expose DevTools'); }
+  /** @type {Page} */
+  let page;
+  try {
+    page = await Page.connect(targets.find((t) => t.type === 'page').webSocketDebuggerUrl);
+  } catch (error) {
+    stop(); // a browser this call started must not outlive a failed launch
+    throw error;
+  }
   return {
     page,
     async close() {
       page.close();
-      child.kill();
+      stop();
       await sleep(300);
       try { rmSync(profile, { recursive: true, force: true }); } catch { /* profile files may still be locked on Windows */ }
     },

@@ -175,10 +175,11 @@ def _snapshot(db, owner, project_id, spec, discovered=None, notes=None):
     # working authentication — measured, httpx turns userinfo into
     # Authorization: Basic at send time — and keeping it would persist the
     # secret in the run's frozen config and stream it to the browser.
-    # (A URL urlparse cannot read, or with no scheme, never gets here: the cost gate above has no
-    # host to judge and refuses it first, and redact_url keeps the credential out of its message.)
-    from src.cmh_cost_policy import has_userinfo
-    if has_userinfo(task.endpoint_url or ""):
+    # The raw-authority check is mandatory when CMH_ZERO_COST=false: urlparse cannot assign a
+    # host to a URL without a scheme, and the cost gate may be explicitly disabled.
+    from src.cmh_cost_policy import carries_unliftable_credential, has_userinfo
+    if (has_userinfo(task.endpoint_url or "")
+            or carries_unliftable_credential(task.endpoint_url or "")):
         raise HTTPException(400, f"Step {spec['key']}: la URL de la tarea del agente lleva "
                                  f"credenciales embebidas. Corrigela: la credencial va en la "
                                  f"api_key del endpoint registrado, no en la URL. Aqui no se "

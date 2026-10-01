@@ -359,14 +359,28 @@ try {
   });
   await check('A11y: abrir un detalle con Enter lleva el foco a su h1', async () => {
     await route('#/agentes');
-    await page.eval(`document.querySelector('[data-view="agents"] tbody tr[data-row]').focus()`);
+    await page.waitFor(`document.querySelector('[data-view="agents"] tbody tr[data-row]')`, 10000, 'agents list rows');
+    // Sample at the router's own moment, not ours: the observer runs right after the synchronous show() that mounts
+    // the detail. Polling for the hash or the missing skeleton is also satisfied by the old list, whose row keeps
+    // focus until hashchange is handled; that is how this check used to fail with "focus on TR" on a slow renderer.
+    await page.eval(`(() => {
+      const host = document.querySelector('.view-host');
+      window.__detail = null;
+      new MutationObserver((_records, observer) => {
+        if (!host.querySelector('[data-view="agent"]')) return;
+        observer.disconnect();
+        window.__detail = { h1: document.querySelectorAll('main h1').length, loading: Boolean(host.querySelector('.skeleton')), focus: document.activeElement?.tagName };
+      }).observe(host, { childList: true, subtree: true });
+      document.querySelector('[data-view="agents"] tbody tr[data-row]').focus();
+    })()`);
     await page.press('Enter');
-    await page.waitFor(`location.hash.startsWith('#/agentes/')`, 5000, 'detail route');
-    const immediate = await page.eval(`document.querySelectorAll('main h1').length`);
-    await page.waitFor(`!document.querySelector('.view-host .skeleton')`);
-    const focus = await page.eval(`({ tag: document.activeElement?.tagName, text: document.activeElement?.textContent })`);
-    expect(immediate === 1, `h1 exists while loading (${immediate})`);
-    expect(focus.tag === 'H1', `focus on ${focus.tag}`);
+    await page.waitFor('window.__detail', 5000, 'detail view mounted');
+    const mounted = await page.eval('window.__detail');
+    await page.waitFor(`document.querySelector('.view-host [data-view="agent"]') && !document.querySelector('.view-host .skeleton')`);
+    const settled = await page.eval(`({ tag: document.activeElement?.tagName, onMainH1: document.activeElement === document.querySelector('main h1'), view: document.querySelector('.view-host [data-view]')?.dataset.view })`);
+    expect(mounted.h1 === 1, `h1 missing when the detail mounted (${JSON.stringify(mounted)})`);
+    expect(mounted.focus === 'H1', `focus on ${mounted.focus} when the detail mounted (${JSON.stringify(mounted)})`);
+    expect(settled.tag === 'H1' && settled.onMainH1, `focus on ${settled.tag} after the detail loaded (${JSON.stringify(settled)})`);
     noErrors('focus');
   });
   await check('A11y: movimiento reducido detiene las partículas', async () => {

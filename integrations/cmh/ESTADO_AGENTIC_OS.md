@@ -119,7 +119,7 @@ del candidato local y cuota), definidas en `scripts/cmh_mutants/round4.py`. Bloq
 (claves) y en 3.5 (autorización de la siembra); 3.6 depende de ambos. Sin una ejecución real no hay punto
 limpio 10.
 
-- **Git.** Rama `dev`, **59 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6, 9 de r7, 10 de r8 y 9 de r9: 8 de código, pruebas y mutantes y 1 de documentos).
+- **Git.** Rama `dev`, **62 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6, 9 de r7, 10 de r8, 9 de r9 y 3 posteriores a la etiqueta r9). El árbol tiene cambios locales sin commit en `tests/cmh_os/e2e/cdp.mjs` y `tests/cmh_os/e2e/run.mjs`.
   Etiquetas de revisión: `revision-fase1-r2` a `r8` y `revision-fase1-r9`, que congela el commit de documentos de r9.
 - **Revisión independiente de `revision-fase1-r6` (`ea4eee18`): DEVUELTO**, 0 P1, 19 P2 y 66 P3. r7
   corrige los 19 P2 y 59 de los 66 P3 (los otros 7 quedan declarados como límites en ADR-036), en ocho
@@ -164,8 +164,8 @@ limpio 10.
   suite = **992 aprobadas, 1 fallida** (la misma preexistente; 953 de r8 + 39 nuevas); **las ocho campañas
   enteras = 332 de 332 mutantes capturados**, 0 sobrevivientes, 0 inválidos, 0 obsoletos (279 en r8: 53
   añadidos, 0 quitados, 14 cambiados); prueba de validez de mutantes **13 de 13 en los nueve árboles** (la
-  base de r8 y los ocho commits de r9). Interfaz: tipos 0 errores, lint 0, unitarias 62 de 62; e2e 31 de 32
-  (la fallida es preexistente, ver arriba).
+  base de r8 y los ocho commits de r9). Interfaz en r9: tipos 0 errores, lint 0, unitarias 62 de 62; e2e
+  31 de 32.
 - **Base activa** (solo lectura, `integrity_check=ok`, 811 008 bytes): 1 agente (`CMH Researcher`, pausado),
   0 definiciones, 0 ejecuciones, 3 endpoints (dos Ollama habilitados y Anthropic), ninguna clave gratuita
   registrada. **La siembra no se ha ejecutado nunca contra ella.** Copias previas en
@@ -174,10 +174,20 @@ limpio 10.
   42 tablas sin diferencia de conteo).
 - **Servidor** del puerto 7000: al 30.09 15:59 no había ningún proceso escuchando (`Get-NetTCPConnection`);
   la última vez que corrió era el código del 25.09. No se reinició. LM Studio sí sirve el 1234.
-- **Falla preexistente descubierta en r9** (no la causa ningún commit de r7 a r9): la suite e2e de `/cmh/os`
-  da 32 comprobaciones, 31 aprobadas y 1 fallida, «A11y: abrir un detalle con Enter lleva el foco a su h1»
-  (el foco queda en `TR`); falla igual en `bba01a65`, el commit que añadió la suite (31 comprobaciones, 30
-  aprobadas). Tarea aparte; puede ser un artefacto de cómo se maneja Edge sin ventana.
+- **Seguimiento e2e (2026-10-01).** Los cambios locales en `cdp.mjs` y `run.mjs` corrigen la limpieza del
+  proceso de Edge y muestrean el foco al montar el detalle y tras cargarlo. Suite e2e ejecutada: **32
+  comprobaciones, 32 aprobadas, 0 fallidas**, incluida «A11y: abrir un detalle con Enter lleva el foco a su
+  h1». Los dos archivos e2e están staged junto con la corrección de esta sesión; la revisión independiente del código de r9 y de los tres commits
+  posteriores sigue pendiente. No se cuenta como cerrada la revisión de Fase 1.
+- **Pruebas focalizadas posteriores a r9 (2026-10-01).** Cinco módulos (`test_cmh_provider_discovery.py`,
+  `test_cmh_endpoint_patch.py`, `test_cmh_cost_policy.py`, `test_cmh_workflow_routes.py` y
+  `test_cmh_step_provider_failures.py`): **284 aprobadas, 0 fallidas**, 1 advertencia. Ocho pruebas
+  focalizadas de `start.ps1`: **8 aprobadas**, 73 del módulo no seleccionadas. Se reprodujo y corrigió un
+  escape: con `CMH_ZERO_COST=false`, una URL de tarea sin esquema que contenía credenciales llegaba a crear
+  el run (201); ahora el snapshot la rechaza (400) aunque la compuerta esté desactivada, sin eco del secreto.
+  Mutación `W9` de `round9.py`: **1/1 capturada** por la nueva regresión; árbol del export restaurado en
+  **75/75**. Advertencia común: SQLAlchemy `declarative_base()` deprecado. Las dos tareas reproducibles
+  están en `.vscode/tasks.json` y usan el `.venv` hermano del workspace.
 - **No se hizo, y no está autorizado:** push, borrado de filas o copias, mover `data/`, `cmh_seed_agents.py
   --apply`, `migrate-data.ps1`, aprobar o rechazar un paso en nombre del usuario.
 

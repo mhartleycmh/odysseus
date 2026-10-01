@@ -345,6 +345,11 @@ MUTANTS = [
      '                                     f"corrigela a mano. Aqui no se recorta en silencio.")',
      'f"porque este sigue habilitado. Aqui no se recorta en silencio.")',
      FREEZE_TESTS),
+    ("W9 desactivar costo cero vuelve a permitir credenciales en una URL de tarea sin esquema", WF_ROUTES,
+     '    if (has_userinfo(task.endpoint_url or "")\n'
+     '            or carries_unliftable_credential(task.endpoint_url or "")):',
+     '    if has_userinfo(task.endpoint_url or ""):',
+     FREEZE_TESTS),
     # --- the seed script, r9 --------------------------------------------------------
     ("Z15 --apply sobre una base que no existe la abre (y la crea vacia) antes de negarse", SEED,
      "        elif not args.allow_pending:",
