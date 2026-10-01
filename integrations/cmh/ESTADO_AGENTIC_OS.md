@@ -119,7 +119,7 @@ del candidato local y cuota), definidas en `scripts/cmh_mutants/round4.py`. Bloq
 (claves) y en 3.5 (autorización de la siembra); 3.6 depende de ambos. Sin una ejecución real no hay punto
 limpio 10.
 
-- **Git.** Rama `dev`, **62 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6, 9 de r7, 10 de r8, 9 de r9 y 3 posteriores a la etiqueta r9). El árbol tiene cambios locales sin commit en `tests/cmh_os/e2e/cdp.mjs` y `tests/cmh_os/e2e/run.mjs`.
+- **Git.** Rama `dev`; el fix de credenciales quedó en el commit local sin push `9a65ec72`, junto con los cambios e2e de foco y limpieza de Edge. La revisión independiente del candidato posterior a r9 sigue pendiente.
   Etiquetas de revisión: `revision-fase1-r2` a `r8` y `revision-fase1-r9`, que congela el commit de documentos de r9.
 - **Revisión independiente de `revision-fase1-r6` (`ea4eee18`): DEVUELTO**, 0 P1, 19 P2 y 66 P3. r7
   corrige los 19 P2 y 59 de los 66 P3 (los otros 7 quedan declarados como límites en ADR-036), en ocho
@@ -177,7 +177,7 @@ limpio 10.
 - **Seguimiento e2e (2026-10-01).** Los cambios locales en `cdp.mjs` y `run.mjs` corrigen la limpieza del
   proceso de Edge y muestrean el foco al montar el detalle y tras cargarlo. Suite e2e ejecutada: **32
   comprobaciones, 32 aprobadas, 0 fallidas**, incluida «A11y: abrir un detalle con Enter lleva el foco a su
-  h1». Los dos archivos e2e están staged junto con la corrección de esta sesión; la revisión independiente del código de r9 y de los tres commits
+  h1». Ambos archivos quedaron incluidos en `9a65ec72`; la revisión independiente del código de r9 y de los commits posteriores
   posteriores sigue pendiente. No se cuenta como cerrada la revisión de Fase 1.
 - **Pruebas focalizadas posteriores a r9 (2026-10-01).** Cinco módulos (`test_cmh_provider_discovery.py`,
   `test_cmh_endpoint_patch.py`, `test_cmh_cost_policy.py`, `test_cmh_workflow_routes.py` y
