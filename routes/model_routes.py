@@ -1399,10 +1399,11 @@ def _apply_base_url_update(ep, body: dict) -> None:
     base, url_key = _patched_base_url(body["base_url"])
     if not base:
         return
-    from src.cmh_cost_policy import has_userinfo
-    if has_userinfo(base):
-        raise HTTPException(400, "La URL lleva usuario y clave y no se pudo separar "
-                                 "(puerto fuera de rango o URL ilegible): corrigela.")
+    from src.cmh_cost_policy import carries_unliftable_credential, has_userinfo
+    if has_userinfo(base) or carries_unliftable_credential(base):
+        raise HTTPException(400, "La URL lleva usuario y clave (o un '@' en su autoridad) y no se "
+                                 "pudo separar (puerto fuera de rango, URL ilegible o sin esquema): "
+                                 "corrigela.")
     ep.base_url = base
     explicit = isinstance(body.get("api_key"), str) and body["api_key"].strip()
     if url_key and not explicit:
@@ -2054,12 +2055,14 @@ def setup_model_routes(model_discovery):
         base_url, url_key = split_url_credentials(base_url)
         if url_key and not api_key.strip():
             api_key = url_key
-        from src.cmh_cost_policy import has_userinfo
-        if has_userinfo(base_url):
+        from src.cmh_cost_policy import carries_unliftable_credential, has_userinfo
+        if has_userinfo(base_url) or carries_unliftable_credential(base_url):
             # A credential that could not be lifted (an out-of-range port leaves nothing to
-            # rebuild the URL from) is never stored: 400, not 500 and not a stored secret.
-            raise HTTPException(400, "La URL lleva usuario y clave y no se pudo separar "
-                                     "(puerto fuera de rango o URL ilegible): corrigela.")
+            # rebuild the URL from; an unreadable URL or one with no scheme hides it from
+            # urlparse) is never stored: 400, not 500 and not a stored secret.
+            raise HTTPException(400, "La URL lleva usuario y clave (o un '@' en su autoridad) y no se "
+                                     "pudo separar (puerto fuera de rango, URL ilegible o sin esquema): "
+                                     "corrigela.")
         # Resolve hostname via Tailscale if DNS fails
         from src.endpoint_resolver import resolve_url
         base_url = resolve_url(base_url)

@@ -271,3 +271,34 @@ async def test_credentials_with_an_out_of_range_port_are_a_400_and_nothing_is_st
         assert db.query(cdb.ModelEndpoint).count() == 1               # nothing was created
         row = db.get(cdb.ModelEndpoint, "p1")
         assert (row.base_url, row.api_key) == ("http://127.0.0.1:59990/v1", "keep-me")
+
+
+# --- review of revision-fase1-r9 -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", [
+    "http://bob:S3CRET@[::1/v1",              # unreadable: has_userinfo said False, PATCH stored it
+    "http://bob:S3CRET@[zzzz]/v1",
+    "bob:S3CRET@127.0.0.1:1234",              # no scheme
+], ids=["unreadable-ipv6", "bad-bracket", "no-scheme"])
+async def test_a_credential_the_parser_cannot_see_is_refused_and_never_stored_or_echoed(
+        routes_and_db, bad):
+    """r9 refused only a credential with an out-of-range port. With a URL urlparse cannot read, or
+    with no scheme, has_userinfo answered False: PATCH stored base_url as typed (secret included)
+    and returned it in the body, POST with no scheme did the same, and POST with an unreadable one
+    raised ValueError (HTTP 500). Anything that still has an '@' in its authority after the
+    credential was lifted is a 400, and nothing is written."""
+    client, factory, cdb = routes_and_db
+    with factory() as db:
+        db.add(cdb.ModelEndpoint(id="p2", name="x", base_url="http://127.0.0.1:59991/v1",
+                                 endpoint_kind="local", is_enabled=True, api_key="keep-me"))
+        db.commit()
+    async with client:
+        created = await client.post("/api/model-endpoints", data={
+            "base_url": bad, "endpoint_kind": "local", "skip_probe": "true", "name": "gw"})
+        patched = await client.patch("/api/model-endpoints/p2", json={"base_url": bad})
+    assert created.status_code == 400 and patched.status_code == 400, (created.text, patched.text)
+    assert "S3CRET" not in created.text + patched.text
+    with factory() as db:
+        assert db.query(cdb.ModelEndpoint).count() == 1
+        row = db.get(cdb.ModelEndpoint, "p2")
+        assert (row.base_url, row.api_key) == ("http://127.0.0.1:59991/v1", "keep-me")

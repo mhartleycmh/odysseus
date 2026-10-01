@@ -397,7 +397,12 @@ async def test_a_credential_lifted_from_the_url_reaches_the_provider_as_basic(ke
 
 # --- review of revision-fase1-r8 ------------------------------------------------------------------
 
-async def test_a_failing_quota_write_never_puts_a_credential_in_the_event(chain, monkeypatch):
+@pytest.mark.parametrize("legacy_url", [
+    "http://legacyuser:LEGACYPASS@127.0.0.1:59999/v1",
+    "https://legacyuser:LEGACYPASS@api.groq.com/openai/v1",     # the realistic ones are https
+], ids=["http", "https"])
+async def test_a_failing_quota_write_never_puts_a_credential_in_the_event(
+        chain, monkeypatch, legacy_url):
     """A config frozen in the old shape (no 'candidates') uses the URL as the endpoint id, and
     that URL may carry user:password@. The accounting keeps the value; the EVENT never does."""
     net, factory, workspace = chain
@@ -408,14 +413,15 @@ async def test_a_failing_quota_write_never_puts_a_credential_in_the_event(chain,
     monkeypatch.setattr(router, "record_usage", broken)
     config = _config(workspace)
     config.pop("candidates")
-    config["endpoint_url"] = "http://legacyuser:LEGACYPASS@127.0.0.1:59999/v1"
+    config["endpoint_url"] = legacy_url
     await flow.call_model(config, "p")
     with factory() as session:
         events = [json.loads(e.payload) for e in session.query(cdb.CMHWorkflowEvent).filter(
             cdb.CMHWorkflowEvent.kind == "quota_write_failed").all()]
     assert len(events) == 1
     assert "LEGACYPASS" not in json.dumps(events) and "legacyuser" not in json.dumps(events)
-    assert events[0]["endpoint_id"].startswith("http://127.0.0.1:59999")
+    assert events[0]["endpoint_id"].startswith(legacy_url.split("://")[0] + "://")
+    assert "@" not in events[0]["endpoint_id"]
 
 
 async def test_the_step_survives_a_quota_write_AND_its_event_failing_together(
@@ -441,3 +447,81 @@ async def test_the_step_survives_a_quota_write_AND_its_event_failing_together(
     with caplog.at_level(logging.ERROR, logger="src.cmh_workflows"):
         assert await flow.call_model(_config(workspace), "p") == "RESPUESTA_DE_GROQ"
     assert "Could not record quota_write_failed" in caplog.text
+
+
+# --- review of revision-fase1-r9 -----------------------------------------------------------------------
+
+# Two local runtimes with no registered row: when a candidate's URL matches a row the engine
+# swaps in the row's id ("groq"), so only an UNREGISTERED URL stays as the id (the old frozen shape).
+URL_ID_A = "https://ida:PWA@127.0.0.1:59981/v1"
+URL_ID_B = "https://idb:PWB@127.0.0.1:59982/v1"
+
+
+def _url_id_candidates():
+    return [{"endpoint_id": URL_ID_A, "endpoint_url": URL_ID_A, "model": "m-a", "host": "127.0.0.1"},
+            {"endpoint_id": URL_ID_B, "endpoint_url": URL_ID_B, "model": "m-b", "host": "127.0.0.1"}]
+
+
+def _fallback_events(factory):
+    with factory() as session:
+        return [json.loads(e.payload) for e in session.query(cdb.CMHWorkflowEvent).filter(
+            cdb.CMHWorkflowEvent.kind == "provider_fallback").all()]
+
+
+async def test_the_fallback_events_never_carry_a_url_as_the_endpoint_id(chain, monkeypatch):
+    """A candidate whose id is a URL (the old frozen shape uses the URL as the id) that fails and
+    hands over to the next: both ends of the event are shortened."""
+    net, factory, workspace = chain
+    tried = []
+
+    async def fake(config, candidate, prompt, record):
+        tried.append(candidate["endpoint_id"])
+        if len(tried) == 1:
+            error = RuntimeError("rate limited")
+            error.status_code = 429
+            raise error
+        return "respuesta"
+
+    monkeypatch.setattr(flow, "_run_one_candidate", fake)
+    config = _config(workspace)
+    config["candidates"] = _url_id_candidates()
+    assert await flow.call_model(config, "p") == "respuesta"
+    assert tried == [URL_ID_A, URL_ID_B]                       # the accounting keeps the raw ids
+    events = _fallback_events(factory)
+    assert len(events) == 1
+    # redact_url keeps the scheme, the host and the path, and nothing else
+    assert (events[0]["from"], events[0]["to"]) == ("https://127.0.0.1:59981/v1", "https://127.0.0.1:59982/v1")
+    assert "PWA" not in json.dumps(events) and "PWB" not in json.dumps(events)
+
+
+async def test_the_event_of_a_candidate_skipped_for_quota_never_carries_a_url_id(chain, monkeypatch):
+    net, factory, workspace = chain
+    config = _config(workspace)
+    config["candidates"] = _url_id_candidates()[:1]
+    monkeypatch.setattr(router, "usable_candidates",
+                        lambda db, candidates: ([], [dict(candidates[0], reason="quota:rpd")]))
+    with pytest.raises(RuntimeError):
+        await flow.call_model(config, "p")
+    events = _fallback_events(factory)
+    assert len(events) == 1 and events[0]["from"] == "https://127.0.0.1:59981/v1"
+    assert events[0]["reason"] == "quota:rpd" and "PWA" not in json.dumps(events)
+
+
+async def test_a_failing_quota_write_never_puts_the_credential_in_the_log_either(
+        chain, monkeypatch, caplog):
+    """logger.exception printed the traceback, and a real database error carries its bound
+    parameters (the URL used as the id, secret included) in its text."""
+    import logging
+    net, factory, workspace = chain
+
+    def broken(db, endpoint_id, *args, **kwargs):
+        raise RuntimeError(f"INSERT failed [parameters: ('{endpoint_id}', 'minute')]")
+
+    monkeypatch.setattr(router, "record_usage", broken)
+    config = _config(workspace)
+    config.pop("candidates")
+    config["endpoint_url"] = "https://legacyuser:LEGACYPASS@api.groq.com/openai/v1"
+    with caplog.at_level(logging.DEBUG, logger="src.cmh_workflows"):
+        await flow.call_model(config, "p")
+    assert "Could not charge quota" in caplog.text
+    assert "LEGACYPASS" not in caplog.text and "legacyuser" not in caplog.text

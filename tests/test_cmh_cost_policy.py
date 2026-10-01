@@ -440,3 +440,33 @@ async def test_an_agent_workspace_inside_a_financial_folder_is_refused(client, m
         refused = await client.post("/api/cmh/agents", json=body)
     assert refused.status_code == 400
     assert "Modelo Financiero Nuevo" in refused.json()["detail"]
+
+
+# --- review of revision-fase1-r9 -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("url, expected", [
+    ("http://bob:s3cret@[::1/v1", True),            # unreadable: urlparse sees no credential in it
+    ("http://bob:s3cret@[zzzz]/v1", True),
+    ("bob:s3cret@127.0.0.1:1234", True),            # no scheme: the credential stays in the text
+    ("http://@host.example/v1", True),              # an empty userinfo is still an '@' that is left
+    ("https://token@host.example/v1", True),
+    ("https://host.example/v1/@handle", False),     # an '@' in the path is not in the authority
+    ("https://host.example/v1?email=a@b.com", False),   # nor one in the query
+    ("https://host.example/v1#a@b", False),         # nor one in the fragment
+    ("https://host.example?email=a@b.com", False),  # a query with no path: the '?' ends the authority
+    ("https://host.example#a@b", False),            # and so does a '#' 
+    ("http://127.0.0.1:1234/v1", False), ("", False), (None, False),
+])
+def test_an_at_sign_left_in_the_authority_is_a_credential_that_could_not_be_lifted(url, expected):
+    from src.cmh_cost_policy import carries_unliftable_credential
+    assert carries_unliftable_credential(url) is expected
+
+
+@pytest.mark.parametrize("url, shown", [
+    ("u:s3cret@127.0.0.1:59999", "127.0.0.1:59999"),                # no scheme: used to come back whole
+    ("http://bob:s3cret@[::1/v1", "URL no interpretable"),
+    ("https://u:s3cret@api.groq.com/openai/v1?k=1#f", "https://api.groq.com/openai/v1"),
+])
+def test_redact_url_never_returns_the_credential(url, shown):
+    result = redact_url(url)
+    assert "s3cret" not in result and result == shown

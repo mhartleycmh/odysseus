@@ -125,8 +125,11 @@ def has_userinfo(base_url: Optional[str]) -> bool:
     one does not touch the old).
 
     An EMPTY userinfo (``http://@host``) is not a credential: ``split_url_credentials``
-    agrees, so a refusal can always be cleared. A URL that cannot be parsed answers False:
-    ``endpoint_host`` is "" for it, and no row like that can be a candidate.
+    agrees, so a refusal can be cleared by a PATCH, except when the port is out of range or the
+    URL unreadable (then the PATCH answers 400 and the row has to be corrected by hand, deleted
+    or disabled). A URL that cannot be parsed answers False: ``endpoint_host`` is "" for it, and
+    no row like that can be a candidate; ``carries_unliftable_credential`` is the question for a
+    URL about to be stored.
     """
     try:
         parsed = urlparse(base_url or "")
@@ -135,19 +138,46 @@ def has_userinfo(base_url: Optional[str]) -> bool:
         return False
 
 
+def _split_authority(text: str):
+    """``(head, authority, tail)`` of the RAW text: ``head`` is the scheme and ``://`` (or ""), the
+    authority runs to the first ``/``, ``?`` or ``#``. urlparse finds no netloc in a URL with no
+    scheme and raises on an unreadable one, so a credential has to be looked for in the text."""
+    marker = text.find("://")
+    head, rest = (text[:marker + 3], text[marker + 3:]) if marker >= 0 else ("", text)
+    stops = [i for i in (rest.find("/"), rest.find("?"), rest.find("#")) if i >= 0]
+    end = min(stops) if stops else len(rest)
+    return head, rest[:end], rest[end:]
+
+
+def carries_unliftable_credential(base_url: Optional[str]) -> bool:
+    """Whether an ``@`` is left in the authority of the RAW text.
+
+    ``has_userinfo`` asks urlparse, and urlparse sees no credential in a URL it cannot read
+    (``http://u:p@[::1/``) or that has no scheme (``u:p@127.0.0.1:1234``): the credential stays in
+    the text, and a POST or a PATCH would store it in ``base_url`` and send it back. Where a URL is
+    about to be STORED this is asked after ``split_url_credentials`` lifted what it could: whatever
+    still has an ``@`` before the first ``/``, ``?`` or ``#`` is refused. An ``@`` in the path, the
+    query or the fragment (an e-mail in a parameter) is not in the authority.
+    """
+    return "@" in _split_authority(base_url or "")[1]
+
+
 def redact_url(base_url: Optional[str]) -> str:
     """The URL without credentials, query or fragment: safe for a message or an event.
 
     A base URL may carry ``user:pass@`` (ADR-026 moves it to ``api_key`` on the way
     in, but a row written before that, or by a path that does not split it, still
     has it) or a key in the query string. Anything that prints a URL goes through here.
+    The userinfo is cut from the raw text first, so a URL with no scheme (``u:p@host``)
+    does not come back whole.
     """
     if not base_url:
         return ""
+    head, authority, tail = _split_authority(base_url)
+    cleaned = head + authority.rsplit("@", 1)[-1] + tail
     try:
-        parts = urlparse(base_url)
-        host = parts.netloc.rsplit("@", 1)[-1]
-        return urlunparse((parts.scheme, host, parts.path, "", "", ""))
+        parts = urlparse(cleaned)
+        return urlunparse((parts.scheme, parts.netloc, parts.path, "", "", ""))
     except ValueError:
         return "URL no interpretable"
 

@@ -175,6 +175,8 @@ def _snapshot(db, owner, project_id, spec, discovered=None, notes=None):
     # working authentication — measured, httpx turns userinfo into
     # Authorization: Basic at send time — and keeping it would persist the
     # secret in the run's frozen config and stream it to the browser.
+    # (A URL urlparse cannot read, or with no scheme, never gets here: the cost gate above has no
+    # host to judge and refuses it first, and redact_url keeps the credential out of its message.)
     from src.cmh_cost_policy import has_userinfo
     if has_userinfo(task.endpoint_url or ""):
         raise HTTPException(400, f"Step {spec['key']}: la URL de la tarea del agente lleva "
@@ -213,8 +215,9 @@ def _snapshot(db, owner, project_id, spec, discovered=None, notes=None):
                                      f"lleva credenciales embebidas en su URL. Editalo (un PATCH "
                                      f"con esa misma URL pasa la credencial a su api_key), o "
                                      f"eliminalo o deshabilitalo: registrar otro nuevo no basta, "
-                                     f"porque este sigue habilitado. Aqui no se recorta en "
-                                     f"silencio.")
+                                     f"porque este sigue habilitado. Si la URL tiene un puerto "
+                                     f"fuera de rango o no se puede leer, el PATCH la rechaza: "
+                                     f"corrigela a mano. Aqui no se recorta en silencio.")
     # provider_dropped is per ROW: a provider can be dropped on one row and still be in the
     # frozen list through another (two Groq rows, one over http and one over https).
     if notes is not None:
@@ -368,9 +371,9 @@ def setup_cmh_workflow_routes() -> APIRouter:
             # missing from the frozen lists must say why.
             for note in discovery_notes:
                 event(db, run.id, "provider_discovery", **note)
-            # A provider whose row the gate or the credential rule kept out of every frozen
-            # list used to vanish without a trace: the run went on with what was left and
-            # nobody could tell why Groq was not there.
+            # A ROW the gate or the credential rule kept out of the frozen lists used to vanish
+            # without a trace (the provider may still be there through another row): the run went
+            # on with what was left and nobody could tell why a row of Groq was not there.
             for note in dropped_notes:
                 event(db, run.id, "provider_dropped", **note)
             db.commit()

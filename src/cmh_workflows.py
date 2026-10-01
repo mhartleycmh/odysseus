@@ -327,8 +327,10 @@ async def call_model(config: dict, prompt: str) -> str:
                 record_usage(db, candidate["endpoint_id"], **usage)
                 db.commit()
         except Exception as exc:
-            logger.exception("Could not charge quota to endpoint %s",
-                             _event_id(candidate.get("endpoint_id")))
+            # No traceback and no message: a database error carries its bound parameters, and the
+            # id may be a URL with user:password@ (the old frozen shape). The type is in the event.
+            logger.error("Could not charge quota to endpoint %s (%s)",
+                         _event_id(candidate.get("endpoint_id")), type(exc).__name__)
             try:
                 record("quota_write_failed", endpoint_id=_event_id(candidate.get("endpoint_id")),
                        error_type=type(exc).__name__)

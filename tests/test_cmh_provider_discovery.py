@@ -800,6 +800,8 @@ async def test_the_refusal_of_a_credential_row_names_the_way_out_that_works(api)
     detail = refused.json()["detail"]
     assert refused.status_code == 400, refused.text
     assert "PATCH" in detail and "registrar otro nuevo no basta" in detail
+    assert "eliminalo" in detail and "deshabilitalo" in detail     # the three ways out, all named
+    assert "puerto fuera de rango" in detail                       # and the case where PATCH refuses
     assert "hunter2" not in refused.text
 
 
@@ -821,7 +823,7 @@ def _pinned_openrouter(model):
         {"endpoint_host": "openrouter.ai", "order": 2, "model": model, "limits": {}}]}
 
 
-async def test_a_five_step_flow_says_a_dropped_row_once_not_once_per_step(api, monkeypatch):
+async def test_a_three_step_flow_says_a_dropped_row_once_not_once_per_step(api, monkeypatch):
     """The notes of every step are merged with `if n not in notes`; a flow has several steps."""
     client, factory, net = api
     monkeypatch.setattr(router, "load_quota_config",
@@ -863,3 +865,20 @@ async def test_a_model_that_is_not_free_on_openrouter_is_dropped_by_the_gate_and
     dropped = [payload for kind, payload in events if kind == "provider_dropped"]
     assert dropped == [{"endpoint_id": "orr", "host": "openrouter.ai", "reason": "cost_gate"}]
     assert "orr" not in [c["endpoint_id"] for c in json.loads(config)["candidates"]]
+
+
+async def test_a_task_url_with_credentials_and_no_scheme_is_a_400_that_does_not_echo_them(api):
+    """redact_url cut by netloc, and a URL with no scheme has none: the zero-cost 400 returned the
+    whole URL, secret included. The first thing that refuses is creating the definition."""
+    client, factory, net = api
+    with factory() as db:
+        db.get(cdb.ScheduledTask, "task-a").endpoint_url = "u:S3CRET@127.0.0.1:59999"
+        db.commit()
+    async with client:
+        definition = await client.post("/api/cmh/workflows", json={
+            "name": "synthetic", "project_id": "project",
+            "steps": [{"key": "a", "agent_id": "agent-a"}]})
+        refused = definition if definition.status_code != 201 else await client.post(
+            f"/api/cmh/workflows/{definition.json()['id']}/runs", json={"initial_input": "x"})
+    assert refused.status_code == 400, refused.text
+    assert "S3CRET" not in refused.text
