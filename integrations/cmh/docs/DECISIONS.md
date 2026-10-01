@@ -566,14 +566,18 @@ estaba definida y que el vacío era un hueco técnico.
   `Authorization: Bearer Basic ...`, que ninguno acepta: un endpoint registrado o editado con
   `usuario:clave@` daba 401 donde la URL cruda autenticaba. Lo midieron dos lentes de la segunda
   revisión por separado. Ahora `build_headers` envía un valor que ya empieza por `Basic ` tal
-  cual, y una prueba registra el endpoint por POST y por PATCH, por las rutas reales, y captura
-  la cabecera que sale.)*
+  cual; una prueba registra el endpoint por POST y por PATCH, por las rutas reales, y arma la
+  cabecera con `build_headers`. r9 corrige lo que eso decía: es una prueba del AYUDANTE, no del
+  remitente. La cabecera que un paso de flujo envía de verdad se lee en el transporte con otra
+  prueba que ejecuta `call_model`, por el `_run_agent_loop` del planificador.)*
 - **Y el paso de flujo la rechaza, no la recorta.** Una tarea cuya URL lleve
-  credenciales se refusa con 400 pidiendo re-registrar el endpoint. Recortarla
+  credenciales se refusa con 400 (r9: pidiendo corregir la URL de la tarea, porque la credencial va en
+  la api_key del endpoint registrado y no en la URL). Recortarla
   habría quitado autenticación que funciona; conservarla la habría persistido en
   el config congelado y emitido por SSE. *Medido:* 0 endpoints con userinfo en
   la base activa, así que nadie queda fuera hoy. *(r8: lo mismo para una FILA registrada
-  cuya URL aún lleve credenciales: `create_run` responde 400 pidiendo re-registrarla. r7 la
+  cuya URL aún lleve credenciales: `create_run` responde 400 pidiendo re-registrarla, cosa que no la limpia: r9 corrige el mensaje a
+  editarla con un PATCH de la misma URL, eliminarla o deshabilitarla. r7 la
   recortaba al congelar y el ejecutor, que halla la fila por URL, ya no la encontraba: el paso
   salía sin Authorization, que es peor que el 401 que se quería evitar.)*
 
@@ -727,7 +731,9 @@ estaba definida y que el vacío era un hueco técnico.
   fallida incluida. Medido sobre la cadena real: dos rondas de 10/5 tokens y un 429 cargan 3
   peticiones y 20/10 tokens. Sigue **sobrestimando** un intento rechazado antes de enviar
   (configuración inválida, cooldown sintético 503): cuenta 1 petición sin que haya salido. Un
-  fallo al escribir la cuota se registra en el log, no en un evento del run. El blueprint §7.3
+  fallo al escribir la cuota se registra en el log y, desde r8, en un evento
+  `quota_write_failed` del run (endpoint y tipo del error, nunca su texto); si falla también el
+  evento, queda el log. El blueprint §7.3
   dice que `model_metrics` se emite «cada ronda»: se emite **uno por intento**, con un bucket
   por ronda, y `provider_discovery` (ADR-028) no figura en su lista de eventos; §7.3 queda
   corregido por esta ADR. Los tokens son
@@ -859,8 +865,9 @@ estaba definida y que el vacío era un hueco técnico.
   aquí) y `-Models "a,b"` (con `-File` una lista llega como una sola cadena); existe
   `start.sh`. **Sin medir:** `$request.Proxy = $null`; .NET ya evita el proxy en loopback,
   así que un servidor falso en 127.0.0.1 no distingue.
-- **Pruebas.** `tests/test_cmh_local_scripts.py` (16 en r6, 43 en r7, bajo el PowerShell
-  5.1.26100 real); mutantes B01–B12 y S01–S05 (r6) y B13–B31 y S06–S16 (r7) de `round6`.
+- **Pruebas.** `tests/test_cmh_local_scripts.py` (16 en r6, 43 en r7, 54 en r8 y 67 en r9, bajo el
+  PowerShell 5.1.26100 real); mutantes de `round6`: los conteos por ronda están en ADR-036 (r7) y
+  ADR-038 (r9), no en un rango de ids que contaba 30 cuando eran 28.
 
 ## ADR-034 · La siembra crea la definición, guarda la política y no siembra una cadena vacía (2026-09-29)
 
@@ -929,7 +936,8 @@ estaba definida y que el vacío era un hueco técnico.
   evidencia se medía según el `require_tool_evidence` congelado de cada paso. Ahora la ruta se
   juzga por la URL congelada (y un paso completado cuya ruta no se puede resolver falla con
   «NO VERIFICABLE»); la aprobación exige la compuerta en el revisor, una decisión `approved`,
-  un autor y una fecha **no posterior al inicio del paso** (comparadas en UTC); la evidencia se
+  un autor y una fecha **no posterior al inicio del paso ni anterior al inicio de la ejecución** (la
+  segunda cota, desde r8; comparadas en UTC); la evidencia se
   pide siempre de investigador, constructor y verificador y se avisa aparte de un config que la
   desactive. Los tokens dicen si son reales, estimados o mixtos, y un paso sin `model_metrics`
   dice «sin dato» en vez de 0 / 0.
@@ -981,8 +989,9 @@ estaba definida y que el vacío era un hueco técnico.
   5. **413 por tokens por minuto** (P3 #28, riesgo no verificado): los pasos tardíos arrastran artefactos
      de hasta 40 000 caracteres y un 4xx fuera de `FALLBACK_STATUS` detiene el paso sin probar el
      siguiente. Se verifica contra Groq real en la primera ejecución.
-  6. **Sobrestimación de cuota** en un intento rechazado antes de enviar, y un fallo al escribir la
-     cuota va al log, no a un evento (P3 #26, #27).
+  6. **Sobrestimación de cuota** en un intento rechazado antes de enviar (P3 #26: sigue, y el comentario
+     de `call_model` lo declara), y un fallo al escribir la cuota (P3 #27: desde r8 deja además un evento
+     `quota_write_failed`, ADR-037).
   7. `$request.Proxy = $null` de `bench.ps1` sin medir (.NET ya evita el proxy en loopback).
 - **No medido** (la revisión lo declaró y sigue igual hasta que el usuario haga U1–U4): que `/models/user` de
   OpenRouter exista y traiga `supported_parameters` y `context_length`; que `/models` responda sin clave;
@@ -1003,12 +1012,12 @@ estaba definida y que el vacío era un hueco técnico.
      tenía tres formas de mentir y ningún test que las viera.
   2. Una lista vacía debe significar una sola cosa. El informe usaba `[]` para «verificado» y para «no
      verificable».
-  3. Una prueba que lee la base en memoria compartida depende de quién corrió antes:
-     `test_workflow_step_declares_itself_foreground_controlled` falló detrás de una prueba que llama a
-     `engine.dispose()` (que deja 0 tablas en esa base: `no such table: model_endpoints`), medido con una
-     sonda que hace exactamente eso. La segunda revisión no la vio fallar detrás de `test_cmh_seed_scripts.py`
-     en las tres secuencias que probó sobre r6, y el orden exacto que la rompe no se registró: es un riesgo
-     por construcción. Tiene su propia base.
+  3. Una prueba que lee la base en memoria compartida depende de quién corrió antes, por construcción:
+     una prueba que llama a `engine.dispose()` deja 0 tablas en esa base (`no such table: model_endpoints`,
+     medido con una sonda que hace exactamente eso). Nadie reprodujo que
+     `test_workflow_step_declares_itself_foreground_controlled` FALLE detrás de otra prueba real: la segunda
+     revisión no la vio fallar detrás de `test_cmh_seed_scripts.py` en tres secuencias sobre r6, la tercera
+     corrió ambas en ese orden (40 de 40), y el orden exacto que la rompe no se registró. Tiene su propia base.
   4. Un mutante que cambia un patrón que una corrección movió se declara obsoleto en segundos por la prueba
      de validez, no tras una campaña de una hora: se repuntaron D06–D08 y T01 de `round4`, B04 y S03 de
      `round6` (no el S03 de `round4`: los ids se repiten entre rondas, S01–S03 existen en las dos), SD08 y
@@ -1047,23 +1056,27 @@ estaba definida y que el vacío era un hueco técnico.
   | `43166b55` | guiones locales: modelo por contención, identificador del router, descargas que se verifican | P3 n8–n11, n16–n18, n21, n22 | `round6` B32–B39 y S17–S19 |
   | `819579a1` | informe: la aprobación no precede a la ejecución; un id de endpoint que es URL se acorta | P3 n12, n14, n37, n38 | `round8` RR33–RR37 |
   | `7d0e466e` | evento `quota_write_failed`; el intento muerto se dibuja como error en `/cmh/os` | P3 n6, n7 y nº27 de r6 | `round4` Q16; la interfaz (JS) no tiene mutantes, solo prueba unitaria |
-  | `b68ab6a9` | mutantes de todo lo anterior, herramienta de campañas y guarda del método privado de `httpx` | P3 n30, n32, n39, n40, n41 | `round4` T12–T21 (sobre la propia herramienta) |
+  | `b68ab6a9` | mutantes de todo lo anterior, herramienta de campañas y guarda del método privado de `httpx` | P3 n24–n29, n32 (mitad), n33–n35 y n40 (anuncio previo a mutar); n30 declarado | `round4` T12–T21 (sobre la propia herramienta) |
   | `efe02b56` | pruebas del PATCH de `supports_tools` que U1 le pide enviar al usuario (un PATCH sin cuerpo válido deshabilita el endpoint) | el punto en curso, no un hallazgo | sin mutantes: fijan una ruta de Odysseus, no código nuestro |
   | `a0cb586a` | la prueba del resumen de una campaña usa cuatro conteos distintos (1, 2, 3, 4) | T15 de `round4` **sobrevivió** en la campaña de r8 | `round4` T15 (vuelto a correr solo: cae) |
   | `754cf669` | Z11 de `round9` sustituido por un mutante que deshace las dos puntas de la cadena `if/elif` | Z11 **sobrevivió** en la campaña de r8: era equivalente | `round9` Z11 (vuelto a correr solo: cae) |
-  | este commit | ADR-037, diez correcciones in situ de ADR-026, 029, 032, 033, 035 y 036, y el punto en curso | P3 de documentación | sin mutantes |
+  | este commit (`259d37b9`) | ADR-037, diez correcciones in situ de ADR-026, 029, 032, 033, 035 y 036, y el punto en curso | P2 nº3 de r7 y los P3 de documentación; n41 en la ficha (fuera del repositorio, sin commit) | sin mutantes |
 
 - **Decisiones de diseño que r8 toma** (las que el veredicto dejaba abiertas):
   1. **Una fila registrada cuya URL lleve credenciales se rechaza, no se recorta** (P3 n4). r7 la congelaba sin
      ellas y el ejecutor, que halla la fila por URL, ya no la encontraba: el paso salía sin `Authorization`. Ahora
-     `create_run` responde 400 pidiendo re-registrarla (igual que hace con la URL de la tarea), y el descubrimiento
+     `create_run` responde 400 (r9: pidiendo editarla con un PATCH, eliminarla o deshabilitarla, porque
+     re-registrar no la limpia), y el descubrimiento
      no consulta una URL que la lleve. `strip_userinfo` desaparece: `has_userinfo` lo sustituye.
   2. **Un proveedor que la compuerta deja fuera deja un evento** (P3 n5): `provider_dropped` con `endpoint_id`,
      `host` y motivo (`cost_gate`), en vez de desaparecer de la lista.
   3. **La siembra exige clave para el candidato de nube** (P3 n15), no el router: exigirla en `resolve_candidates`
-     habría roto el flujo de todo entorno de pruebas sin tocar lo que el usuario hará. Un Groq sin clave deja un
-     aviso y `--apply` se niega.
-  4. **`start.ps1` compara el modelo por contención, no por igualdad** (P3 n8): `lms` acepta `gemma-4-e4b` y
+     habría hecho fallar 6 de 407 pruebas de ocho módulos (medido por una lente de la tercera revisión, todas por
+     fixtures que registran Groq sin clave), sin tocar lo que el usuario hará. Un Groq sin clave deja un
+     aviso y `--apply` se niega. Contra-argumento, declarado en ADR-038: una fila Groq sin clave registrada
+     DESPUÉS de sembrar se congela en primer lugar y su 401 no está en `FALLBACK_STATUS`.
+  4. **`start.ps1` compara el modelo por contención, no por igualdad** (P3 n8; *corregido en r9: la
+     contención libre daba por cargado un modelo distinto, ver ADR-038*): `lms` acepta `gemma-4-e4b` y
      `lms ps` imprime `google/gemma-4-e4b`. No se usó `lms ps --json`: con nada cargado devuelve `[]` y no se
      pudo ver su forma.
   5. **Un fallo al escribir la cuota deja un evento `quota_write_failed`** (P3 n27 de r6), con el tipo del error y
@@ -1095,7 +1108,9 @@ estaba definida y que el vacío era un hueco técnico.
   vuelta: n30 (los ids de mutante se repiten entre rondas: se cita siempre ronda e id, no se renumera), la mitad
   de n32 (tres pruebas de `round6` no las nombra ningún mutante; se declaran sin medir) y n40 (matar una campaña
   desde fuera deja el mutante puesto; en Windows no hay manejador que lo evite, y ahora se anuncia qué archivo está
-  mutado antes de mutarlo). `$request.Proxy = $null` sigue sin medir.
+  mutado antes de mutarlo). `$request.Proxy = $null` sigue sin medir. Tampoco se cerró la
+  sobrestimación de cuota en un intento rechazado antes de enviar (P3 #26 de r6): el comentario de
+  `call_model` la declara y ADR-036 la tenía en su límite 6.
 - **No medido** (sin cambio): `/models/user` de OpenRouter, `/models` sin clave, un 429 contra el límite de Groq, el
   formato real de `lms ls` y `lms load --estimate-only`, cómo LM Studio entrega las llamadas a herramientas y su
   velocidad real; si Groq con `openai/gpt-oss-120b` recibe herramientas nativas sin `supports_tools` (un refutador
@@ -1116,3 +1131,145 @@ estaba definida y que el vacío era un hueco técnico.
   se comprobó `api_key.startswith("Basic ")` donde se guarda y nadie miró la cabecera que salía. Dos veces en este
   proyecto una corrección se dio por buena porque se midió la capa de al lado (`build_request` en ADR-026, la forma
   guardada aquí).
+
+---
+
+## ADR-038 · Cuarta vuelta de la Fase 1: qué halló la tercera revisión independiente y qué se corrigió (2026-09-30)
+
+- **Contexto.** La tercera revisión independiente, sobre la etiqueta `revision-fase1-r8` (`259d37b9`), devolvió
+  **DEVUELTO**: 0 P1, 3 P2 y 52 P3. Cinco lentes declararon 529 comprobaciones y entregaron 74 hallazgos brutos,
+  que se fusionan en 55 filas; los 4 candidatos a P2 pasaron por `refutador` y volvieron confirmados (uno bajó a
+  P3). **Los 3 P2 de r7 reprodujeron como corregidos**: la cabecera `Basic` llega bien por POST y por PATCH, y
+  cuatro lentes la midieron por la cadena real. Nada se midió contra Groq, OpenRouter ni LM Studio reales. Los
+  conteos de ADR-037 (949 y 953 aprobadas) se reprodujeron (una lente: 953 aprobadas, 1 fallida); sus tiempos
+  (13 min 48 s y 8 min 55 s) no: con carga de otras lentes las corridas tardaron 22 a 24 minutos.
+- **Los tres P2, medidos.**
+  1. **Una regresión mía.** La comparación de r8 para el modelo detrás de `cmh-local` daba por iguales dos claves si
+     una contenía a la otra, en las dos direcciones: con `microsoft/phi-4-mini-reasoning` cargado y `-Model
+     phi-4-mini`, `start.ps1` decía «Ya está cargado» y salía con 0 sin cargar nada, incluso con `-UnloadOthers`.
+     Arreglé un falso negativo (la clave parcial que `lms` resuelve) creando un falso positivo, y la prueba de r8
+     solo probaba el lado que aceptaba. El disco real de hoy no tiene una variante contenedora, así que no se había
+     manifestado.
+  2. **La prueba que escribí para la cabecera medía el ayudante y no el remitente.** Armaba la cabecera con su
+     propia llamada a `build_headers` y la mandaba por un `MockTransport`; ADR-026 y ADR-037 decían que las pruebas
+     «capturan la cabecera que sale». El remitente de un paso es `TaskScheduler._run_agent_loop`, que abre
+     `core.database.SessionLocal` DENTRO de la función; la fixture `chain` solo parcha `flow.SessionLocal`, así que
+     el planificador leía otra base, vacía, no hallaba la fila y mandaba **sin cabecera** en todas las pruebas de ese
+     módulo. Los mutantes que dejaban `headers = {}` o un `Bearer` fijo sobrevivían, en tres lentes por separado.
+     Es el mismo patrón que la lección de ADR-037: medir la capa de al lado.
+  3. **Una cifra falsa en un mensaje de commit.** El de `b68ab6a9` decía 19 mutantes cambiados y son 13 (R12, D02,
+     Q06, T05, SI07, B05, S03, S07, F01–F04, Z04); Q15, S16, RR32, P05, Z05 y Z08 son idénticos. Mi script comparó el
+     texto entre un mutante y el siguiente, que incluye comentarios y los mutantes añadidos contiguos. Las demás
+     cifras del mensaje sí reproducen (239 + 42 − 2 = 279). No se reescribe el commit: se corrige aquí. Mismo
+     caso, menores: el de `43166b55` dice «18 new PowerShell tests» y son 11 recogidas (43 → 54; el 54 es cierto);
+     el de `b68ab6a9` dice que cada commit intermedio declara que no pasa la prueba de validez y solo lo declara el
+     de `9a2a94b4` (ADR-037 ya lo corrigió); y los 239 de r7 son 237 distintos: SD08 = Z06 y SD09 = Z07 eran el
+     mismo mutante con otro nombre, y los dos «quitados» de r8 son esos duplicados.
+- **Método de r9.** Cada capacidad va en su commit con sus pruebas y **sus mutantes en el mismo commit**, de modo
+  que cada uno debe pasar `test_cmh_mutant_validity` (medido en un export limpio de cada commit: ver «Medido»;
+  r8 dejó cuatro de cinco intermedios en rojo). Cada prueba nueva se corrió primero contra el código anterior para ver que falla. Toda
+  cifra de un mensaje sale de un script o de `--collect-only`: escribí «37 pruebas nuevas» sin contarlas y eran 14;
+  lo medí y enmendé el mensaje antes de publicarlo.
+
+  | Commit | Capacidad | Hallazgos de la tercera revisión (numeración de su veredicto, «#n») | Mutantes |
+  |---|---|---|---|
+  | `7ef5dd53` | `start.ps1`: tres reglas para el modelo detrás de `cmh-local`, sin contención libre | #1 (P2), #33, #34 | `round6` S17, S18 repuntados; S20–S24 |
+  | `592c99c5` | la cabecera que un paso de flujo envía, leída en el transporte | #2 (P2) | `round9` P10, P11 |
+  | `48c8b947` | `bench.ps1`: una limpieza que falla conserva lo medido; solo `cmh-bench` es propio; la guarda cubre el config y `cmh-local`; ayuda | #4, #17, #18, #20, #29, #30 | `round6` B05, B32–B35 repuntados; B40–B47 |
+  | `c000925b` | siembra: no crea una base para negarse; avisos ciertos; pruebas de la clave en blanco y del texto de credenciales | #19, #31, #32, #38 | `round9` Z11 regenerado; Z15–Z20 |
+  | `e5f6ebfc` | servidor: un detector de credenciales, puerto fuera de rango = 400, rechazos que nombran la salida, ninguna URL en un evento, pruebas de #21–#28 | #8, #11, #12, #13, #21–#28 | `round9` F01, F02, P05 repuntados y F09–F11, P12–P18, W1–W6; `round4` Q16 repuntado y Q17–Q19 |
+  | `85534637` | informe: sin credenciales en saltos ni errores; sin cota inferior silenciosa | #15, #16 | `round8` RR33, RR34 repuntados; RR38–RR41 |
+  | `76d96bd3` | `/cmh/os`: un intento muerto no es una respuesta medida; rótulo de errores | #5, #6 | ninguno automático: 3 mutaciones a mano |
+  | `3f758bed` | herramientas de campañas: pruebas que pueden fallar, un mutante para cada prueba sin mutante, un comentario que decía lo que nadie reprodujo | #35, #36, #37, #44, #47 | `round4` T22–T26; `round6` B48–B50 y S25 |
+  | este commit | ADR-038, correcciones in situ de ADR-026, 030, 033, 035, 036 y 037, el punto en curso y la ficha | #3 (P2), #7, #9, #10, #14, #39–#43, #45, #46, #48–#55 | sin mutantes |
+
+- **Decisiones de diseño que r9 toma.**
+  1. **`Test-SameModel` tiene tres reglas y solo esas:** la misma clave (sin distinguir mayúsculas); la misma clave
+     sin su publicador en uno de los dos lados (termina en `/` + la otra); y, porque `lms ps` se lee por espacios,
+     la primera palabra de una clave con espacios. No hay contención libre. La guarda de lado vacío se quitó:
+     ninguna regla puede coincidir con un lado vacío y `-Model` es obligatorio y no vacío, así que ninguna prueba
+     podía distinguirla. Diez mutantes (S25 llegó con el commit de herramientas), todos capturados.
+  2. **La cabecera se prueba en el transporte**, desde `call_model` (fixture `keyed_chain`). El mismo código existe en
+     `_execute_research_task` (la tarea de investigación de Odysseus), que ningún flujo de CMH alcanza: sin prueba y
+     sin mutante, declarado.
+  3. **`has_userinfo` pide un usuario o una clave** a `urlparse`. Un userinfo vacío (`http://@host`) no es una
+     credencial y `split_url_credentials` coincide, de modo que un rechazo siempre se puede limpiar; un usuario sin
+     clave (`https://token@host`) sí lo es; una URL ilegible da `False` (su `endpoint_host` es `""` y ninguna fila así
+     puede ser candidata), con prueba. `split_url_credentials` ya no lanza con un puerto fuera de rango: devuelve la
+     URL intacta, y POST, PATCH y `create_run` responden 400 (antes, 500) sin guardar la credencial.
+  4. **Los rechazos dicen la salida que funciona:** registrar otro endpoint no limpia la fila vieja (sigue
+     habilitada); hay que editarla con un PATCH de la misma URL, eliminarla o deshabilitarla. Ningún evento ni línea
+     de log lleva una URL como id de endpoint (`_event_id`); la contabilidad conserva el valor.
+  5. **`bench.ps1`:** `Remove-Own` contesta «libre», «cargado» o «desconocido»; si no se puede confirmar una descarga
+     el banco se detiene después de emitir una fila fallida, imprime la tabla y escribe `-OutFile`, y luego avisa y
+     sale con 1. Solo `cmh-bench` es resto propio; un `-Identifier` que ya estaba cargado es del usuario. La guarda
+     protege el `local.model` del config y el `cmh-local` literal que `start.ps1` usa por defecto.
+  6. **La siembra** se niega a `--apply` sobre una base que no existe antes de crearla (`--allow-pending` la crea y
+     siembra, como antes), y sus avisos dejan de decir cosas falsas: OpenRouter nunca cuenta para sembrar (su modelo
+     se descubre al crear cada run) y la puerta exige Groq con clave.
+  7. **`/cmh/os`:** un intento muerto ya no entra en la latencia media ni en «respuestas medidas», pero sus tokens
+     siguen contando como gastados en el gráfico por paso. El rótulo de errores dice lo que cuenta.
+- **Medido.** Todo sobre exports limpios (sin `.git`) de `git archive`, nunca el árbol vivo. La punta de código de r9 es
+  `3f758bed`; el commit de documentos solo añade documentos.
+  (1) **Suite** (`tests/test_cmh_*.py`, `test_model_routes`, `test_chatgpt_subscription_routes`,
+  `test_endpoint_selection_by_url` y las de cabeceras y resolución de endpoints) = **992 aprobadas, 1 fallida**
+  (`test_rewrites_loopback_when_in_docker`, preexistente: LM Studio escucha en el 1234), 16 min 24 s con las campañas
+  corriendo a la vez. Son las 953 de r8 más 39 nuevas, contadas por recolección: 7 de `start.ps1`, 6 del banco, 5 de la
+  siembra, 14 del servidor, 3 del informe, 2 de la cabecera en el transporte y 2 de las herramientas.
+  (2) **Las ocho campañas enteras** sobre ese mismo export = 332 mutantes: **332 capturados, 0 sobrevivientes, 0
+  inválidos, 0 obsoletos**; las ocho salen con 0 y dejan el árbol restaurado en verde (327, 327, 183, 271, 67, 9, 42 y
+  320 pruebas; las 67 de `round6` son todo su módulo). `round2` 13, `round3` 13, `round4` 84, `round5` 39, `round6` 73,
+  `round7` 13, `round8` 41 y `round9` 56. A diferencia de r8, no queda ninguna campaña sin repetir sobre la punta.
+  (3) **Contados por unidad**, con un script que importa cada ronda de su export y compara la tupla evaluada de cada
+  mutante: r7 → r8 fueron 239 → 279 con 42 añadidos, 2 quitados y **13** cambiados (la cifra del veredicto de r8, no
+  la 19 de mi mensaje); r8 → r9, 279 → 332 con **53** añadidos, 0 quitados y **14** cambiados (Q16; B05, B32–B35, S17,
+  S18; RR33, RR34; F01, F02, P05, Z11).
+  (4) **Prueba de validez de mutantes: 13 de 13 sobre un export limpio de cada uno de los nueve árboles**, la base
+  `259d37b9` y los ocho commits de r9.
+  (5) **Cada capacidad, antes de la campaña completa**, con sus mutantes corridos solos sobre el árbol de su commit:
+  `start.ps1` 9 de 9, banco 13 de 13, siembra 10 de 10, cabecera en el transporte 4 de 4, servidor 23 de 23 en
+  `round9` y 5 de 5 en `round4`, informe 9 de 9, herramientas 7 de 7 en `round4` y 4 de 4 en `round6`; y la
+  interfaz, que no tiene corredor de mutantes: 3 mutaciones a mano sobre una copia (control 46 de 46, cada una cae
+  por la prueba prevista).
+  (6) **Cada prueba nueva se corrió antes contra el código anterior**: fallaron 5 de 7 (`start.ps1`), 5 de 6 (banco),
+  3 de 5 (siembra), 7 de 14 (servidor) y 2 de 3 (informe); el resto fija un comportamiento que ya existía. Las dos de
+  la cabecera en el transporte pasan con el código real a propósito: lo que prueban es que P10 y P11 caen.
+  (7) **Interfaz** (`bash scripts/cmh_os/check.sh --no-e2e`): tipos 0 errores en 49 archivos, lint 0 hallazgos en 54,
+  unitarias 62 de 62, build de 141 243 bytes gzip sobre un presupuesto de 150 000. e2e: 32 comprobaciones, 31
+  aprobadas, 1 fallida preexistente (ver más abajo). Los tiempos son con carga: las lentes de r8 midieron 22 a 24
+  minutos para una suite que sin carga tardó 8 min 55 s.
+- **Declarado y NO cambiado** (la revisión lo midió; r9 no lo toca): **#7** `provider_dropped` y `quota_write_failed`
+  quedan en la tabla y en el SSE pero `run_report.py` y `/cmh/os` no los muestran; **#9** el rechazo de una fila con
+  credenciales aplica a la fila que el router habría elegido (con una fila limpia del mismo host primero, el run se
+  crea y la otra se ignora sin congelarse, así que nada se filtra); **#10** `provider_dropped` es por fila, no por
+  proveedor; **#14** el rechazo llega después de la consulta del catálogo de OpenRouter (un catálogo, no un chat: no
+  cuesta); **#48** el router no exige clave: una fila Groq sin clave registrada DESPUÉS de sembrar se congela en primer
+  lugar y su 401 no está en `FALLBACK_STATUS`, así que el paso se detendría antes del respaldo local (inferido del
+  código, no medido contra Groq); `build_headers` duplica un valor que ya dice `Bearer ` (heredado, sin clave real
+  que empiece así).
+- **Lo que r9 no cierra.** Lo de ADR-037 sigue: #28 de r6 (413 por tokens por minuto), #29 (`local.model` para todas
+  las filas locales: el banco ya protege los dos nombres, `start.ps1` sigue con `cmh-local` por defecto), #32 (el
+  ejecutor elige la fila por subcadena), n30, n40 (una campaña matada desde fuera deja el mutante puesto: el aviso
+  previo existe y su orden tiene prueba, la restauración ante señal no), `$request.Proxy = $null`, la sobrestimación
+  de cuota (#26 de r6). Nuevo de esta vuelta: leer la columna MODEL de `lms ps` por la posición del encabezado y el
+  manejo de una variante con `@`, que no se pueden medir sin ver el formato real. De los 49 P3 de la revisión de r7
+  el veredicto de r8 señala residuo en 16 (n4, n6, n9, n10, n11, n12, n14, n27, n28, n29, n31, n32, n40, n41, n42,
+  n43, contados leyendo el veredicto, no por una medición mía) y una lección más de ADR-036; r9 cierra esos salvo n40
+  y n30.
+- **No medido.** Lo de ADR-037, y además: cómo imprime el `lms ps` real un modelo con variante o con espacios (las
+  pruebas solo conocen el formato del `lms` falso); el PATCH de U1 contra una sesión de administrador viva; el efecto
+  de `modelResponseSpans` en un navegador (se midió ejecutando el código real con Node, no montando la vista).
+- **Falla preexistente descubierta.** La suite e2e de `/cmh/os` da 32 comprobaciones, 31 aprobadas y 1 fallida («A11y:
+  abrir un detalle con Enter lleva el foco a su h1», el foco queda en `TR`). Falla igual en exports limpios de un commit de r9 anterior al cambio de interfaz, de
+  `revision-fase1-r7` y de `bba01a65`, el commit que la añadió (31 comprobaciones, 30 aprobadas): no la causa nada
+  de r7 a r9, y la ficha decía «31 e2e» verificados. Queda como tarea aparte (puede ser un artefacto de cómo se
+  maneja Edge sin ventana: no se comprobó en un navegador real).
+- **Lecciones.** (1) *Aceptar más exige la prueba del par incorrecto más cercano:* aceptar la clave parcial abrió la
+  puerta a `phi-4-mini` por `phi-4-mini-reasoning`; toda corrección que «acepta más» lleva un caso que debe seguir
+  rechazándose. (2) *La prueba lee lo observable en la frontera sobre la que habla la afirmación:* ADR-037 escribió
+  esta lección y la prueba de la cabecera la volvió a violar, porque la frase «captura la cabecera que sale» se
+  escribió antes de mirar qué capa capturaba. (3) *Una comparación de texto entre mutantes cuenta comentarios:* 19 eran
+  13; las cifras que van a un mensaje salen de un comando que compara la unidad (el mutante), no el trozo de archivo.
+  (4) *Un mutante y una prueba se prueban igual que el código:* los dos supervivientes de r8 eran míos (T15, una
+  prueba de resumen con un caso de cada clase; Z11, un mutante sobre una condición inalcanzable), y en r9 se
+  regeneró Z11 a partir del archivo real.

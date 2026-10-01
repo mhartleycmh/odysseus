@@ -110,15 +110,20 @@ Nueva comprobación del punto 1 tras los commits: la red TCP externa a `api.anth
 
 ## Punto en curso — Fase 1 (2026-09-30)
 
-**La Fase 1 NO está cerrada: 0 de 7 pasos HECHOS** (los seis del blueprint, 3.1 a 3.6, más el 3.3b,
-que se insertó en la sesión para el modelo local). Bloqueada por el usuario en 3.1 (claves y
-LM Studio) y en 3.5 (autorización de la siembra); 3.6 depende de ambos. Sin una ejecución real no hay
-punto limpio 10.
+**La Fase 1 NO está cerrada: 0 de 7 pasos HECHOS.** Son los seis del blueprint (§18: 3.1 inventario y
+acciones del usuario, 3.2 compuerta de costo cero, 3.3 router con fallback y cuotas, 3.4 pila local medida,
+3.5 cinco agentes y una definición, 3.6 primera ejecución real y cierre) más el **3.3b**, que se nombró con
+sufijo de letra como manda el encargo (el total global pasó de 18 a 19): las correcciones de la auditoría
+del 29.09 sobre el 3.3, en cuatro partes (estado del proveedor, descubrimiento de OpenRouter, identificador
+del candidato local y cuota), definidas en `scripts/cmh_mutants/round4.py`. Bloqueada por el usuario en 3.1
+(claves) y en 3.5 (autorización de la siembra); 3.6 depende de ambos. Sin una ejecución real no hay punto
+limpio 10.
 
-- **Git.** Rama `dev`, **50 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6, 9 de r7 y 10 de r8: 9 de código, pruebas y mutantes y 1 de documentos).
-  Etiquetas de revisión: `revision-fase1-r2` a `r7` y `revision-fase1-r8`, que congela el commit de documentos de r8.
-- **Revisión independiente de `revision-fase1-r6` (`ea4eee18`): DEVUELTO**, 0 P1, 19 P2 y 66 P3. r7 los
-  corrige en ocho commits, cada uno con sus pruebas y sus mutantes (resumen y límites en ADR-036):
+- **Git.** Rama `dev`, **59 commits sin push** sobre `origin/dev` (31 de la Fase 1 hasta r6, 9 de r7, 10 de r8 y 9 de r9: 8 de código, pruebas y mutantes y 1 de documentos).
+  Etiquetas de revisión: `revision-fase1-r2` a `r8` y `revision-fase1-r9`, que congela el commit de documentos de r9.
+- **Revisión independiente de `revision-fase1-r6` (`ea4eee18`): DEVUELTO**, 0 P1, 19 P2 y 66 P3. r7
+  corrige los 19 P2 y 59 de los 66 P3 (los otros 7 quedan declarados como límites en ADR-036), en ocho
+  commits; `82176e19` no lleva mutantes (resumen y límites en ADR-036):
   `bea9b262` (bucle de mutantes), `249daeec` (compuerta), `352ebde8` (descubrimiento), `a0048662` (cuota de
   un intento que muere a medias), `00f6dc52` (informe del run), `10ad364f` (guiones locales), `c1f34f40`
   (credenciales, proxy y siembra) y `82176e19` (una prueba que dependía del `%TEMP%` compartido).
@@ -126,14 +131,26 @@ punto limpio 10.
   refutador y 49 P3 (59 hallazgos brutos de cinco lentes; de 7 P2 brutos, 2 se refutaron y 1 bajó a P3). De
   los 19 P2 de r6, 18 reprodujeron como corregidos y 1 seguía abierto, el nº6 (credencial en el PATCH), por
   una corrección mía que enviaba `Bearer Basic`. Ninguna lente pudo medir Groq, OpenRouter ni LM Studio reales.
-- **r8 corrige los 3 P2 y la mayor parte de los P3** en nueve commits, cada uno con sus pruebas; lo que r8
-  NO cierra y lo que no se midió está declarado en ADR-037, y cuatro de los cinco commits intermedios no pasan
-  `test_cmh_mutant_validity` (medido; los mutantes van juntos en `b68ab6a9`): `9a2a94b4` (cabecera
-  `Basic` enviada como `Bearer Basic`: P2 nº1 y nº2), `eef71964` (fila con credenciales, `provider_dropped`,
-  siembra con clave), `43166b55` (guiones locales), `819579a1` (informe), `7d0e466e` (evento de cuota e
-  interfaz), `b68ab6a9` (mutantes, herramienta de campañas, guarda de `httpx`), `efe02b56` (pruebas del PATCH
-  de U1), `a0cb586a` (mutante T15) y `754cf669` (mutante Z11). La tercera revisión, sobre `revision-fase1-r8`,
-  se lanza a continuación: su veredicto se registra aquí y en ADR-037.
+- **r8 corrigió los 3 P2 de r7 y dejó residuo en 16 de sus 49 P3** (según el veredicto de la tercera
+  revisión; la lista está en ADR-038), en nueve commits (ADR-037): `9a2a94b4` (cabecera `Basic` enviada como
+  `Bearer Basic`: P2 nº1 y nº2), `eef71964` (fila con credenciales, `provider_dropped`, siembra con clave),
+  `43166b55` (guiones locales), `819579a1` (informe), `7d0e466e` (evento de cuota e interfaz), `b68ab6a9`
+  (mutantes, herramienta de campañas, guarda de `httpx`), `efe02b56` (pruebas del PATCH de U1), `a0cb586a`
+  (mutante T15) y `754cf669` (mutante Z11). No pasan `test_cmh_mutant_validity` `eef71964` (4 de 13
+  casos) y `43166b55`, `819579a1` y `7d0e466e` (5 de 13); los demás sí (medido).
+- **Revisión independiente de `revision-fase1-r8` (`259d37b9`): DEVUELTO**, 0 P1, **3 P2** y 52 P3 (529
+  comprobaciones de cinco lentes; 74 hallazgos brutos fusionados en 55). Los 3 P2 de r7 reprodujeron como
+  corregidos. Los nuevos: una regresión mía en `start.ps1` (daba `phi-4-mini` por cargado con
+  `phi-4-mini-reasoning` cargado), una prueba de la cabecera que medía el ayudante y no el remitente, y una
+  cifra falsa de un mensaje de commit (19 mutantes cambiados; eran 13). Ninguna lente pudo medir Groq,
+  OpenRouter ni LM Studio reales.
+- **r9 corrige los 3 P2 y 47 de los 52 P3** (los otros 5, #7, #9, #10, #14 y #48 del veredicto de r8, quedan
+  declarados sin cambio en ADR-038), en ocho commits, cada uno con sus pruebas y sus mutantes en el mismo
+  commit:
+  `7ef5dd53` (`start.ps1`), `592c99c5` (la cabecera en el transporte), `48c8b947` (`bench.ps1`), `c000925b`
+  (siembra), `e5f6ebfc` (servidor), `85534637` (informe), `76d96bd3` (`/cmh/os`) y `3f758bed` (herramientas de
+  campañas). La cuarta revisión, sobre `revision-fase1-r9`, se lanza a continuación: su veredicto se registra
+  aquí y en ADR-038.
 - **Medido** sobre un export limpio de `c1f34f40` (sin `.git`): `tests/test_cmh_*.py` = **629 aprobadas,
   0 fallidas**, 1 advertencia, 26 min 59 s. Campañas de mutantes sobre exports separados: `round3` 13/13, `round4` 64/64, `round5` 39/39, `round6` 45/45, `round7` 13/13, `round8` 32/32 y `round9` 20/20 sobre `c1f34f40`; `round2` no dio veredicto allí (línea base roja por una prueba que miraba el `%TEMP%` compartido; corregida en `82176e19`) y sobre `82176e19` dio 13/13, con `round3`, `round7` y `round9` repetidas: 13/13, 13/13 y 20/20. En total 239 mutantes, 0 sobrevivientes, 0 inválidos y 0 obsoletos, con el árbol restaurado en verde en las ocho.
 - **Medido en r8** (detalle y límites en ADR-037). Sobre un export de `64756140` (árbol de `b68ab6a9`): suite =
@@ -143,13 +160,24 @@ punto limpio 10.
   `a0cb586a` y `754cf669`. Sobre un export de la punta `754cf669`: suite = **953 aprobadas, 1 fallida** (la
   misma), los 21 mutantes `T` de `round4` = 21 de 21, y T15 y Z11 caen. No se repitieron sobre la punta las
   otras siete campañas (código y pruebas designadas idénticos: se infiere, no se midió).
+- **Medido en r9** (detalle y límites en ADR-038), sobre exports limpios de `3f758bed`, la punta de código:
+  suite = **992 aprobadas, 1 fallida** (la misma preexistente; 953 de r8 + 39 nuevas); **las ocho campañas
+  enteras = 332 de 332 mutantes capturados**, 0 sobrevivientes, 0 inválidos, 0 obsoletos (279 en r8: 53
+  añadidos, 0 quitados, 14 cambiados); prueba de validez de mutantes **13 de 13 en los nueve árboles** (la
+  base de r8 y los ocho commits de r9). Interfaz: tipos 0 errores, lint 0, unitarias 62 de 62; e2e 31 de 32
+  (la fallida es preexistente, ver arriba).
 - **Base activa** (solo lectura, `integrity_check=ok`, 811 008 bytes): 1 agente (`CMH Researcher`, pausado),
   0 definiciones, 0 ejecuciones, 3 endpoints (dos Ollama habilitados y Anthropic), ninguna clave gratuita
   registrada. **La siembra no se ha ejecutado nunca contra ella.** Copias previas en
   `%LOCALAPPDATA%\Odysseus\backups\` (la última, `app-antes-de-pytest-r8-20260930-1131.db`, 811 008 bytes,
   con `integrity_check=ok` en origen y copia; la anterior, `app-antes-de-pytest-r7-r2-20260929-2310.db`, con
   42 tablas sin diferencia de conteo).
-- **Servidor** del puerto 7000: corre el código del 25.09; no se reinició.
+- **Servidor** del puerto 7000: al 30.09 15:59 no había ningún proceso escuchando (`Get-NetTCPConnection`);
+  la última vez que corrió era el código del 25.09. No se reinició. LM Studio sí sirve el 1234.
+- **Falla preexistente descubierta en r9** (no la causa ningún commit de r7 a r9): la suite e2e de `/cmh/os`
+  da 32 comprobaciones, 31 aprobadas y 1 fallida, «A11y: abrir un detalle con Enter lleva el foco a su h1»
+  (el foco queda en `TR`); falla igual en `bba01a65`, el commit que añadió la suite (31 comprobaciones, 30
+  aprobadas). Tarea aparte; puede ser un artefacto de cómo se maneja Edge sin ventana.
 - **No se hizo, y no está autorizado:** push, borrado de filas o copias, mover `data/`, `cmh_seed_agents.py
   --apply`, `migrate-data.ps1`, aprobar o rechazar un paso en nombre del usuario.
 
@@ -164,18 +192,22 @@ punto limpio 10.
    credentials:'same-origin', body: JSON.stringify({supports_tools:true})}).then(r=>r.json()).then(console.log)`.
    **Cuidado:** un PATCH sin cuerpo, con JSON mal formado o con `{}` NO da error: alterna `is_enabled` y deja
    el endpoint deshabilitado. Comprobar en la respuesta `is_enabled: true` y `supports_tools: true`; si salió
-   `is_enabled: false`, repetir el PATCH sin cambiar nada más para volver a habilitarlo. *Medido en r8 con una
-   sonda ASGI sobre base en memoria (5 de 5), no en vivo: la sesión y las cabeceras reales no se probaron;
-   la interfaz de administración hace sus PATCH con ese mismo patrón.* Sin `supports_tools`, el bucle usa
+   `is_enabled: false`, repetir el PATCH sin cambiar nada más para volver a habilitarlo. *Medido en memoria,
+   por la ruta real, con 4 pruebas versionadas (`efe02b56`; desde r9 también afirman la respuesta que aquí se
+   manda leer); no en vivo: la sesión y las cabeceras reales no se probaron. La interfaz de administración
+   hace sus PATCH con ese mismo patrón.* Sin `supports_tools`, el bucle usa
    llamadas a herramientas en bloques de texto (ADR-037), una ruta distinta de la nativa.
 2. **U2 · OpenRouter.** Crear la cuenta sin cargar créditos; en su configuración de privacidad, no
    entrenar ni retener; crear una clave (*API Keys*) y **registrarla** igual que la de Groq (Provider
-   *OpenRouter*); decidir §10.5. Sin la clave registrada, la siembra no cuenta a OpenRouter como ruta
-   utilizable (solo cuentan los endpoints con clave, ADR-037).
+   *OpenRouter*); decidir §10.5. **La siembra no cuenta a OpenRouter** (su modelo se descubre al crear cada
+   run, con o sin clave) y su puerta exige Groq con clave (U1). La clave de OpenRouter importa al crear el
+   run: sin ella no se descubre su modelo (`provider_discovery: no api key`) y OpenRouter queda fuera de ese
+   run.
 3. **U3 · Confirmar que ninguna cuenta (Groq, OpenRouter) tiene método de pago** (canon 06, fila 412).
 4. **U4 · LM Studio.** Descargar Qwen3.5-4B Q4_K_M y Phi-4-mini Q4_K_M. Registrar `http://127.0.0.1:1234/v1`
    como tipo local. Correr `powershell -NoProfile -ExecutionPolicy Bypass -File
-   scripts/cmh_local/bench.ps1 -UnloadOthers` (**descarga lo que haya cargado: hoy `qwen/qwen3.8-27b`**) y
+   scripts/cmh_local/bench.ps1 -UnloadOthers` (**descarga lo que haya cargado**: al 30.09 15:59 `lms ps`
+   informaba que no había nada cargado; el guion nombra lo que va a descargar antes de hacerlo) y
    después `... start.ps1 -Model <ganador> -UnloadOthers`. Comprobar con `lms ps` que `cmh-local` está
    cargado: sin eso el respaldo local responde 404.
 5. **U5 · Deshabilitar (no borrar) los Ollama `c6a553e7` y `2345ab42`**, una vez cada fila.
@@ -204,7 +236,8 @@ en este archivo con la plantilla del Apéndice C, ficha y revisión hasta APROBA
   verificar; `supports_tools` sin control en la interfaz; un PUT de agentes desvincula el `task_id`; los
   textos del blueprint §7.3, §9.1 y §21-U4 quedan reemplazados por ADR-030, ADR-028 y ADR-029; las filas
   390 y 391 quedan superadas; riesgo de 413 por tokens por minuto; `local.model` se aplica a todas las
-  filas locales habilitadas.
+  filas locales habilitadas; la suite e2e de `/cmh/os` tiene 1 de 32 comprobaciones fallida desde su primer
+  commit (A11y, foco tras abrir un detalle).
 - **Advertencia:** la maestra `Documentos\Claude\CMH_Canon\` necesita las mismas filas. Se escribe en la
   maestra y se copia al espejo `CMH_Claude/CMH_Canon/` verificando con `cmp`. No tocar las líneas 359–371 de
   `05`.
