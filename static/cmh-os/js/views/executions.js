@@ -249,7 +249,7 @@ export function renderDetail(ctx, match) {
           { key: 'status', label: t('executions.step.status'), render: (s) => h('span', { class: 'row' }, stepBadge(s.status), s.requiresApproval ? h('span', { class: 'xsmall muted' }, t('executions.step.requiresApproval')) : null) },
           { key: 'model', label: t('executions.step.model'), render: (s) => s.model ? h('span', { class: 'mono xsmall' }, s.model) : '—' },
           { key: 'tools', label: t('executions.step.tools'), render: (s) => s.tools.length ? h('div', { class: 'chip-list' }, s.tools.map((c) => chip(`${c.status === 'error' ? '■' : c.status === 'running' ? '◆' : '●'} ${c.tool}`))) : h('span', { class: 'muted' }, '—') },
-          { key: 'tokens', label: t('executions.col.tokens'), num: true, render: (s) => (u.measured ? formatNumber(s.tokensIn + s.tokensOut) : '—') },
+          { key: 'tokens', label: t('executions.col.tokens'), num: true, render: (s) => (s.tokensMeasured === true ? formatNumber(s.tokensIn + s.tokensOut) : '—') },
           { key: 'error', label: t('executions.step.error'), render: (s) => s.error ? h('span', { class: 'tone-text-risk small' }, s.error) : '—' },
         ] }));
       if (execution.status === 'completed' && execution.finalAnswer) mount(answer, h('pre', { class: 'code', attrs: { 'data-final-answer': '' } }, execution.finalAnswer));

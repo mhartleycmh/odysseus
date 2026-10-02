@@ -813,6 +813,7 @@ def test_lmstudio_error_for_bare_host_port_probes_v1_models(monkeypatch):
 
 class TestDockerLoopbackRewrite:
     def test_rewrites_loopback_when_in_docker(self, monkeypatch):
+        monkeypatch.setattr(model_routes, "_container_loopback_reachable", lambda url: False)
         monkeypatch.setattr(model_routes, "_docker_host_gateway_reachable", lambda: True)
         assert (model_routes._rewrite_loopback_for_docker("http://localhost:1234/v1")
                 == "http://host.docker.internal:1234/v1")
@@ -820,9 +821,18 @@ class TestDockerLoopbackRewrite:
                 == "http://host.docker.internal:1234/v1")
 
     def test_no_rewrite_when_not_in_docker(self, monkeypatch):
+        monkeypatch.setattr(model_routes, "_container_loopback_reachable", lambda url: False)
         monkeypatch.setattr(model_routes, "_docker_host_gateway_reachable", lambda: False)
         assert (model_routes._rewrite_loopback_for_docker("http://localhost:1234/v1")
                 == "http://localhost:1234/v1")
+
+    @pytest.mark.parametrize("gateway", [False, True])
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+    def test_reachable_loopback_stays_local_even_with_gateway(self, monkeypatch, gateway, host):
+        monkeypatch.setattr(model_routes, "_container_loopback_reachable", lambda url: True)
+        monkeypatch.setattr(model_routes, "_docker_host_gateway_reachable", lambda: gateway)
+        url = f"http://{host}:1234/v1"
+        assert model_routes._rewrite_loopback_for_docker(url) == url
 
     def test_non_loopback_untouched_even_in_docker(self, monkeypatch):
         # Cloud and LAN hosts must never be rewritten or they would break.

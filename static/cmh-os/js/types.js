@@ -145,6 +145,8 @@
  * @property {string|null} startedAt
  * @property {string|null} finishedAt
  * @property {ToolCall[]} tools
+ * @property {boolean} [tokensMeasured] Both token counters measured for this step.
+ * @property {boolean} [tokensIncomplete] At least one token measurement was missing or malformed.
  * @property {number} tokensIn
  * @property {number} tokensOut
  */
@@ -167,12 +169,13 @@
 
 /**
  * @typedef {Object} ExecutionUsage
+ * @property {boolean} [tokensIncomplete] At least one token measurement was missing or malformed.
  * @property {number} tokensIn
  * @property {number} tokensOut
  * @property {number|null} costUsd
  * @property {number} iterations
  * @property {number} elapsedSeconds
- * @property {boolean} measured False until run events were seen: zeros are then unknown, not real.
+ * @property {boolean} measured False until valid token metrics cover every attempted step.
  */
 
 /**
@@ -286,7 +289,7 @@
  * @property {number|null} costUsd
  * @property {number} errors
  * @property {string[]} agents
- * @property {boolean} measured False when built without events (live list): show "—", not 0.
+ * @property {boolean} measured False when valid token metrics do not cover every attempted step: show "—", not 0.
  * @property {Span[]} spans
  * @property {Origin} origin
  */

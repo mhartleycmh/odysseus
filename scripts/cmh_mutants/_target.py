@@ -18,6 +18,7 @@ import os
 import pathlib
 import re
 import subprocess
+import tempfile
 
 #: A campaign runs for tens of minutes with its output redirected to a file: without a
 #: flush nothing shows until the end, and a killed run loses every line.
@@ -96,9 +97,13 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
             raise SystemExit(f"El mutante apunta fuera del repositorio bajo mutacion: {relative}")
 
     def run(tests):
-        return subprocess.run([str(py), "-m", "pytest", *tests, "-p", "no:cacheprovider",
-                               "-q", "--no-header"], cwd=str(repo),
-                              capture_output=True, text=True)
+        # -B stops writes but still reads timestamp-based bytecode. A fresh
+        # prefix also excludes stale caches after same-size edits in one second.
+        with tempfile.TemporaryDirectory(prefix="cmh-mutant-pyc-") as pycache:
+            return subprocess.run([str(py), "-B", "-X", f"pycache_prefix={pycache}",
+                                   "-m", "pytest", *tests, "-p", "no:cacheprovider",
+                                   "-q", "--no-header"], cwd=str(repo),
+                                  capture_output=True, text=True)
 
     every = sorted({t for *_, tests in mutants for t in tests})
     say(f"Repositorio bajo mutacion: {repo}")

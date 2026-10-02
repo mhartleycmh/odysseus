@@ -274,7 +274,8 @@ MUTANTS = [
      'api_key if api_key.lower().startswith("basic ")',
      PATCH_TESTS),
     ("W1 create_run deja pasar una URL de tarea con credenciales", WF_ROUTES,
-     '    if has_userinfo(task.endpoint_url or ""):',
+     '    if (has_userinfo(task.endpoint_url or "")\n'
+     '            or carries_unliftable_credential(task.endpoint_url or "")):',
      "    if False:",
      FREEZE_TESTS),
     ("W2 el rechazo de una fila con credenciales ya no nombra el PATCH", WF_ROUTES,

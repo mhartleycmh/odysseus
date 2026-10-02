@@ -300,3 +300,29 @@ def test_the_file_is_announced_before_it_is_mutated(tmp_path, monkeypatch):
     monkeypatch.setattr(target, "say", spy)
     run(root, mutant("M1", "return x * 2", "return x * 3"))
     assert intact_when_announced == [True]
+
+
+def test_same_second_equal_length_mutations_do_not_reuse_bytecode(tmp_path, monkeypatch, capsys):
+    """Force the collision seen in full verification; M2 must not import M1's bytecode."""
+    import os
+    import py_compile
+    root = toy(tmp_path)
+    source = root / "mod.py"
+    original_write = pathlib.Path.write_bytes
+    fixed = 1700000000
+    os.utime(source, (fixed, fixed))
+    py_compile.compile(str(source), doraise=True)
+
+    def write_with_same_timestamp(path, data):
+        result = original_write(path, data)
+        if path == source:
+            os.utime(path, (fixed, fixed))
+        return result
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", write_with_same_timestamp)
+    assert run(root, mutant("M1", "return x * 2", "return x * 3"),
+               mutant("M2", "return x + 1", "return x + 2")) == 1
+    out = capsys.readouterr().out
+    assert "M1: CAUGHT - cae: test_double" in out
+    assert "M2: *** SURVIVED ***" in out
+    assert "1 CAUGHT - 1 SURVIVED" in out

@@ -58,7 +58,7 @@ export function renderList(ctx, match) {
         kpi({ label: t('observability.kpi.success'), value: formatPercent(finished.length ? finished.filter((r) => r.status === 'completed').length / finished.length : null), context: t('observability.kpi.successContext', { n: finished.length }) }),
         kpi({ label: t('observability.kpi.toolLatency'), value: toolSpans.length ? formatDuration(toolSpans.reduce((s, sp) => s + sp.durationMs, 0) / toolSpans.length / 1000) : '—', context: t('observability.kpi.toolLatencyContext', { n: toolSpans.length }) }),
         kpi({ label: t('observability.kpi.modelLatency'), value: modelSpans.length ? formatDuration(modelSpans.reduce((s, sp) => s + sp.durationMs, 0) / modelSpans.length / 1000) : '—', context: t('observability.kpi.modelLatencyContext', { n: modelSpans.length }) }),
-        kpi({ label: t('observability.kpi.tokens'), value: rows.some((r) => r.measured) ? formatNumber(rows.reduce((s, r) => s + r.tokensIn + r.tokensOut, 0)) : '—', context: cost !== null ? formatUsd(cost) : t('observability.kpi.noCost') }),
+        kpi({ label: t('observability.kpi.tokens'), value: rows.length > 0 && rows.every((r) => r.measured) ? formatNumber(rows.reduce((s, r) => s + r.tokensIn + r.tokensOut, 0)) : '—', context: cost !== null ? formatUsd(cost) : t('observability.kpi.noCost') }),
         kpi({ label: t('observability.kpi.errors'), value: formatNumber(rows.reduce((s, r) => s + r.errors, 0)), context: t('observability.kpi.errorsContext') }));
       mount(tableHost, dataTable({
         caption: t('observability.traces'), rows, rowKey: (r) => r.id, emptyText: t('observability.noMatch'),

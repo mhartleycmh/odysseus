@@ -28,6 +28,15 @@ export function isFresh(event, now = Date.now()) {
 /** @param {unknown} value */
 const num =(value) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 
+/** @param {Record<string, unknown>} metrics */
+const hasTokenMetrics = (metrics) => [metrics.input_tokens, metrics.output_tokens].every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+
+/** @param {Execution} execution */
+const tokensComplete = (execution) => {
+  const attempted = execution.steps.filter((step) => step.startedAt || ['running', 'completed', 'error', 'interrupted'].includes(step.status) || step.tokensMeasured || step.tokensIncomplete);
+  return !execution.usage.tokensIncomplete && (attempted.length ? attempted.every((step) => step.tokensMeasured === true && !step.tokensIncomplete) : execution.usage.measured);
+};
+
 /**
  * Deep-enough copy so reducers never mutate the caller's object.
  * @param {Execution} execution
@@ -56,8 +65,10 @@ export function resetCounters(execution) {
     step.tools = [];
     step.tokensIn = 0;
     step.tokensOut = 0;
+    step.tokensMeasured = false;
+    step.tokensIncomplete = false;
   }
-  next.usage = { tokensIn: 0, tokensOut: 0, costUsd: execution.usage.costUsd === null ? null : 0, iterations: 0, elapsedSeconds: 0, measured: false };
+  next.usage = { tokensIn: 0, tokensOut: 0, costUsd: execution.usage.costUsd === null ? null : 0, iterations: 0, elapsedSeconds: 0, measured: false, tokensIncomplete: false };
   return next;
 }
 
@@ -70,8 +81,7 @@ export function applyEvent(execution, event) {
   const next = cloneExecution(execution);
   const step = event.stepKey ? next.steps.find((s) => s.key === event.stepKey) : undefined;
   const payload = event.payload || {};
-  // Events are the measurement: once one is seen, counters are real values.
-  next.usage.measured = true;
+  // Lifecycle events do not establish token measurement.
   switch (event.kind) {
     case 'run_created':
       next.status = 'pending';
@@ -105,6 +115,13 @@ export function applyEvent(execution, event) {
       break;
     case 'model_metrics': {
       const metrics = /** @type {Record<string, unknown>} */ (payload.metrics && typeof payload.metrics === 'object' ? payload.metrics : {});
+      if (!hasTokenMetrics(metrics)) {
+        next.usage.tokensIncomplete = true;
+        if (step) { step.tokensMeasured = false; step.tokensIncomplete = true; }
+        break;
+      }
+      next.usage.measured = true;
+      if (step) step.tokensMeasured = !step.tokensIncomplete;
       const input = num(metrics.input_tokens);
       const output = num(metrics.output_tokens);
       if (step) {
@@ -176,6 +193,7 @@ export function applyEvent(execution, event) {
     default:
       break;
   }
+  next.usage.measured = tokensComplete(next);
   if (typeof payload.elapsed_seconds === 'number') next.usage.elapsedSeconds = payload.elapsed_seconds;
   return next;
 }
@@ -237,11 +255,16 @@ export function buildTrace(execution, events) {
   let tokensOut = 0;
   let errors = 0;
   let lastMs = 0;
+  let metricSeen = false;
+  let incomplete = false;
+  const measuredSteps = new Set();
+  const attemptedSteps = new Set(execution.steps.filter((step) => step.startedAt || ['running', 'completed', 'error', 'interrupted'].includes(step.status)).map((step) => step.key));
   for (const event of ordered) {
     const at = ms(event.at);
     lastMs = Math.max(lastMs, at);
     const key = event.stepKey || 'run';
     const payload = event.payload || {};
+    if (event.stepKey && ['step_started', 'step_completed', 'step_error', 'step_interrupted', 'model_metrics'].includes(event.kind)) attemptedSteps.add(event.stepKey);
     if (event.kind === 'step_started') {
       const span = { id: `s-${event.seq}`, name: key, kind: /** @type {const} */ ('paso'), stepKey: key, startMs: at, durationMs: 0, status: /** @type {'running'} */ ('running'), tokens: 0 };
       spans.push(span);
@@ -270,6 +293,9 @@ export function buildTrace(execution, events) {
       }
     } else if (event.kind === 'model_metrics') {
       const metrics = /** @type {Record<string, unknown>} */ (payload.metrics && typeof payload.metrics === 'object' ? payload.metrics : {});
+      if (!hasTokenMetrics(metrics)) { incomplete = true; continue; }
+      metricSeen = true;
+      if (event.stepKey) measuredSteps.add(event.stepKey);
       const input = num(metrics.input_tokens);
       const output = num(metrics.output_tokens);
       tokensIn += input;
@@ -306,7 +332,7 @@ export function buildTrace(execution, events) {
     costUsd: execution.usage.costUsd,
     errors,
     agents: [...new Set(execution.steps.map((s) => s.agentName))],
-    measured: ordered.length > 0,
+    measured: metricSeen && !incomplete && [...attemptedSteps].every((key) => measuredSteps.has(key)),
     spans,
     origin: execution.origin,
   };
