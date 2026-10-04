@@ -163,7 +163,6 @@
  * @typedef {Object} ExecutionLimits
  * @property {number|null} maxIterations
  * @property {number|null} timeoutSeconds
- * @property {number|null} budgetUsd
  * @property {boolean} enforced False when the backend does not apply them.
  */
 
@@ -209,7 +208,6 @@
  * @property {string|null} responsibleAgentId
  * @property {number|null} maxIterations
  * @property {number|null} timeoutSeconds
- * @property {number|null} budgetUsd
  */
 
 /**
@@ -434,7 +432,7 @@
  * @property {(id: string) => Promise<Execution>} getExecution
  * @property {(input: ExecutionInput) => Promise<Execution>} createExecution
  * @property {(id: string) => Promise<Execution>} cancelExecution
- * @property {(id: string, limits?: Partial<Pick<ExecutionLimits, 'maxIterations'|'timeoutSeconds'|'budgetUsd'>>) => Promise<Execution>} retryExecution
+ * @property {(id: string, limits?: Partial<Pick<ExecutionLimits, 'maxIterations'|'timeoutSeconds'>>) => Promise<Execution>} retryExecution
  * @property {(id: string, handlers: RunStreamHandlers) => RunEventStream} openRunStream
  * @property {() => Promise<ApprovalRequest[]>} listApprovals
  * @property {(id: string, decision: Decision, justification: string, actor: string) => Promise<ApprovalRequest>} decideApproval
@@ -467,7 +465,7 @@
  * @property {'auto'|'demo'} mode
  * @property {string} language
  * @property {FeatureFlags} flags
- * @property {{maxIterations: number, timeoutSeconds: number, budgetUsd: number}} limits
+ * @property {{maxIterations: number, timeoutSeconds: number}} limits
  * @property {{endpointId: string, model: string}|null} chatModel
  * @property {string} actor Name recorded in the local audit trail.
  */

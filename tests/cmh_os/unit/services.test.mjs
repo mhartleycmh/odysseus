@@ -52,7 +52,7 @@ function sampleExecution() {
   return {
     id: 'run-1', workflowId: 'wf-1', workflowName: 'Flujo', projectId: 'p', objective: 'x', priority: 'media', responsibleAgentId: null,
     status: 'pending', createdAt: '2026-09-24T15:00:00Z', startedAt: null, finishedAt: null,
-    limits: { maxIterations: null, timeoutSeconds: null, budgetUsd: null, enforced: false },
+    limits: { maxIterations: null, timeoutSeconds: null, enforced: false },
     usage: { tokensIn: 0, tokensOut: 0, costUsd: null, iterations: 0, elapsedSeconds: 0 },
     steps: [
       { key: 'revisor', agentId: 'a2', agentName: 'Revisor', status: 'pending', model: null, dependencies: ['investigador'], requiresApproval: true, error: null, startedAt: null, finishedAt: null, tools: [], tokensIn: 0, tokensOut: 0 },
@@ -136,7 +136,7 @@ function simExecution(workflowId, limits = {}) {
     execution: {
       id: 'ex-sim', workflowId, workflowName: wf.name, projectId: wf.projectId, objective: 'Prueba', priority: 'media', responsibleAgentId: null,
       status: 'pending', createdAt: '2026-09-24T12:00:00Z', startedAt: null, finishedAt: null,
-      limits: { maxIterations: 100, timeoutSeconds: 100000, budgetUsd: 100, enforced: true, ...limits },
+      limits: { maxIterations: 100, timeoutSeconds: 100000, enforced: true, ...limits },
       usage: { tokensIn: 0, tokensOut: 0, costUsd: 0, iterations: 0, elapsedSeconds: 0 },
       steps: wf.steps.map((s) => ({ key: s.key, agentId: s.agentId, agentName: agents.get(s.agentId).name, status: 'pending', model: agents.get(s.agentId).model,
                                     dependencies: [...s.dependsOn], requiresApproval: s.requiresApproval, error: null, startedAt: null, finishedAt: null, tools: [], tokensIn: 0, tokensOut: 0 })),
@@ -182,8 +182,8 @@ test('the simulator honours dependencies, parallelism and approval gates', () =>
   assert.ok(state.finalAnswer?.startsWith('Artefacto de demostración — Sostenibilidad'));
 });
 
-test('the simulator stops at the iteration, budget and time limits', () => {
-  for (const [limits, pattern] of [[{ maxIterations: 3 }, /iteraciones/], [{ budgetUsd: 0.001 }, /Presupuesto agotado/], [{ timeoutSeconds: 5 }, /Tiempo límite/]]) {
+test('the simulator stops at the iteration and time limits', () => {
+  for (const [limits, pattern] of [[{ maxIterations: 3 }, /iteraciones/], [{ timeoutSeconds: 5 }, /Tiempo límite/]]) {
     const { execution, agents } = simExecution('wf-fpa', limits);
     const events = drain(createSimulation({ execution, agents, seed: 9, startSeq: 0 }));
     const last = events.at(-1);
@@ -231,14 +231,14 @@ test('demo approval flow: validation, approve continues the run, history is kept
   await assert.rejects(demo.decideApproval(pending.id, 'aprobar', 'otra vez aprobando', 'tester'), (e) => e.kind === 'conflict');
 });
 
-test('demo execution lifecycle: create, fail on budget, retry with a larger budget', async () => {
+test('demo execution lifecycle: create, fail on iterations, retry with a larger limit', async () => {
   const demo = createDemoSource({ speed: 0, history: false });
   const created = await demo.createExecution({ workflowId: 'wf-operacion', objective: 'Revisión de prueba unitaria', priority: 'alta', responsibleAgentId: null,
-                                               maxIterations: 100, timeoutSeconds: 100000, budgetUsd: 0.001 });
+                                               maxIterations: 3, timeoutSeconds: 100000 });
   let execution = await demo.getExecution(created.id);
   assert.equal(execution.status, 'error');
-  assert.match(execution.error, /Presupuesto/);
-  await demo.retryExecution(created.id, { budgetUsd: 50 });
+  assert.match(execution.error, /iteraciones/);
+  await demo.retryExecution(created.id, { maxIterations: 100 });
   execution = await demo.getExecution(created.id);
   assert.equal(execution.attempt, 2);
   assert.equal(execution.status, 'waiting_approval');
@@ -249,10 +249,10 @@ test('demo execution lifecycle: create, fail on budget, retry with a larger budg
 
 test('demo refuses to start a workflow with paused agents and to cancel a finished run', async () => {
   const demo = createDemoSource({ speed: 0, history: false });
-  await assert.rejects(demo.createExecution({ workflowId: 'wf-fpa', objective: 'Documentador pausado', priority: 'media', responsibleAgentId: null, maxIterations: 50, timeoutSeconds: 5000, budgetUsd: 5 }),
+  await assert.rejects(demo.createExecution({ workflowId: 'wf-fpa', objective: 'Documentador pausado', priority: 'media', responsibleAgentId: null, maxIterations: 50, timeoutSeconds: 5000 }),
     (e) => e.kind === 'validation' && /Documentador/.test(e.message));
   await demo.setAgentStatus('ag-documentador', 'active');
-  const run = await demo.createExecution({ workflowId: 'wf-fpa', objective: 'Ahora sí con todos', priority: 'media', responsibleAgentId: null, maxIterations: 50, timeoutSeconds: 5000, budgetUsd: 5 });
+  const run = await demo.createExecution({ workflowId: 'wf-fpa', objective: 'Ahora sí con todos', priority: 'media', responsibleAgentId: null, maxIterations: 50, timeoutSeconds: 5000 });
   const cancelled = await demo.cancelExecution(run.id);
   assert.equal(cancelled.status, 'interrupted');
   await assert.rejects(demo.cancelExecution(run.id), (e) => e.kind === 'conflict');
@@ -506,7 +506,7 @@ test('a run feed fetches the artifact a live step_completed only references (fin
 
 test('demo: a rejected step asks for approval again after a retry', async () => {
   const demo = createDemoSource({ speed: 0, history: false });
-  const run = await demo.createExecution({ workflowId: 'wf-operacion', objective: 'Rechazo y reintento', priority: 'media', responsibleAgentId: null, maxIterations: 100, timeoutSeconds: 100000, budgetUsd: 50 });
+  const run = await demo.createExecution({ workflowId: 'wf-operacion', objective: 'Rechazo y reintento', priority: 'media', responsibleAgentId: null, maxIterations: 100, timeoutSeconds: 100000 });
   const id = `apr-${run.id}-seguridad`;
   await demo.decideApproval(id, 'rechazar', 'Falta el registro de incidentes.', 'tester');
   assert.equal((await demo.getExecution(run.id)).status, 'interrupted');

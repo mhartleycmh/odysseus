@@ -79,7 +79,7 @@ test('format helpers produce es-PE output', () => {
 test('sanitizePrefs keeps known values and drops junk', () => {
   assert.deepEqual(sanitizePrefs(undefined), { ...DEFAULT_PREFS, flags: { ...DEFAULT_PREFS.flags }, limits: { ...DEFAULT_PREFS.limits } });
   const prefs = sanitizePrefs({ theme: 'neon', motion: 'reduced', mode: 'demo', flags: { chatModel: 'yes', simulateFailures: true },
-                                limits: { maxIterations: 5000, timeoutSeconds: 30, budgetUsd: -1 }, chatModel: { endpointId: 'e', model: '' }, actor: '  Ana  ' });
+                                limits: { maxIterations: 5000, timeoutSeconds: 30 }, chatModel: { endpointId: 'e', model: '' }, actor: '  Ana  ' });
   assert.equal(prefs.theme, 'system');
   assert.equal(prefs.motion, 'reduced');
   assert.equal(prefs.mode, 'demo');
@@ -87,7 +87,7 @@ test('sanitizePrefs keeps known values and drops junk', () => {
   assert.equal(prefs.flags.simulateFailures, true);
   assert.equal(prefs.limits.maxIterations, DEFAULT_PREFS.limits.maxIterations);
   assert.equal(prefs.limits.timeoutSeconds, 30);
-  assert.equal(prefs.limits.budgetUsd, DEFAULT_PREFS.limits.budgetUsd);
+  assert.equal('budgetUsd' in prefs.limits, false);
   assert.equal(prefs.chatModel, null);
   assert.equal(prefs.actor, 'Ana');
 });

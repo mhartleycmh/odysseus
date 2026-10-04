@@ -42,7 +42,7 @@ function agent(base) {
 export const AGENTS = [
   agent({ id: 'ag-coordinador', name: 'Coordinador', role: 'Supervisor del sistema', projectId: 'demo-operaciones', model: 'modelo-demo-grande',
     permissionLevel: 'admin', domain: 'sistema', allowedTools: ['planificar_tareas', 'consultar_estado'],
-    capabilities: [cap('plan', 'Planificación de tareas', 'Divide un objetivo en pasos con dependencias'), cap('route', 'Asignación', 'Elige el agente adecuado para cada paso'), cap('control', 'Control de límites', 'Detiene una ejecución que excede presupuesto, tiempo o iteraciones')],
+    capabilities: [cap('plan', 'Planificación de tareas', 'Divide un objetivo en pasos con dependencias'), cap('route', 'Asignación', 'Elige el agente adecuado para cada paso'), cap('control', 'Control de límites', 'Detiene una ejecución que excede tiempo o iteraciones')],
     instructions: 'Descompone el objetivo, asigna pasos a los agentes y vigila límites. Nunca aprueba en nombre de una persona.' }),
   agent({ id: 'ag-planificacion', name: 'Planificación', role: 'Plan de minado y secuencia', projectId: 'demo-operaciones', allowedTools: ['read_file', 'consultar_plan'],
     capabilities: [cap('plan-mina', 'Plan de corto plazo', 'Lee el plan vigente y detecta desvíos'), cap('secuencia', 'Secuenciación', 'Propone el orden de labores')],
@@ -106,7 +106,7 @@ export const WORKFLOWS = [
 export const HISTORY = Object.freeze([
   { workflowId: 'wf-operacion', objective: 'Revisión del turno noche (demo)', hoursAgo: 30, seed: 11, outcome: 'completed' },
   { workflowId: 'wf-fpa', objective: 'Conciliación intercompañía de prueba (demo)', hoursAgo: 26, seed: 7, outcome: 'completed' },
-  { workflowId: 'wf-operacion', objective: 'Revisión del turno día (demo)', hoursAgo: 20, seed: 23, outcome: 'budget' },
+  { workflowId: 'wf-operacion', objective: 'Revisión del turno día (demo)', hoursAgo: 20, seed: 23, outcome: 'iterations' },
   { workflowId: 'wf-fpa', objective: 'Flujo de caja semanal de prueba (demo)', hoursAgo: 8, seed: 5, outcome: 'completed' },
   { workflowId: 'wf-operacion', objective: 'Revisión del turno noche (demo)', hoursAgo: 3, seed: 41, outcome: 'waiting' },
   { workflowId: 'wf-fpa', objective: 'Presupuesto de gastos de prueba (demo)', hoursAgo: 1, seed: 19, outcome: 'error' },

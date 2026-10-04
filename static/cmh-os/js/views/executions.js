@@ -28,7 +28,6 @@ export const EXECUTION_SCHEMA = {
   priority: { required: true, oneOf: ['baja', 'media', 'alta'] },
   maxIterations: { required: true, integer: true, min: 1, max: 200 },
   timeoutSeconds: { required: true, integer: true, min: 10, max: 86400 },
-  budgetUsd: { required: true, min: 0.01, max: 1000 },
 };
 
 /**
@@ -59,8 +58,7 @@ export async function openExecutionForm(ctx, preselected) {
         limitsSupported ? null : alertBox('warn', t('executions.form.limitsUnsupported')),
         h('div', { class: 'form-grid' },
           field({ name: 'maxIterations', label: t('executions.form.maxIterations'), type: 'number', required: true, min: '1', max: '200', step: '1', value: String(defaults.maxIterations), disabled: !limitsSupported }),
-          field({ name: 'timeoutSeconds', label: t('executions.form.timeout'), type: 'number', required: true, min: '10', max: '86400', step: '1', value: String(defaults.timeoutSeconds), disabled: !limitsSupported }),
-          field({ name: 'budgetUsd', label: t('executions.form.budget'), type: 'number', required: true, min: '0.01', max: '1000', step: '0.01', value: String(defaults.budgetUsd), disabled: !limitsSupported, help: t('executions.form.budgetHelp') })))));
+          field({ name: 'timeoutSeconds', label: t('executions.form.timeout'), type: 'number', required: true, min: '10', max: '86400', step: '1', value: String(defaults.timeoutSeconds), disabled: !limitsSupported })))));
   const workflowSelect = /** @type {HTMLSelectElement} */ (form.querySelector('select[name="workflowId"]'));
   const responsibleSelect = /** @type {HTMLSelectElement} */ (responsible.querySelector('select'));
   const syncWorkflow = () => {
@@ -88,7 +86,6 @@ export async function openExecutionForm(ctx, preselected) {
         workflowId: values.workflowId, objective: values.objective.trim(), priority: /** @type {'baja'|'media'|'alta'} */ (values.priority),
         responsibleAgentId: values.responsibleAgentId || null,
         maxIterations: limitsSupported ? Number(values.maxIterations) : null, timeoutSeconds: limitsSupported ? Number(values.timeoutSeconds) : null,
-        budgetUsd: limitsSupported ? Number(values.budgetUsd.replace(',', '.')) : null,
       });
       toast(t('executions.form.started', { id: shortId(created.id) }), 'ok');
       modal.close();
@@ -166,8 +163,7 @@ async function openRetry(ctx, execution, onDone) {
     execution.error ? alertBox('risk', t('executions.retry.lastError'), h('span', null, execution.error)) : null,
     h('div', { class: 'form-grid' },
       field({ name: 'maxIterations', label: t('executions.form.maxIterations'), type: 'number', required: true, min: '1', max: '200', value: String(execution.limits.maxIterations ?? 12) }),
-      field({ name: 'timeoutSeconds', label: t('executions.form.timeout'), type: 'number', required: true, min: '10', max: '86400', value: String(execution.limits.timeoutSeconds ?? 600) }),
-      field({ name: 'budgetUsd', label: t('executions.form.budget'), type: 'number', required: true, min: '0.01', max: '1000', step: '0.01', value: String(execution.limits.budgetUsd ?? 2), help: t('executions.retry.budgetHelp', { spent: formatUsd(execution.usage.costUsd) }) })));
+      field({ name: 'timeoutSeconds', label: t('executions.form.timeout'), type: 'number', required: true, min: '10', max: '86400', value: String(execution.limits.timeoutSeconds ?? 600) })));
   const submit = h('button', { class: 'btn btn-primary', attrs: { type: 'submit', form: 'retry-form' } }, t('executions.retry.action'));
   const cancel = h('button', { class: 'btn', attrs: { type: 'button' } }, t('common.cancel'));
   const modal = openModal({ title: t('executions.retry.title'), body: form, footer: [cancel, submit] });
@@ -175,10 +171,10 @@ async function openRetry(ctx, execution, onDone) {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const values = formValues(form);
-    const schema = { maxIterations: EXECUTION_SCHEMA.maxIterations, timeoutSeconds: EXECUTION_SCHEMA.timeoutSeconds, budgetUsd: EXECUTION_SCHEMA.budgetUsd };
+    const schema = { maxIterations: EXECUTION_SCHEMA.maxIterations, timeoutSeconds: EXECUTION_SCHEMA.timeoutSeconds };
     if (!showErrors(form, validate(schema, values))) return;
     try {
-      await ctx.source.retryExecution(execution.id, { maxIterations: Number(values.maxIterations), timeoutSeconds: Number(values.timeoutSeconds), budgetUsd: Number(values.budgetUsd.replace(',', '.')) });
+      await ctx.source.retryExecution(execution.id, { maxIterations: Number(values.maxIterations), timeoutSeconds: Number(values.timeoutSeconds) });
       toast(t('executions.retry.done'), 'ok');
       modal.close();
       onDone();
@@ -235,13 +231,10 @@ export function renderDetail(ctx, match) {
         [t('executions.form.workflow'), execution.workflowName],
         [t('executions.col.created'), formatDateTime(execution.createdAt)],
         [t('executions.usage.tokens'), measured(t('executions.usage.tokensValue', { input: formatNumber(u.tokensIn), output: formatNumber(u.tokensOut) }))],
-        [t('executions.usage.cost'), `${formatUsd(u.costUsd)}${l.budgetUsd !== null ? ' / ' + formatUsd(l.budgetUsd) : ''}`],
+        [t('executions.usage.cost'), formatUsd(u.costUsd)],
         [t('executions.usage.iterations'), measured(`${formatNumber(u.iterations)}${l.maxIterations !== null ? ' / ' + formatNumber(l.maxIterations) : ''}`)],
         [t('executions.usage.elapsed'), `${formatDuration(u.elapsedSeconds)}${l.timeoutSeconds !== null ? ' / ' + formatDuration(l.timeoutSeconds) : ''}`],
-      ]), l.budgetUsd !== null && u.costUsd !== null ? h('div', { class: 'stack', attrs: { style: 'margin-top:12px' } },
-        h('span', { class: 'small muted' }, t('executions.usage.budgetUsed')),
-        h('div', { class: `meter ${u.costUsd / l.budgetUsd > 0.9 ? 'tone-risk' : u.costUsd / l.budgetUsd > 0.7 ? 'tone-warn' : ''}`, attrs: { role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': String(l.budgetUsd), 'aria-valuenow': String(u.costUsd), 'aria-label': t('executions.usage.budgetUsed') } },
-          h('span', { attrs: { style: `width:${Math.min(100, (u.costUsd / l.budgetUsd) * 100).toFixed(1)}%` } }))) : null);
+      ]));
       mount(steps, dataTable({
         caption: t('executions.steps'), rows: execution.steps, rowKey: (s) => s.key,
         columns: [

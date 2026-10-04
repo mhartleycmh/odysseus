@@ -117,7 +117,7 @@ Todos los registros llevan `origin: "real" | "demo"`.
 | `MCPServer` | id, name, transport, status, toolCount, enabledToolCount, envKeys[] (sin valores), error | `/api/mcp/servers` |
 | `Workflow` | id, name, projectId, version, steps: `{key, agentId, dependsOn[], independentOf[], requiresApproval}[]` | `/api/cmh/workflows` |
 | `Task` | id, title, agentId, dependsOn[], status | pasos de la ejecución |
-| `Execution` | id, workflowId, projectId, objective, priority, status, createdAt, limits `{maxIterations, timeoutSeconds, budgetUsd}`, usage `{tokensIn, tokensOut, costUsd}`, steps[], artifacts[], finalAnswer, error | `/api/cmh/runs`, `/api/cmh/runs/{id}` |
+| `Execution` | id, workflowId, projectId, objective, priority, status, createdAt, limits `{maxIterations, timeoutSeconds}`, usage `{tokensIn, tokensOut, costUsd}`, steps[], artifacts[], finalAnswer, error | `/api/cmh/runs`, `/api/cmh/runs/{id}` |
 | `ExecutionStep` | key, agentId, status, model, dependencies[], error, startedAt, finishedAt, tools[] | `/api/cmh/runs/{id}` + eventos |
 | `RunEvent` | seq, kind, stepKey, payload, at | SSE `/api/cmh/runs/{id}/events` |
 | `MemoryRecord` | id, kind (`trabajo`/`episodica`/`semantica`), title, content, source, createdAt, relevance, tags[], archived | `/api/cmh/memories`, artefactos |

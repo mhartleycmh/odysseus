@@ -104,7 +104,7 @@ export default {
     activated: 'Agente activado.', paused: 'Agente pausado.',
   },
   executions: {
-    title: 'Ejecuciones', lede: 'Cada ejecución recorre un flujo de agentes, deja artefactos y respeta límites de iteraciones, tiempo y presupuesto.',
+    title: 'Ejecuciones', lede: 'Cada ejecución recorre un flujo de agentes, deja artefactos y respeta límites de iteraciones y tiempo.',
     new: 'Nueva ejecución', listTitle: 'Historial de ejecuciones', count: 'Mostrando {shown} de {total} ejecuciones', noMatch: 'Ninguna ejecución coincide con los filtros.',
     empty: 'Todavía no hay ejecuciones.', openRow: 'Abrir la ejecución {id}', detailTitle: 'Ejecución {id}', objectiveUnavailable: 'No informado por el backend',
     filter: { label: 'Filtrar ejecuciones', search: 'Buscar', searchPlaceholder: 'Identificador, flujo u objetivo', status: 'Estado', workflow: 'Flujo' },
@@ -115,7 +115,7 @@ export default {
       responsibleHelp: 'Quién responde por el resultado. Solo agentes del flujo elegido.', limits: 'Límites de la ejecución',
       limitsHelp: 'Si se supera cualquiera, la ejecución se detiene con error y conserva lo producido. Puedes reintentar con límites nuevos.',
       limitsUnsupported: 'El backend real todavía no aplica estos límites: cada paso usa hasta 12 iteraciones del bucle del agente. Los campos quedan deshabilitados para no prometer un control que no existe.',
-      maxIterations: 'Máximo de iteraciones', timeout: 'Tiempo límite (segundos)', budget: 'Presupuesto (US$)', budgetHelp: 'Costo estimado máximo de llamadas al modelo.',
+      maxIterations: 'Máximo de iteraciones', timeout: 'Tiempo límite (segundos)',
       start: 'Iniciar ejecución', started: 'Ejecución {id} iniciada.', failed: 'No se pudo iniciar la ejecución', steps: '{n} pasos.',
       noWorkflows: 'No hay flujos definidos. Crea uno en la vista /cmh antes de ejecutar.',
     },
@@ -124,7 +124,7 @@ export default {
     summary: 'Resumen y consumo', summaryHelp: 'Tokens, costo, iteraciones y tiempo se reconstruyen a partir de los eventos de la ejecución.',
     usage: {
       tokens: 'Tokens (entrada / salida)', tokensValue: '{input} / {output}', cost: 'Costo estimado', iterations: 'Iteraciones', elapsed: 'Tiempo transcurrido',
-      budgetUsed: 'Presupuesto consumido', notMeasured: 'sin medir (sin eventos)',
+      notMeasured: 'sin medir (sin eventos)',
     },
     steps: 'Pasos', step: { key: 'Paso', status: 'Estado', model: 'Modelo', tools: 'Herramientas usadas', error: 'Error', requiresApproval: 'Requiere aprobación' },
     answer: {
@@ -139,7 +139,7 @@ export default {
       title: 'Reintentar ejecución', message: 'Los pasos completados se conservan; se repiten los pendientes y los que fallaron.',
       messageReal: 'El backend reanuda la ejecución: conserva los pasos completados y repite los pendientes.',
       consequence: 'Los pasos pendientes vuelven a llamar al modelo y consumen tokens.', action: 'Reintentar', done: 'Reintento iniciado.',
-      lastError: 'Último error', budgetHelp: 'Ya se consumió {spent}. El presupuesto nuevo debe cubrir lo que falta.',
+      lastError: 'Último error',
     },
   },
   orchestration: {

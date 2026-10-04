@@ -20,7 +20,6 @@ import { toast } from '../components/toast.js';
 export const SETTINGS_SCHEMA = {
   maxIterations: { required: true, integer: true, min: 1, max: 200 },
   timeoutSeconds: { required: true, integer: true, min: 10, max: 86400 },
-  budgetUsd: { required: true, min: 0.01, max: 1000 },
   actor: { required: true, maxLength: 60, pattern: /^[\p{L}\p{N} ._-]+$/u, patternMessage: 'settings.actorPattern' },
 };
 
@@ -39,8 +38,7 @@ export function render(ctx) {
         field({ name: 'actor', label: t('settings.actor'), value: prefs.actor, required: true, maxLength: '60', help: t('settings.actorHelp') }))),
       h('fieldset', { class: 'fieldset' }, h('legend', null, t('settings.limits')), h('p', { class: 'field-help' }, t('settings.limitsHelp')), h('div', { class: 'form-grid' },
         field({ name: 'maxIterations', label: t('executions.form.maxIterations'), type: 'number', required: true, min: '1', max: '200', value: String(prefs.limits.maxIterations) }),
-        field({ name: 'timeoutSeconds', label: t('executions.form.timeout'), type: 'number', required: true, min: '10', max: '86400', value: String(prefs.limits.timeoutSeconds) }),
-        field({ name: 'budgetUsd', label: t('executions.form.budget'), type: 'number', required: true, min: '0.01', max: '1000', step: '0.01', value: String(prefs.limits.budgetUsd) }))),
+        field({ name: 'timeoutSeconds', label: t('executions.form.timeout'), type: 'number', required: true, min: '10', max: '86400', value: String(prefs.limits.timeoutSeconds) }))),
       h('fieldset', { class: 'fieldset' }, h('legend', null, t('settings.flags')),
         checkbox(t('settings.flag.chatModel'), 'chatModel', prefs.flags.chatModel, ctx.source.capabilities.chatModel ? t('settings.flag.chatModelHelp') : t('settings.flag.chatModelDemo')),
         field({ name: 'chatModelChoice', label: t('settings.chatModel'), type: 'select', value: prefs.chatModel ? `${prefs.chatModel.endpointId}|${prefs.chatModel.model}` : '',
@@ -66,7 +64,7 @@ export function render(ctx) {
       ctx.setPrefs({
         theme: /** @type {Prefs['theme']} */ (v.theme), motion: /** @type {Prefs['motion']} */ (v.motion), language: v.language, actor: v.actor.trim(),
         mode: v.mode === 'demo' ? 'demo' : 'auto',
-        limits: { maxIterations: Number(v.maxIterations), timeoutSeconds: Number(v.timeoutSeconds), budgetUsd: Number(v.budgetUsd.replace(',', '.')) },
+        limits: { maxIterations: Number(v.maxIterations), timeoutSeconds: Number(v.timeoutSeconds) },
         flags: { chatModel: wantsModel, simulateFailures: v.simulateFailures === 'true', evaluations: v.evaluations === 'true' },
         chatModel: endpointId && modelParts.length ? { endpointId, model: modelParts.join('|') } : null,
       });

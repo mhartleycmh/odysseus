@@ -12,7 +12,7 @@ export const DEFAULT_PREFS = Object.freeze({
   flags: { chatModel: false, simulateFailures: false, evaluations: true },
   // Per execution (all steps together). The backend's max_steps=12 is per step,
   // so a seven-step flow needs about 20 iterations; 40 leaves headroom.
-  limits: { maxIterations: 40, timeoutSeconds: 600, budgetUsd: 2 },
+  limits: { maxIterations: 40, timeoutSeconds: 600 },
   chatModel: null,
   actor: 'usuario',
 });
@@ -50,7 +50,6 @@ export function sanitizePrefs(raw) {
     limits: {
       maxIterations: clampNumber(limits.maxIterations, 1, 200, DEFAULT_PREFS.limits.maxIterations),
       timeoutSeconds: clampNumber(limits.timeoutSeconds, 10, 86400, DEFAULT_PREFS.limits.timeoutSeconds),
-      budgetUsd: clampNumber(limits.budgetUsd, 0.01, 1000, DEFAULT_PREFS.limits.budgetUsd),
     },
     chatModel: chat && typeof chat.endpointId === 'string' && typeof chat.model === 'string' && chat.endpointId && chat.model
       ? { endpointId: chat.endpointId, model: chat.model } : null,

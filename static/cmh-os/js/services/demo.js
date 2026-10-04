@@ -81,7 +81,7 @@ export function createDemoSource(options = {}) {
       workflowId: workflow.id, workflowName: workflow.name, projectId: workflow.projectId,
       objective: input.objective, priority: input.priority, responsibleAgentId: input.responsibleAgentId,
       status: 'pending', createdAt: new Date(createdMs).toISOString(), startedAt: null, finishedAt: null,
-      limits: { maxIterations: input.maxIterations, timeoutSeconds: input.timeoutSeconds, budgetUsd: input.budgetUsd, enforced: true },
+      limits: { maxIterations: input.maxIterations, timeoutSeconds: input.timeoutSeconds, enforced: true },
       usage: { tokensIn: 0, tokensOut: 0, costUsd: 0, iterations: 0, elapsedSeconds: 0, measured: true },
       steps: workflow.steps.map((step) => ({
         key: step.key, agentId: step.agentId, agentName: byId.get(step.agentId)?.name || step.agentId, status: 'pending',
@@ -133,7 +133,7 @@ export function createDemoSource(options = {}) {
       const workflow = workflows.find((w) => w.id === entry.workflowId);
       if (!workflow) continue;
       const input = { workflowId: workflow.id, objective: entry.objective, priority: /** @type {const} */ ('media'), responsibleAgentId: null,
-                      maxIterations: 40, timeoutSeconds: 1800, budgetUsd: entry.outcome === 'budget' ? 0.02 : 2 };
+                      maxIterations: entry.outcome === 'iterations' ? 6 : 40, timeoutSeconds: 1800 };
       const execution = newExecution(workflow, input, now() - entry.hoursAgo * 3600_000);
       /** @type {RunRecord} */
       const record = { execution, events: [], sim: null, timer: null, listeners: new Set() };

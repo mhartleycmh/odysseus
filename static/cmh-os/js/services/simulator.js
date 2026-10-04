@@ -1,6 +1,6 @@
 // Deterministic run simulator for demo mode. It emits the same event kinds as
 // the backend SSE stream (ADR-004) and enforces the limits the backend does not
-// yet apply: iterations, simulated time and budget. Pure: no timers here; the
+// yet apply: iterations and simulated time. Pure: no timers here; the
 // caller decides how fast to replay (demo.js drives it with setTimeout, tests
 // call next() in a loop).
 import { createRng } from '../mocks/rng.js';
@@ -57,7 +57,6 @@ export function createSimulation(options) {
   const baseMs = Date.parse(execution.startedAt || execution.createdAt);
   let clock = execution.usage.elapsedSeconds;
   let iterations = execution.usage.iterations;
-  let cost = execution.usage.costUsd || 0;
   /** @type {Map<string, 'pending'|'running'|'completed'|'error'|'interrupted'>} */
   const status = new Map(execution.steps.map((s) => [s.key, s.status === 'completed' ? 'completed' : 'pending']));
   const approved = new Set(options.preApproved || []);
@@ -156,10 +155,6 @@ export function createSimulation(options) {
       if (limits.maxIterations !== null && iterations > limits.maxIterations) return `Límite de iteraciones alcanzado (${limits.maxIterations})`;
     }
     if (limits.timeoutSeconds !== null && clock > limits.timeoutSeconds) return `Tiempo límite superado (${limits.timeoutSeconds} s simulados)`;
-    if (item.kind === 'model_metrics') {
-      cost += typeof item.payload.cost_usd === 'number' ? item.payload.cost_usd : 0;
-      if (limits.budgetUsd !== null && cost > limits.budgetUsd) return `Presupuesto agotado (US$ ${limits.budgetUsd.toFixed(2)})`;
-    }
     return null;
   }
 
@@ -203,7 +198,7 @@ export function createSimulation(options) {
         ? { kind: 'step_error', stepKey: key, payload: { error: reason }, delayMs: 300, advance: 0 }
         : { kind: 'run_error', stepKey: null, payload: { error: reason }, delayMs: 300, advance: 0 };
       if (item.kind === 'model_metrics') {
-        // Emit the call that crossed the budget, then stop.
+        // Emit the call that crossed the limit, then stop.
         queue = [error];
         return tick(item);
       }

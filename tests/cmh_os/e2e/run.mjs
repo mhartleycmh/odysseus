@@ -176,7 +176,6 @@ try {
     expect((await page.eval(`document.querySelector('dialog[open] [name="objective"]').getAttribute('aria-invalid')`)) === 'true', 'objective required');
     await page.fill('dialog[open] [name="workflowId"]', 'wf-operacion');
     await page.fill('dialog[open] [name="objective"]', 'Revisión E2E del turno con evidencia trazable');
-    await page.fill('dialog[open] [name="budgetUsd"]', '5');
     await page.click('dialog[open] .modal-footer .btn-primary');
     await page.waitFor(`location.hash.startsWith('#/orquestacion/ex-')`, 10000, 'orchestration of new run');
     runId = await page.eval(`decodeURIComponent(location.hash.split('/')[2])`);

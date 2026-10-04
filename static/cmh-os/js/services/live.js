@@ -149,7 +149,7 @@ export function createLiveSource(options) {
       id: str(summary, 'id', 'ejecución'), workflowId: definitionId, workflowName: flow?.name || 'Flujo', projectId: optStr(summary, 'project_id') || '',
       objective: '', priority: 'media', responsibleAgentId: null, status: execStatus(optStr(summary, 'status') || 'error'),
       createdAt: optStr(summary, 'created_at') || new Date(0).toISOString(), startedAt: null, finishedAt: null,
-      limits: { maxIterations: 12, timeoutSeconds: null, budgetUsd: null, enforced: false },
+      limits: { maxIterations: 12, timeoutSeconds: null, enforced: false },
       usage: { tokensIn: 0, tokensOut: 0, costUsd: null, iterations: 0, elapsedSeconds: 0, measured: false },
       steps: [], artifacts: [], finalAnswer: null, error: null, attempt: 1, origin: 'real',
     };
