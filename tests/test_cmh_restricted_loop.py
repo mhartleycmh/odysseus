@@ -134,6 +134,21 @@ async def test_evidence_required_run_with_a_successful_tool_call_returns_its_ans
     assert output == "Hay dos carpetas."
 
 
+async def test_restricted_run_with_tool_evidence_uses_same_model_for_final_summary(run, monkeypatch):
+    summary = AsyncMock(return_value="<think>privado</think>Artefacto final.")
+    monkeypatch.setattr("src.llm_core.llm_call_async", summary)
+    output, _ = await run([
+        chunk({"type": "tool_start", "tool": "ls"}),
+        chunk({"type": "tool_output", "tool": "ls", "exit_code": 0, "output": "input/"}),
+        "data: [DONE]\n\n",
+    ], require_tool_evidence=True)
+    assert output == "Artefacto final."
+    summary.assert_awaited_once()
+    args, kwargs = summary.await_args
+    assert args[:2] == ("http://model.invalid", "m")
+    assert kwargs["workload"] == "foreground"
+
+
 def test_scheduled_restricted_task_with_workspace_requires_tool_evidence():
     from src import task_scheduler
     for allowed, workspace, expected in [

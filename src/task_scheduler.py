@@ -2188,18 +2188,47 @@ class TaskScheduler:
                 "interactively to inspect and approve the action."
             )
 
-        # Grace summarization — if the model exhausted rounds on tool calls
-        # without producing a final text response, do one last LLM call
-        # asking it to summarize what it did. Guarantees output.
         if allowed_tools is not None:
             # Inline <think> blocks are reasoning, not deliverable: a reviewer
             # reading this artifact must never inherit the author's reasoning.
             from src.text_helpers import strip_think
             full_text = strip_think(full_text, prompt_echo=False)
             if not full_text:
-                raise RuntimeError("Restricted task produced no final model output")
+                if require_tool_evidence and not successful_tool_calls:
+                    raise RuntimeError("Restricted task produced no final model output")
+                try:
+                    from src.llm_core import llm_call_async
+                    grace_context = "You ran out of tool-call rounds. "
+                    if tool_results:
+                        grace_context += "Here are the successful tool results:\n" + "\n".join(tool_results[-5:])
+                    else:
+                        grace_context += "No successful tool output was captured."
+                    grace_context += (
+                        "\n\nProduce the final artifact now. Be concise. Do not request "
+                        "more tools, do not mention hidden reasoning, and label unresolved "
+                        "items as PENDIENTE."
+                    )
+                    full_text = await llm_call_async(
+                        endpoint_url,
+                        model,
+                        messages=[
+                            {"role": "system", "content": system_content},
+                            {"role": "user", "content": grace_context},
+                        ],
+                        headers=headers,
+                        timeout=30,
+                        workload="foreground" if foreground_controlled else "background",
+                    )
+                    full_text = strip_think(full_text or "", prompt_echo=False).strip()
+                except Exception as e:
+                    logger.warning(f"Restricted grace summarization failed: {e}")
+                if not full_text:
+                    raise RuntimeError("Restricted task produced no final model output")
             if require_tool_evidence and not successful_tool_calls:
                 raise RuntimeError("Restricted task answered without any successful tool call")
+        # Grace summarization — if the model exhausted rounds on tool calls
+        # without producing a final text response, do one last LLM call
+        # asking it to summarize what it did. Guarantees output for unrestricted tasks.
         if not full_text.strip():
             try:
                 from src.task_endpoint import task_llm_call_async
