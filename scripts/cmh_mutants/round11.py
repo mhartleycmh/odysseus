@@ -24,6 +24,7 @@ if not PY.exists() or "python" not in PY.name.lower():
 REPORT = "tests/test_cmh_run_report.py"
 READABLE = f"{REPORT}::test_a_verdict_nobody_can_read_is_not_an_approval"
 QUOTED = f"{REPORT}::test_an_approval_the_reviewer_quotes_or_copies_does_not_close_the_phase"
+RETURNED = f"{REPORT}::test_a_returned_verdict_in_any_form_keeps_an_approval_from_closing_the_phase"
 
 REPORT_SCRIPT = "scripts/cmh_ops/run_report.py"
 
@@ -53,6 +54,38 @@ MUTANTS = [
      "            found.append(match.group(1).upper())",
      "            found.append(match.group(1))",
      [READABLE]),
+    # --- P1-2: any line pairing "veredicto" with DEVUELTO keeps APROBADO from closing ----------
+    ("D01 un DEVUELTO fuera de la primera linea vuelve a ignorarse", REPORT_SCRIPT,
+     '    if found[0] == "APROBADO":\n',
+     '    if False:\n',
+     [RETURNED]),
+    ("D02 solo cuenta 'veredicto:' seguido de DEVUELTO (se pierden 'final', la tabla y el guion)",
+     REPORT_SCRIPT,
+     'r"\\bveredictos?\\b.*\\bdevuelto\\b|\\bdevuelto\\b.*\\bveredictos?\\b"',
+     'r"\\bveredictos?\\b\\s*:\\s*devuelto\\b"',
+     [RETURNED]),
+    ("D03 la busqueda distingue mayusculas (se pierden 'Veredicto' y la prosa en minusculas)",
+     REPORT_SCRIPT,
+     'r"\\bveredictos?\\b.*\\bdevuelto\\b|\\bdevuelto\\b.*\\bveredictos?\\b", re.IGNORECASE)',
+     'r"\\bVEREDICTOS?\\b.*\\bDEVUELTO\\b|\\bDEVUELTO\\b.*\\bVEREDICTOS?\\b")',
+     [RETURNED]),
+    ("D04 la busqueda se ancla al inicio de la linea (se pierden vineta, lista, tabla y cita)",
+     REPORT_SCRIPT,
+     '            if _RETURNED.search(re.sub(r"[*_`~]", "", line)):',
+     '            if _RETURNED.match(re.sub(r"[*_`~]", "", line)):',
+     [RETURNED]),
+    ("D05 la busqueda deja de quitar las marcas markdown (se pierde _Veredicto_)", REPORT_SCRIPT,
+     '            if _RETURNED.search(re.sub(r"[*_`~]", "", line)):',
+     '            if _RETURNED.search(line):',
+     [RETURNED]),
+    ("D06 solo cuenta 'veredicto' antes de DEVUELTO (se pierde el orden inverso)", REPORT_SCRIPT,
+     '|\\bdevuelto\\b.*\\bveredictos?\\b"',
+     '"',
+     [RETURNED]),
+    ("D07 cualquier DEVUELTO, sin la palabra veredicto, impide el APROBADO", REPORT_SCRIPT,
+     'r"\\bveredictos?\\b.*\\bdevuelto\\b|\\bdevuelto\\b.*\\bveredictos?\\b"',
+     'r"\\bdevuelto\\b"',
+     [f"{REPORT}::test_an_approval_that_never_pairs_the_word_with_devuelto_still_closes_the_phase"]),
 ]
 
 

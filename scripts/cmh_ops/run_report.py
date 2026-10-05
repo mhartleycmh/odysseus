@@ -54,6 +54,15 @@ REVIEW_STEP = "revisor"
 VERDICTS = ("APROBADO", "DEVUELTO")
 _VERDICT_LINE = re.compile(r"VEREDICTO\s*:\s*(.*?)\s*", re.IGNORECASE)
 
+#: A line anywhere in the artifact that pairs the word "veredicto" with DEVUELTO, in any case,
+#: markdown, list, table, quote, with ":" or "-" or in either order ("- **Veredicto:** DEVUELTO",
+#: "**Veredicto final:** DEVUELTO", "| Veredicto | DEVUELTO |", "1. VEREDICTO: DEVUELTO",
+#: "VEREDICTO - DEVUELTO"), keeps an opening APROBADO from closing the phase (r11 review, P1-2).
+#: Only "VEREDICTO:" lines used to be compared, and in run 012ea502 the same model wrote the
+#: bullet form (the documentador's artifact 1b76b00f, line 68). It may refuse an approval that merely mentions
+#: an earlier DEVUELTO: a phase left open is read by a person, a closed one on a return is not.
+_RETURNED = re.compile(r"\bveredictos?\b.*\bdevuelto\b|\bdevuelto\b.*\bveredictos?\b", re.IGNORECASE)
+
 
 def review_verdict(content):
     """``(verdict, note)``: the reviewer's APROBADO or DEVUELTO with no note, or None and why."""
@@ -71,6 +80,11 @@ def review_verdict(content):
         match = _VERDICT_LINE.fullmatch(bare)
         if match:
             found.append(match.group(1).upper())
+    if found[0] == "APROBADO":
+        for number, line in enumerate(lines, 1):
+            if _RETURNED.search(re.sub(r"[*_`~]", "", line)):
+                return None, (f"veredicto contradictorio: abre con APROBADO y la linea {number} "
+                              f"asocia veredicto con DEVUELTO: {line.strip()[:60]}")
     if len(set(found)) != 1 or found[0] not in VERDICTS:
         return None, "veredicto ilegible: " + " / ".join(value[:40] for value in found)
     return found[0], None

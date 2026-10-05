@@ -623,9 +623,11 @@ def test_only_a_reviewer_that_declares_aprobado_closes_the_phase(tmp_path, artif
     ("VEREDICTO: APROBADO | DEVUELTO\n", None),                       # the template, unfilled
     ("VEREDICTO: APROBADO\n\n...\nVEREDICTO: DEVUELTO\n", None),      # two that disagree
     ("VEREDICTO: APROBADO con reservas\n", None),
+    ("VEREDICTO: APROBADO\n\n...\nVEREDICTO: APROBADO con reservas\n", None),  # later, no DEVUELTO
     ("El revisor no emite un VEREDICTO: APROBADO todavia\n", None),    # not at the start of a line
 ], ids=["negrita", "cita", "titulo_y_minusculas", "tras_lineas_vacias", "no_es_la_primera_linea",
-        "repetido_en_minusculas", "plantilla", "dos_distintos", "con_reservas", "en_prosa"])
+        "repetido_en_minusculas", "plantilla", "dos_distintos", "con_reservas",
+        "aprobado_y_luego_con_reservas", "en_prosa"])
 def test_a_verdict_nobody_can_read_is_not_an_approval(artifact, verdict):
     found, note = report_mod.review_verdict(artifact)
     assert found == verdict
@@ -692,3 +694,43 @@ def test_an_approval_the_reviewer_quotes_or_copies_does_not_close_the_phase(tmp_
     assert criteria["review_approved"] is False
     assert criteria["all_met"] is False
     assert criteria["review_verdict_note"] == "el artefacto del revisor no abre con la linea VEREDICTO"
+
+
+# --- r11 review, P1-2: a DEVUELTO in any form keeps an APROBADO from closing the phase -------
+# Only lines reading exactly "VEREDICTO:" were compared, so an opening "VEREDICTO: APROBADO" and
+# a "**Veredicto final:** DEVUELTO" further down closed the phase. V03, V04, V05 and V17 are
+# verdict_probe.py of the r11 review; the bullet is the form the documentador of 012ea502 wrote
+# (artifact 1b76b00f, line 68), with the same model.
+RETURNED_IN_ANOTHER_FORM = {
+    "V03_veredicto_final": "VEREDICTO: APROBADO\n\nTras revisar los conteos...\n\n**Veredicto final:** DEVUELTO\n",
+    "V04_fila_de_tabla": "VEREDICTO: APROBADO\n\n| Campo | Valor |\n|---|---|\n| Veredicto | DEVUELTO |\n",
+    "V05_lista_numerada": "VEREDICTO: APROBADO\n\n1. VEREDICTO: DEVUELTO (corrijo lo anterior)\n",
+    "V17_guion": "VEREDICTO: APROBADO\nVEREDICTO - DEVUELTO\n",
+    "vineta_como_1b76b00f": "VEREDICTO: APROBADO\n\n- **Veredicto:** DEVUELTO\n",
+    "subrayado": "VEREDICTO: APROBADO\n\n_Veredicto_: DEVUELTO\n",
+    "orden_inverso": "VEREDICTO: APROBADO\n\nDEVUELTO: ese es mi veredicto tras los conteos.\n",
+    "cita": "VEREDICTO: APROBADO\n\n> Veredicto: DEVUELTO\n",
+    "minusculas_en_prosa": "VEREDICTO: APROBADO\n\nmi veredicto real es devuelto\n",
+}
+
+
+@pytest.mark.parametrize("key", list(RETURNED_IN_ANOTHER_FORM))
+def test_a_returned_verdict_in_any_form_keeps_an_approval_from_closing_the_phase(tmp_path, key):
+    path = tmp_path / "app.db"
+    build(path, reviewer_artifact=RETURNED_IN_ANOTHER_FORM[key])
+    criteria = report(path)["criteria"]
+    assert criteria["review_verdict"] is None
+    assert criteria["review_approved"] is False
+    assert criteria["all_met"] is False
+    assert criteria["review_verdict_note"].startswith("veredicto contradictorio: abre con APROBADO")
+
+
+def test_an_approval_that_never_pairs_the_word_with_devuelto_still_closes_the_phase(tmp_path):
+    """The pair that must keep passing: DEVUELTO without "veredicto" on its line, and "veredicto"
+    without DEVUELTO, are not a contradiction."""
+    path = tmp_path / "app.db"
+    build(path, reviewer_artifact="VEREDICTO: APROBADO\n\nCorrecciones obligatorias (solo si DEVUELTO):"
+                                  "\nninguna.\n\nEl veredicto se apoya en 5 conteos.\n")
+    criteria = report(path)["criteria"]
+    assert criteria["review_verdict"] == "APROBADO"
+    assert criteria["all_met"] is True
