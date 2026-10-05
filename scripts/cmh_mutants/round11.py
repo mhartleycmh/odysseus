@@ -27,6 +27,11 @@ QUOTED = f"{REPORT}::test_an_approval_the_reviewer_quotes_or_copies_does_not_clo
 RETURNED = f"{REPORT}::test_a_returned_verdict_in_any_form_keeps_an_approval_from_closing_the_phase"
 
 REPORT_SCRIPT = "scripts/cmh_ops/run_report.py"
+TARGET = "scripts/cmh_mutants/_target.py"
+VERDICT_INTERRUPTED = ("tests/test_cmh_mutant_validity.py::"
+                       "test_a_pytest_that_did_not_end_by_itself_is_interrupted_not_invalid")
+VERDICT_ENDED = ("tests/test_cmh_mutant_validity.py::"
+                 "test_a_pytest_that_ended_by_itself_without_a_failure_is_invalid")
 
 #: (name, file, text to replace, replacement, test modules or node ids that must fall)
 MUTANTS = [
@@ -86,6 +91,19 @@ MUTANTS = [
      'r"\\bveredictos?\\b.*\\bdevuelto\\b|\\bdevuelto\\b.*\\bveredictos?\\b"',
      'r"\\bdevuelto\\b"',
      [f"{REPORT}::test_an_approval_that_never_pairs_the_word_with_devuelto_still_closes_the_phase"]),
+    # --- P2-3: a pytest killed after flushing its dots is INTERRUMPIDO, not INVALIDO ----------
+    ("K01 vuelve la regla de r11: solo una salida vacia es interrupcion", TARGET,
+     "            or not any(_PYTEST_SUMMARY.match(line) for line in stdout.splitlines())):",
+     "            or not stdout.strip()):",
+     [VERDICT_INTERRUPTED]),
+    ("K02 una linea con varios conteos ('1 error, 1 warning') deja de ser resumen", TARGET,
+     r'(?:no tests ran|\d+ [a-z]+(?:, \d+ [a-z]+)*)',
+     r'(?:no tests ran|\d+ [a-z]+)',
+     [VERDICT_ENDED]),
+    ("K03 'no tests ran in 0.00s' deja de ser resumen", TARGET,
+     r'(?:no tests ran|\d+ [a-z]+(?:, \d+ [a-z]+)*)',
+     r'(?:\d+ [a-z]+(?:, \d+ [a-z]+)*)',
+     [VERDICT_ENDED]),
 ]
 
 

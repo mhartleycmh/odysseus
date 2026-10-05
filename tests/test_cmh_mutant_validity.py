@@ -165,7 +165,8 @@ def test_a_mutant_that_does_not_compile_is_reported_as_broken_and_not_as_caught(
 def test_the_verdict_needs_a_failing_test_not_just_a_non_zero_exit():
     verdict = _verdict()
     for code in (1, 2, 3, 4, 5):
-        assert verdict(code, "no test ran") == "INVALIDO", code
+        # r12: with pytest's closing line; without it the run did not end by itself (r11, P2).
+        assert verdict(code, "no tests ran in 0.00s") == "INVALIDO", code
 
 
 @pytest.mark.parametrize("code, stdout", [
@@ -173,8 +174,12 @@ def test_the_verdict_needs_a_failing_test_not_just_a_non_zero_exit():
         "2 passed in 3.10s"),
     (3221225786, "..."),     # STATUS_CONTROL_C_EXIT: a console closed under the campaign
     (-9, "..."),             # a POSIX signal
-    (1, ""),                 # taskkill /F: status 1 and nothing flushed
-], ids=["ctrl_c", "windows_ctrl_c_exit", "signal", "killed_without_output"])
+    (-9, "..\n2 passed in 1.00s"),   # killed after the summary, before it exited
+    # taskkill /F and Popen.terminate(), measured by kill_probe.py of the r11 review: status 1
+    # and the dots already flushed. The case here used to be (1, ""), which nobody had measured.
+    (1, "..."),
+], ids=["ctrl_c", "windows_ctrl_c_exit", "signal", "signal_after_the_summary",
+        "taskkill_or_terminate"])
 def test_a_pytest_that_did_not_end_by_itself_is_interrupted_not_invalid(code, stdout):
     """Z16 of the r10 verification: INVALIDO, then the campaign died in Z17; alone, both are
     CAUGHT. Calling it broken said something about the mutant that nobody knew."""
@@ -183,3 +188,20 @@ def test_a_pytest_that_did_not_end_by_itself_is_interrupted_not_invalid(code, st
 
 def test_a_failure_seen_before_the_interruption_is_still_a_catch():
     assert _verdict()(2, "FAILED tests/x.py::test_it - assert 1 == 2\nKeyboardInterrupt") == "CAUGHT"
+
+
+# What pytest prints when it ends by itself without a failing test, measured on this machine with
+# the campaign's flags (-q --no-header, 2026-10-05): each one is a broken mutant, not an
+# interruption, because pytest wrote its closing line.
+@pytest.mark.parametrize("code, stdout", [
+    (2, "E   SyntaxError: invalid syntax\n=========================== short test summary info "
+        "===========================\nERROR test_a.py\n!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during "
+        "collection !!!!!!!!!!!!!!!!!!!!\n1 error in 0.21s\n"),
+    (1, "test_a.py:4: RuntimeError\n=========================== short test summary info "
+        "===========================\nERROR test_a.py::test_a - RuntimeError: x\n1 error in 0.07s\n"),
+    (1, "ERROR test_a.py::test_a - RuntimeError: x\n1 error, 1 warning in 0.07s\n"),
+    (5, "\nno tests ran in 0.00s\n"),
+    (1, "ERROR test_a.py::test_a - RuntimeError: x\n1 error, 169 passed in 324.80s (0:05:24)\n"),
+], ids=["collection_error", "fixture_error", "with_a_warning", "no_tests_ran", "long_run"])
+def test_a_pytest_that_ended_by_itself_without_a_failure_is_invalid(code, stdout):
+    assert _verdict()(code, stdout) == "INVALIDO"

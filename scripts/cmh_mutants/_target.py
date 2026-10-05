@@ -43,13 +43,17 @@ def verdict(returncode: int, stdout: str) -> str:
     if failed:
         return "CAUGHT"
     # pytest did not end by itself: a status pytest never returns (a signal, Windows'
-    # STATUS_CONTROL_C_EXIT), no output at all (killed before it flushed), or a Ctrl+C
-    # it caught. The round9 campaign of the r10 verification ran from 14:15 to 20:58,
-    # printed "Z16 ... INVALIDO - rompe la coleccion" and died during Z17, leaving Z17
-    # applied in its copy; Z16 and Z17 alone are CAUGHT. Nothing about such a mutant is
-    # known, and the run that called it broken carried on as if something were.
-    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()
-            or "KeyboardInterrupt" in stdout):
+    # STATUS_CONTROL_C_EXIT), a Ctrl+C it caught, or no closing summary line. A pytest killed
+    # with taskkill /F or Popen.terminate() exits 1, a status pytest does return, with the dots
+    # it had already flushed ("..."): kill_probe.py of the r11 review, P2, measured both. A run
+    # that ended by itself always prints the summary, a collection error too ("1 error in
+    # 0.21s"); without one, whatever stopped it is unknown. The round9 campaign of the r10
+    # verification ran from 14:15 to 20:58, printed "Z16 ... INVALIDO - rompe la coleccion"
+    # and died during Z17, leaving Z17 applied in its copy; Z16 and Z17 alone are CAUGHT.
+    # Nothing about such a mutant is known, and the run that called it broken carried on as
+    # if something were.
+    if (returncode not in PYTEST_EXIT_CODES or "KeyboardInterrupt" in stdout
+            or not any(_PYTEST_SUMMARY.match(line) for line in stdout.splitlines())):
         return "INTERRUMPIDO"
     return "INVALIDO"
 
@@ -57,6 +61,11 @@ def verdict(returncode: int, stdout: str) -> str:
 #: pytest's own exit statuses: passed, failed, interrupted or collection error, internal
 #: error, usage error, nothing collected.
 PYTEST_EXIT_CODES = range(6)
+
+#: The line pytest closes a run with, measured with the campaign's own flags (-q --no-header):
+#: "1 failed in 0.08s", "1 error in 0.21s", "no tests ran in 0.00s", "1 passed, 1 warning in
+#: 0.01s", "170 passed, 1 warning in 324.80s (0:05:24)".
+_PYTEST_SUMMARY = re.compile(r"^(?:no tests ran|\d+ [a-z]+(?:, \d+ [a-z]+)*) in \d+(?:\.\d+)?s\b")
 
 
 def _tail(result, lines: int = 6) -> None:

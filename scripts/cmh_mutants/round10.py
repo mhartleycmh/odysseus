@@ -134,21 +134,23 @@ MUTANTS = [
      [f"{REPORT}::test_a_decision_says_who_it_was_registered_by_and_why_never_that_it_was_human"]),
     # --- round9 Z16/Z17: a pytest that did not end by itself is not a broken mutant ---------
     ("H01 un pytest interrumpido vuelve a contarse como mutante INVALIDO", TARGET,
-     '    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()\n'
-     '            or "KeyboardInterrupt" in stdout):\n        return "INTERRUMPIDO"',
+     # r12: the condition as the r11 review (P2) left it.
+     '    if (returncode not in PYTEST_EXIT_CODES or "KeyboardInterrupt" in stdout\n'
+     '            or not any(_PYTEST_SUMMARY.match(line) for line in stdout.splitlines())):\n'
+     '        return "INTERRUMPIDO"',
      '    if False:\n        return "INTERRUMPIDO"',
      [VERDICT_INTERRUPTED, CAMPAIGN_INTERRUPTED]),
     ("H02 un Ctrl+C que pytest atrapo deja de verse como interrupcion", TARGET,
-     '            or "KeyboardInterrupt" in stdout):',
-     '            ):',
+     '    if (returncode not in PYTEST_EXIT_CODES or "KeyboardInterrupt" in stdout\n',
+     '    if (returncode not in PYTEST_EXIT_CODES\n',
      [VERDICT_INTERRUPTED, CAMPAIGN_INTERRUPTED]),
-    ("H03 un pytest matado sin salida deja de verse como interrupcion", TARGET,
-     "    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()\n",
-     "    if (returncode not in PYTEST_EXIT_CODES\n",
+    ("H03 un pytest matado sin linea de resumen deja de verse como interrupcion", TARGET,
+     "\n            or not any(_PYTEST_SUMMARY.match(line) for line in stdout.splitlines())):",
+     "):",
      [VERDICT_INTERRUPTED]),
     ("H04 un codigo que pytest nunca devuelve deja de verse como interrupcion", TARGET,
-     "    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()\n",
-     "    if (not stdout.strip()\n",
+     '    if (returncode not in PYTEST_EXIT_CODES or "KeyboardInterrupt" in stdout\n',
+     '    if ("KeyboardInterrupt" in stdout\n',
      [VERDICT_INTERRUPTED]),
     ("H05 la campana sigue juzgando mutantes despues de una interrupcion", TARGET,
      '                "veredicto. Repita la campana.")\n            return 3\n',
