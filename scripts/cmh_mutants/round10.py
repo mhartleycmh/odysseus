@@ -22,8 +22,10 @@ if not PY.exists() or "python" not in PY.name.lower():
     PY = REPO.parent.parent / ".venv" / "Scripts" / "python.exe"
 
 LOOP_TESTS = ["tests/test_cmh_restricted_loop.py"]
+REPORT = "tests/test_cmh_run_report.py"
 
 SCHEDULER = "src/task_scheduler.py"
+REPORT_SCRIPT = "scripts/cmh_ops/run_report.py"
 
 #: The restricted block as ADR-040 leaves it: no text of its own, the step fails.
 RESTRICTED_FAILS = (
@@ -81,6 +83,47 @@ MUTANTS = [
      "                raise RuntimeError(\"Restricted task produced no final model output\")\n",
      "                pass\n",
      LOOP_TESTS),
+    # --- P2-6: run_report closes only on APROBADO and does not call a decision human -------
+    ("RV01 TODO CUMPLIDO deja de exigir el veredicto del revisor", REPORT_SCRIPT,
+     '        and criteria["review_approved"]\n',
+     '',
+     [f"{REPORT}::test_only_a_reviewer_that_declares_aprobado_closes_the_phase"]),
+    ("RV02 un DEVUELTO cuenta como aprobado", REPORT_SCRIPT,
+     '"review_approved": verdict == "APROBADO",',
+     '"review_approved": verdict is not None,',
+     [f"{REPORT}::test_only_a_reviewer_that_declares_aprobado_closes_the_phase"]),
+    ("RV03 un veredicto ausente cuenta como aprobado", REPORT_SCRIPT,
+     '"review_approved": verdict == "APROBADO",',
+     '"review_approved": verdict != "DEVUELTO",',
+     [f"{REPORT}::test_only_a_reviewer_that_declares_aprobado_closes_the_phase"]),
+    ("RV04 cualquier palabra tras VEREDICTO vale, tambien la plantilla sin llenar", REPORT_SCRIPT,
+     "    if len(set(found)) != 1 or found[0] not in VERDICTS:",
+     "    if len(set(found)) != 1:",
+     [f"{REPORT}::test_a_verdict_nobody_can_read_is_not_an_approval"]),
+    ("RV05 dos lineas de veredicto que se contradicen valen por la primera", REPORT_SCRIPT,
+     "    if len(set(found)) != 1 or found[0] not in VERDICTS:",
+     "    if found[0] not in VERDICTS:",
+     [f"{REPORT}::test_a_verdict_nobody_can_read_is_not_an_approval"]),
+    ("RV06 el veredicto con marcas markdown (el de 012ea502) deja de leerse", REPORT_SCRIPT,
+     '        bare = re.sub(r"^[\\s#>]+", "", re.sub(r"[*_`]", "", line)).strip()',
+     "        bare = line.strip()",
+     [f"{REPORT}::test_only_a_reviewer_that_declares_aprobado_closes_the_phase"]),
+    ("RV07 un veredicto en minusculas deja de leerse", REPORT_SCRIPT,
+     "            found.append(match.group(1).upper())",
+     "            found.append(match.group(1))",
+     [f"{REPORT}::test_a_verdict_nobody_can_read_is_not_an_approval"]),
+    ("RV08 el informe deja de leer el texto del artefacto del revisor", REPORT_SCRIPT,
+     "        if key == REVIEW_STEP:\n            review_text = text",
+     "        if False:\n            review_text = text",
+     [f"{REPORT}::test_only_a_reviewer_that_declares_aprobado_closes_the_phase"]),
+    ("RV09 la decision vuelve a rotularse humana", REPORT_SCRIPT,
+     "f\"    decision registrada por {d.get('by')} el {d.get('at')}: {d.get('outcome')}\"",
+     "f\"    decision humana: {d.get('outcome')} por {d.get('by')} el {d.get('at')}\"",
+     [f"{REPORT}::test_a_decision_says_who_it_was_registered_by_and_why_never_that_it_was_human"]),
+    ("RV10 la justificacion de la decision deja de imprimirse", REPORT_SCRIPT,
+     "            lines.append(f\"    justificacion: {d.get('justification') or 'sin justificacion'}\")\n",
+     "",
+     [f"{REPORT}::test_a_decision_says_who_it_was_registered_by_and_why_never_that_it_was_human"]),
 ]
 
 

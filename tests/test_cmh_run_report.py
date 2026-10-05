@@ -38,13 +38,16 @@ KEYS = ["investigador", "constructor", "verificador", "revisor", "documentador"]
 #: is an approval that came first.
 BEFORE_REVIEWER = "2026-09-30T09:00:25Z"
 AFTER_REVIEWER = "2026-09-30T09:01:00Z"
+#: The reviewer's artifact of a clean run: its verdict line, as its instructions write it.
+APPROVED_REVIEW = "VEREDICTO: APROBADO\n\nConteos del verificador: revisadas=5\n"
 
 
 def build(path, *, status="completed", drop_artifact=None, drop_step=None, verifier_tools=None,
           constructor_tools=None, reviewer_started=True, decision="approved", decision_by="admin",
           decision_at=BEFORE_REVIEWER, gate=("revisor",), reviewer_endpoint="orr",
           reviewer_frozen=None, broken_step=None, evidence_flags=None, blocked_url=None,
-          usage_sources=None, run_id="run-1", started=T0):
+          usage_sources=None, run_id="run-1", started=T0, reviewer_artifact=APPROVED_REVIEW,
+          decision_justification=None):
     """A five-step run as the engine would leave it, with knobs for what to break."""
     engine = create_engine(f"sqlite:///{path.as_posix()}")
     cdb.Base.metadata.create_all(engine)
@@ -84,7 +87,8 @@ def build(path, *, status="completed", drop_artifact=None, drop_step=None, verif
                                          "model": model, "host": "frozen"}]
             step_decision = None
             if key in gate and decision:
-                step_decision = json.dumps({"outcome": decision, "justification": None,
+                step_decision = json.dumps({"outcome": decision,
+                                            "justification": decision_justification,
                                             "by": decision_by, "at": decision_at})
             db.add(cdb.CMHWorkflowStep(
                 id=f"step-{run_id}-{key}", run_id=run_id, step_key=key, agent_id=f"agent-{key}",
@@ -96,7 +100,8 @@ def build(path, *, status="completed", drop_artifact=None, drop_step=None, verif
             if key != drop_artifact:
                 db.add(cdb.CMHWorkflowArtifact(
                     id=f"art-{run_id}-{key}", run_id=run_id, step_key=key, agent_id=f"agent-{key}",
-                    model=model, instructions_version=1, content="a" * (100 * (index + 1))))
+                    model=model, instructions_version=1,
+                    content=reviewer_artifact if key == "revisor" else "a" * (100 * (index + 1))))
 
         sources = usage_sources or {}
 
@@ -586,3 +591,70 @@ def test_a_run_without_a_start_time_does_not_let_a_1999_approval_through(tmp_pat
     assert criteria["human_approval_recorded"] is False
     assert criteria["human_approval_note"] == "revisor: la ejecucion no tiene hora de inicio"
     assert criteria["all_met"] is False
+
+
+# --- the reviewer's verdict closes the phase, and a decision says who and why (ADR-040) -------
+# Run 012ea502: its reviewer wrote "## VEREDICTO: DEVUELTO", the run stayed completed and the
+# report said TODO CUMPLIDO True. CLAUDE.md: no deliverable reaches the user without APROBADO.
+
+@pytest.mark.parametrize("artifact, verdict, met", [
+    (APPROVED_REVIEW, "APROBADO", True),
+    ("## VEREDICTO: DEVUELTO\n\n**Conteos del verificador:** revisadas=5\n", "DEVUELTO", False),
+    ("Cobertura declarada: todo revisado. Sin linea de veredicto.\n", None, False),
+], ids=["aprobado", "devuelto_como_012ea502", "ausente"])
+def test_only_a_reviewer_that_declares_aprobado_closes_the_phase(tmp_path, artifact, verdict, met):
+    path = tmp_path / "app.db"
+    build(path, reviewer_artifact=artifact)
+    criteria = report(path)["criteria"]
+    assert criteria["review_verdict"] == verdict
+    assert criteria["review_approved"] is met
+    assert criteria["all_met"] is met
+    if verdict is None:
+        assert criteria["review_verdict_note"] == "el artefacto del revisor no declara VEREDICTO"
+
+
+@pytest.mark.parametrize("artifact, verdict", [
+    ("**VEREDICTO:** APROBADO\n", "APROBADO"),
+    ("> ### Veredicto: aprobado\n", "APROBADO"),
+    ("VEREDICTO: APROBADO | DEVUELTO\n", None),                       # the template, unfilled
+    ("VEREDICTO: APROBADO\n\n...\nVEREDICTO: DEVUELTO\n", None),      # two that disagree
+    ("VEREDICTO: APROBADO con reservas\n", None),
+    ("El revisor no emite un VEREDICTO: APROBADO todavia\n", None),    # not at the start of a line
+], ids=["negrita", "cita_y_minusculas", "plantilla", "dos_distintos", "con_reservas", "en_prosa"])
+def test_a_verdict_nobody_can_read_is_not_an_approval(artifact, verdict):
+    found, note = report_mod.review_verdict(artifact)
+    assert found == verdict
+    assert (note is None) is (verdict is not None)
+
+
+def test_a_run_whose_reviewer_has_no_artifact_does_not_close_the_phase(tmp_path):
+    path = tmp_path / "app.db"
+    build(path, drop_artifact="revisor")
+    criteria = report(path)["criteria"]
+    assert criteria["review_approved"] is False
+    assert criteria["review_verdict_note"] == "el paso revisor no tiene artefacto"
+
+
+def test_a_returned_verdict_is_printed_and_the_command_is_not_green(tmp_path, capsys):
+    path = tmp_path / "app.db"
+    build(path, reviewer_artifact="## VEREDICTO: DEVUELTO\n")
+    assert report_mod.main(["run-1", "--db", str(path)]) == 3
+    out = capsys.readouterr().out
+    assert "veredicto del revisor ...... False  (DEVUELTO)" in out
+    assert "TODO CUMPLIDO .............. False" in out
+
+
+def test_a_decision_says_who_it_was_registered_by_and_why_never_that_it_was_human(tmp_path):
+    path = tmp_path / "app.db"
+    build(path, decision_justification="Aprobacion operativa delegada por /goal")
+    text = report_mod.render(report(path))
+    assert "humana" not in text.replace("ningun paso exige aprobacion humana", "")
+    assert f"decision registrada por admin el {BEFORE_REVIEWER}: approved" in text
+    assert "justificacion: Aprobacion operativa delegada por /goal" in text
+    assert "no distingue persona de proceso" in text
+
+
+def test_a_decision_without_a_justification_says_so(tmp_path):
+    path = tmp_path / "app.db"
+    build(path)
+    assert "justificacion: sin justificacion" in report_mod.render(report(path))

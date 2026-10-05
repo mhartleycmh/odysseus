@@ -41,6 +41,33 @@ DEFAULT_EVIDENCE = set(EVIDENCE_ROLES)
 #: The step a human must approve before it starts (blueprint 18).
 REVIEW_STEP = "revisor"
 
+#: The two verdicts the reviewer may write. Its instructions (seeded by
+#: scripts/cmh_seed_agents.py from data/agent_workspace/revisor/_sistema/instrucciones_v1.md)
+#: open the output with the line "VEREDICTO: APROBADO | DEVUELTO"; the reviewer of run
+#: 012ea502 wrote "## VEREDICTO: DEVUELTO". A line counts when, without its markdown marks
+#: (leading # and >, and * _ ` anywhere), it reads "VEREDICTO:" followed by exactly one of
+#: these words. Anything else on that line, the template left as it is, or two lines that
+#: disagree is a verdict nobody can read, and it does not close the phase (ADR-040).
+VERDICTS = ("APROBADO", "DEVUELTO")
+_VERDICT_LINE = re.compile(r"VEREDICTO\s*:\s*(.*?)\s*", re.IGNORECASE)
+
+
+def review_verdict(content):
+    """``(verdict, note)``: the reviewer's APROBADO or DEVUELTO with no note, or None and why."""
+    if content is None:
+        return None, f"el paso {REVIEW_STEP} no tiene artefacto"
+    found = []
+    for line in content.splitlines():
+        bare = re.sub(r"^[\s#>]+", "", re.sub(r"[*_`]", "", line)).strip()
+        match = _VERDICT_LINE.fullmatch(bare)
+        if match:
+            found.append(match.group(1).upper())
+    if not found:
+        return None, f"el artefacto del {REVIEW_STEP} no declara VEREDICTO"
+    if len(set(found)) != 1 or found[0] not in VERDICTS:
+        return None, "veredicto ilegible: " + " / ".join(value[:40] for value in found)
+    return found[0], None
+
 
 def _seed_module():
     """The seed script owns the rule for where the live database is. Importing it
@@ -154,9 +181,14 @@ def build_report(con, run_id: str) -> dict:
     endpoints = {r[0]: {"base_url": r[1], "endpoint_kind": r[2]} for r in con.execute(
         "SELECT id, base_url, endpoint_kind FROM model_endpoints")}
     agents = {r[0]: r[1] for r in con.execute("SELECT id, name FROM cmh_agents")}
-    artifacts = {r[0]: {"model": r[1], "chars": r[2]} for r in con.execute(
-        "SELECT step_key, model, LENGTH(content) FROM cmh_workflow_artifacts WHERE run_id = ?",
-        (run_id,))}
+    # The text of one artifact is read: the reviewer's, for its verdict. Of the others, the size.
+    artifacts, review_text = {}, None
+    for key, model, chars, text in con.execute(
+            "SELECT step_key, model, LENGTH(content), CASE WHEN step_key = ? THEN content END "
+            "FROM cmh_workflow_artifacts WHERE run_id = ?", (REVIEW_STEP, run_id)):
+        artifacts[key] = {"model": model, "chars": chars}
+        if key == REVIEW_STEP:
+            review_text = text
     events = {}
     for step_key, kind, payload in con.execute(
             "SELECT step_key, kind, payload FROM cmh_workflow_events WHERE run_id = ? "
@@ -274,6 +306,7 @@ def build_report(con, run_id: str) -> dict:
         problems = {key: _problem(s) for key, s in gated.items() if _problem(s)}
         approval_note = "; ".join(f"{key}: {why}" for key, why in problems.items()) or None
     approval_ok = approval_note is None
+    verdict, verdict_note = review_verdict(review_text)
 
     criteria = {
         "run_completed": run[1] == "completed",
@@ -288,10 +321,14 @@ def build_report(con, run_id: str) -> dict:
         "steps_on_a_route_that_fails_the_gate": paid,
         "steps_with_unverifiable_route": unverifiable,
         "zero_cost_blocked_events": sum(len(s["zero_cost_blocked"]) for s in steps),
+        "review_verdict": verdict,
+        "review_verdict_note": verdict_note,
+        "review_approved": verdict == "APROBADO",
     }
     criteria["all_met"] = bool(
         criteria["run_completed"] and criteria["five_artifacts"]
         and criteria["no_step_in_error"] and criteria["evidence_satisfied"]
+        and criteria["review_approved"]
         and criteria["human_approval_recorded"] and not paid and not unverifiable)
     return {
         "run": {"id": run[0], "status": run[1], "definition_id": run[2], "project_id": run[3],
@@ -334,8 +371,12 @@ def render(report: dict) -> str:
         exits = ", ".join(f"{t['tool']}={t['exit_code']}" for t in s["tools"]) or "sin herramientas"
         lines.append(f"    herramientas: {exits}")
         if s["decision"]:
+            # The record keeps the owner of the session, not who acted with it: a person and a
+            # process using that session look the same here (ADR-040). The justification says
+            # what the record cannot, so it is printed with the decision.
             d = s["decision"]
-            lines.append(f"    decision humana: {d.get('outcome')} por {d.get('by')} el {d.get('at')}")
+            lines.append(f"    decision registrada por {d.get('by')} el {d.get('at')}: {d.get('outcome')}")
+            lines.append(f"    justificacion: {d.get('justification') or 'sin justificacion'}")
         if s["error"]:
             lines.append(f"    ERROR: {s['error']}")
     paid, unverifiable = crit["steps_on_a_route_that_fails_the_gate"], crit["steps_with_unverifiable_route"]
@@ -344,8 +385,11 @@ def render(report: dict) -> str:
               f"  5 artefactos ............... {crit['five_artifacts']}",
               f"  ningun paso en error ....... {crit['no_step_in_error']}",
               f"  evidencia de herramientas .. {crit['evidence_satisfied']}  {crit['evidence']}",
-              f"  aprobacion humana registrada {crit['human_approval_recorded']}"
-              + (f"  ({crit['human_approval_note']})" if crit["human_approval_note"] else ""),
+              f"  aprobacion registrada ...... {crit['human_approval_recorded']}"
+              + (f"  ({crit['human_approval_note']})" if crit["human_approval_note"]
+                 else "  (con la sesion del usuario; no distingue persona de proceso)"),
+              f"  veredicto del revisor ...... {crit['review_approved']}  "
+              f"({crit['review_verdict'] or crit['review_verdict_note']})",
               f"  pasos en ruta que no pasa la compuerta: {paid or 'ninguno'}",
               f"  pasos cuya ruta NO SE PUDO VERIFICAR: {unverifiable or 'ninguno'}",
               f"  eventos zero_cost_blocked .. {crit['zero_cost_blocked_events']} (cada uno se explica)",
