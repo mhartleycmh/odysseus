@@ -28,6 +28,7 @@ VERDICT_INTERRUPTED = ("tests/test_cmh_mutant_validity.py::"
 CAMPAIGN_INTERRUPTED = ("tests/test_cmh_mutant_campaign.py::"
                         "test_a_pytest_that_did_not_finish_stops_the_campaign_and_judges_nothing_after_it")
 CAMPAIGN_INVALID_TAIL = "tests/test_cmh_mutant_campaign.py::test_an_invalid_mutant_shows_what_pytest_said"
+VALIDITY_ROUND4 = "tests/test_cmh_mutant_validity.py::test_every_mutant_is_applicable_and_compiles[round4.py]"
 
 SCHEDULER = "src/task_scheduler.py"
 REPORT_SCRIPT = "scripts/cmh_ops/run_report.py"
@@ -156,6 +157,10 @@ MUTANTS = [
      '                _tail(result)\n            elif outcome == "INTERRUMPIDO":',
      '            elif outcome == "INTERRUMPIDO":',
      [CAMPAIGN_INVALID_TAIL]),
+    ("H07 el aviso de interrupcion vuelve a repetir el texto del resumen que muta T15", TARGET,
+     '{survived} SURVIVED, "\n                f"{invalid} INVALIDOS, {skipped} NO APLICABLE; los "',
+     '{survived} SURVIVED, "\n                f"{invalid} INVALIDOS - {skipped} NO APLICABLE; los "',
+     [VALIDITY_ROUND4]),
 ]
 
 

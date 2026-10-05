@@ -115,6 +115,13 @@ def test_every_mutant_is_applicable_and_compiles(runner, tmp_path):
         if old not in source:
             broken.append(f"{name}: el patron ya no existe en {relative}")
             continue
+        if source.count(old) > 1:
+            # The campaign mutates the FIRST occurrence. r11 added a line to _target.py that
+            # repeated the text of T15 (round4) above the summary it targets: T15 went on
+            # compiling, mutated the new line and survived.
+            broken.append(f"{name}: el patron aparece {source.count(old)} veces en {relative}; "
+                          "el mutante cae solo en la primera")
+            continue
         mutated = source.replace(old, new, 1)
         if mutated == source:
             broken.append(f"{name}: el mutante no cambia nada")

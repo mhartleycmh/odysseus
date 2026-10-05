@@ -182,8 +182,10 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
         if outcome == "INTERRUMPIDO":
             # Whatever stopped pytest is still around: every verdict after this one would be
             # as unknown. The file is already restored; stop here and say so.
-            say(f"\nCAMPANA INTERRUMPIDA en {name}: {caught} CAUGHT - {survived} SURVIVED - "
-                f"{invalid} INVALIDOS - {skipped} NO APLICABLE hasta aqui; los "
+            # Commas, not the " - " of the closing summary: round4's T15 mutates the FIRST
+            # occurrence of that summary's text, and this line used to be it.
+            say(f"\nCAMPANA INTERRUMPIDA en {name}: hasta aqui {caught} CAUGHT, {survived} SURVIVED, "
+                f"{invalid} INVALIDOS, {skipped} NO APLICABLE; los "
                 f"{len(mutants) - caught - survived - invalid - skipped} restantes no tienen "
                 "veredicto. Repita la campana.")
             return 3
