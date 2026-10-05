@@ -326,3 +326,35 @@ def test_same_second_equal_length_mutations_do_not_reuse_bytecode(tmp_path, monk
     assert "M1: CAUGHT - cae: test_double" in out
     assert "M2: *** SURVIVED ***" in out
     assert "1 CAUGHT - 1 SURVIVED" in out
+
+
+# --- r10 verification: Z16 "INVALIDO - rompe la coleccion", then the run died in Z17 -------
+# The campaign ran 14:15-20:58 and its copy was left with Z17 applied (the ``finally`` never
+# ran). Z16 and Z17 alone: 2 CAUGHT. A pytest that did not end by itself was reported as a
+# broken mutant and the campaign carried on.
+
+@pytest.mark.parametrize("stop", [
+    "raise KeyboardInterrupt",            # Ctrl+C reaching the child: pytest catches it, exit 2
+    '__import__("os")._exit(7)',          # killed: a status pytest never returns, no output
+], ids=["ctrl_c", "killed"])
+def test_a_pytest_that_did_not_finish_stops_the_campaign_and_judges_nothing_after_it(
+        tmp_path, capsys, stop):
+    root = toy(tmp_path)
+    before = (root / "mod.py").read_bytes()
+    assert run(root, mutant("M1", "return x * 2", stop),
+               mutant("M2", "return len(label)", "return 0")) == 3
+    out = capsys.readouterr().out
+    assert "M1: *** INTERRUMPIDO - pytest no termino por si mismo" in out
+    assert "INVALIDO" not in out.split("CAMPANA INTERRUMPIDA")[0]
+    assert "CAMPANA INTERRUMPIDA en M1" in out and "los 2 restantes no tienen veredicto" in out
+    assert "M2:" not in out                                   # never ran
+    assert (root / "mod.py").read_bytes() == before            # restored all the same
+
+
+def test_an_invalid_mutant_shows_what_pytest_said(tmp_path, capsys):
+    """"rompe la coleccion" was a guess the log could not back: the tail of pytest is printed."""
+    root = toy(tmp_path)
+    assert run(root, mutant("M1", "return x * 2", "return x *")) == 1
+    out = capsys.readouterr().out
+    assert "M1: *** INVALIDO - rompe la coleccion, ninguna prueba falla (pytest salio con 2)" in out
+    assert "      | " in out and "error" in out.split("M1: *** INVALIDO")[1].lower()

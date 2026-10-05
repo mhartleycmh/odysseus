@@ -159,3 +159,20 @@ def test_the_verdict_needs_a_failing_test_not_just_a_non_zero_exit():
     verdict = _verdict()
     for code in (1, 2, 3, 4, 5):
         assert verdict(code, "no test ran") == "INVALIDO", code
+
+
+@pytest.mark.parametrize("code, stdout", [
+    (2, "..\n!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+        "2 passed in 3.10s"),
+    (3221225786, "..."),     # STATUS_CONTROL_C_EXIT: a console closed under the campaign
+    (-9, "..."),             # a POSIX signal
+    (1, ""),                 # taskkill /F: status 1 and nothing flushed
+], ids=["ctrl_c", "windows_ctrl_c_exit", "signal", "killed_without_output"])
+def test_a_pytest_that_did_not_end_by_itself_is_interrupted_not_invalid(code, stdout):
+    """Z16 of the r10 verification: INVALIDO, then the campaign died in Z17; alone, both are
+    CAUGHT. Calling it broken said something about the mutant that nobody knew."""
+    assert _verdict()(code, stdout) == "INTERRUMPIDO"
+
+
+def test_a_failure_seen_before_the_interruption_is_still_a_catch():
+    assert _verdict()(2, "FAILED tests/x.py::test_it - assert 1 == 2\nKeyboardInterrupt") == "CAUGHT"

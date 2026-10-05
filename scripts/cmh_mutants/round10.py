@@ -23,9 +23,15 @@ if not PY.exists() or "python" not in PY.name.lower():
 
 LOOP_TESTS = ["tests/test_cmh_restricted_loop.py"]
 REPORT = "tests/test_cmh_run_report.py"
+VERDICT_INTERRUPTED = ("tests/test_cmh_mutant_validity.py::"
+                       "test_a_pytest_that_did_not_end_by_itself_is_interrupted_not_invalid")
+CAMPAIGN_INTERRUPTED = ("tests/test_cmh_mutant_campaign.py::"
+                        "test_a_pytest_that_did_not_finish_stops_the_campaign_and_judges_nothing_after_it")
+CAMPAIGN_INVALID_TAIL = "tests/test_cmh_mutant_campaign.py::test_an_invalid_mutant_shows_what_pytest_said"
 
 SCHEDULER = "src/task_scheduler.py"
 REPORT_SCRIPT = "scripts/cmh_ops/run_report.py"
+TARGET = "scripts/cmh_mutants/_target.py"
 
 #: The restricted block as ADR-040 leaves it: no text of its own, the step fails.
 RESTRICTED_FAILS = (
@@ -124,6 +130,32 @@ MUTANTS = [
      "            lines.append(f\"    justificacion: {d.get('justification') or 'sin justificacion'}\")\n",
      "",
      [f"{REPORT}::test_a_decision_says_who_it_was_registered_by_and_why_never_that_it_was_human"]),
+    # --- round9 Z16/Z17: a pytest that did not end by itself is not a broken mutant ---------
+    ("H01 un pytest interrumpido vuelve a contarse como mutante INVALIDO", TARGET,
+     '    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()\n'
+     '            or "KeyboardInterrupt" in stdout):\n        return "INTERRUMPIDO"',
+     '    if False:\n        return "INTERRUMPIDO"',
+     [VERDICT_INTERRUPTED, CAMPAIGN_INTERRUPTED]),
+    ("H02 un Ctrl+C que pytest atrapo deja de verse como interrupcion", TARGET,
+     '            or "KeyboardInterrupt" in stdout):',
+     '            ):',
+     [VERDICT_INTERRUPTED, CAMPAIGN_INTERRUPTED]),
+    ("H03 un pytest matado sin salida deja de verse como interrupcion", TARGET,
+     "    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()\n",
+     "    if (returncode not in PYTEST_EXIT_CODES\n",
+     [VERDICT_INTERRUPTED]),
+    ("H04 un codigo que pytest nunca devuelve deja de verse como interrupcion", TARGET,
+     "    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()\n",
+     "    if (not stdout.strip()\n",
+     [VERDICT_INTERRUPTED]),
+    ("H05 la campana sigue juzgando mutantes despues de una interrupcion", TARGET,
+     '                "veredicto. Repita la campana.")\n            return 3\n',
+     '                "veredicto. Repita la campana.")\n',
+     [CAMPAIGN_INTERRUPTED]),
+    ("H06 un mutante INVALIDO deja de mostrar lo que dijo pytest", TARGET,
+     '                _tail(result)\n            elif outcome == "INTERRUMPIDO":',
+     '            elif outcome == "INTERRUMPIDO":',
+     [CAMPAIGN_INVALID_TAIL]),
 ]
 
 

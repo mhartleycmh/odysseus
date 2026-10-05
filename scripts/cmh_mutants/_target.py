@@ -40,7 +40,29 @@ def verdict(returncode: int, stdout: str) -> str:
     if returncode == 0:
         return "SURVIVED"
     failed = any(line.startswith("FAILED") for line in stdout.splitlines())
-    return "CAUGHT" if failed else "INVALIDO"
+    if failed:
+        return "CAUGHT"
+    # pytest did not end by itself: a status pytest never returns (a signal, Windows'
+    # STATUS_CONTROL_C_EXIT), no output at all (killed before it flushed), or a Ctrl+C
+    # it caught. The round9 campaign of the r10 verification ran from 14:15 to 20:58,
+    # printed "Z16 ... INVALIDO - rompe la coleccion" and died during Z17, leaving Z17
+    # applied in its copy; Z16 and Z17 alone are CAUGHT. Nothing about such a mutant is
+    # known, and the run that called it broken carried on as if something were.
+    if (returncode not in PYTEST_EXIT_CODES or not stdout.strip()
+            or "KeyboardInterrupt" in stdout):
+        return "INTERRUMPIDO"
+    return "INVALIDO"
+
+
+#: pytest's own exit statuses: passed, failed, interrupted or collection error, internal
+#: error, usage error, nothing collected.
+PYTEST_EXIT_CODES = range(6)
+
+
+def _tail(result, lines: int = 6) -> None:
+    """The last lines pytest printed, so a log says WHY a mutant has no verdict."""
+    for line in (result.stdout or "").splitlines()[-lines:]:
+        say(f"      | {line}")
 
 
 def failed_id(line: str) -> str:
@@ -82,6 +104,8 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
       changes nothing was counted as caught;
     * an obsolete pattern is NO APLICABLE, a mutant that breaks collection or
       changes nothing is INVALIDO, and none of them leaves the denominator;
+    * a pytest that did not end by itself is INTERRUMPIDO, not INVALIDO: the file is
+      restored and the campaign stops with status 3, the remaining mutants unjudged;
     * files are read and written as bytes, so a file that used CRLF comes back
       CRLF (write_text turned it into the platform default), and the restore is
       compared to the original;
@@ -141,7 +165,13 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
                 say(f"{name}: CAUGHT - cae: {failed[0]}")
             elif outcome == "INVALIDO":
                 invalid += 1
-                say(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla ***")
+                say(f"{name}: *** INVALIDO - rompe la coleccion, ninguna prueba falla "
+                    f"(pytest salio con {result.returncode}) ***")
+                _tail(result)
+            elif outcome == "INTERRUMPIDO":
+                say(f"{name}: *** INTERRUMPIDO - pytest no termino por si mismo "
+                    f"(salio con {result.returncode}) ***")
+                _tail(result)
             else:
                 survived += 1
                 say(f"{name}: *** SURVIVED ***")
@@ -149,6 +179,14 @@ def campaign(mutants, repo: pathlib.Path, py: pathlib.Path) -> int:
             path.write_bytes(raw)
             if path.read_bytes() != raw:
                 raise RuntimeError(f"No se pudo restaurar {relative} byte a byte")
+        if outcome == "INTERRUMPIDO":
+            # Whatever stopped pytest is still around: every verdict after this one would be
+            # as unknown. The file is already restored; stop here and say so.
+            say(f"\nCAMPANA INTERRUMPIDA en {name}: {caught} CAUGHT - {survived} SURVIVED - "
+                f"{invalid} INVALIDOS - {skipped} NO APLICABLE hasta aqui; los "
+                f"{len(mutants) - caught - survived - invalid - skipped} restantes no tienen "
+                "veredicto. Repita la campana.")
+            return 3
 
     total = caught + survived + skipped + invalid
     say(f"\n{caught} CAUGHT - {survived} SURVIVED - {invalid} INVALIDOS - {skipped} NO APLICABLE "
