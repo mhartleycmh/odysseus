@@ -1273,3 +1273,287 @@ estaba definida y que el vacío era un hueco técnico.
   (4) *Un mutante y una prueba se prueban igual que el código:* los dos supervivientes de r8 eran míos (T15, una
   prueba de resumen con un caso de cada clase; Z11, un mutante sobre una condición inalcanzable), y en r9 se
   regeneró Z11 a partir del archivo real.
+
+## ADR-039 · La interfaz del Agentic OS se entrega como aplicación de escritorio empaquetada (PyInstaller onedir + ventana Edge `--app`) (2026-10-04)
+
+- **Estado.** DECISION del usuario, 2026-10-04: eligió la opción (b), «aplicación de escritorio empaquetada». Las
+  cuatro decisiones que la componen (A1 a A4) y su contra-argumento están en
+  `CMH_Claude/entregables/AgenticOS_Fase1_20261004/LOG_DECISIONES_AgenticOS_Escritorio_20261004.md`, que manda
+  sobre este texto si difieren. **Este ADR no trae código**: decide el contenedor, la carpeta de datos, el alcance
+  y el orden. La construcción es la Fase E, en [DESKTOP_PLAN.md](DESKTOP_PLAN.md). Nada se ejecutó sobre la base
+  activa ni se construyó ningún ejecutable.
+- **Contexto.**
+  1. *Lo que hay hoy.* La interfaz es la página `/cmh/os`, que el usuario abre en su navegador contra un servidor
+     arrancado aparte (ADR-001, D10). El fork ya trae un lanzador para congelar: `launcher.py:41-73` muestra una
+     pantalla de arranque tkinter cuando `sys.frozen`; `:100-116` pone un ícono de bandeja pystray con «Open
+     Odysseus» y «Exit», y «Exit» termina con `os._exit(0)` (`:95-97`); `:119-131` abre la URL con
+     `webbrowser.open` después de una espera fija de 3,5 s (`:121`); `:134-149` sirve uvicorn en `APP_BIND` y
+     `APP_PORT`, por defecto `127.0.0.1:7000` (`:139-140`). El empaquetado también existe: `Odysseus.spec:8` lista
+     las datas (`static`, `scripts`, `mcp_servers`, `services/hwfit/data`, `config`, `.env.example`) y su `COLLECT`
+     (`:37-45`) es onedir; `build-windows-portable.ps1:57-66` construye `--onedir --noconsole` con las mismas datas
+     por línea de comandos, no desde la spec. `build-macos-app.sh:98-107` ya abre la interfaz con un Chromium
+     `--app=`.
+  2. *Medido en la máquina el 2026-10-04.* El guion busca `.\.venv` dentro del repo (`build-windows-portable.ps1:30`)
+     y esa carpeta no existe; el venv real es `Documentos\Claude\.venv`, con Python 3.13.14 de Microsoft Store
+     (`pyvenv.cfg`). En ese venv `PyInstaller`, `pystray` y `webview` (pywebview) **no están instalados** y `PIL`
+     sí (`importlib.util.find_spec`). `msedge.exe` está en `C:\Program Files (x86)\Microsoft\Edge\Application\`.
+     Si el guion no halla `.venv`, cae al `py` o `python` del PATH e **instala por su cuenta** `requirements.txt
+     pyinstaller pystray Pillow` (`:28-52`). `build/` y `dist/` están ignorados por git:
+     `git check-ignore -v build/ dist/` devuelve `.gitignore:7` y `.gitignore:6`. PyInstaller los escribe dentro del
+     repo (`:66`), que vive en OneDrive: el riesgo que queda es solo el peso del build sincronizándose (tamaño no
+     medido).
+  3. *Datos al congelar.* La carpeta por defecto pasa a `~/.odysseus/data` (`src/runtime_paths.py:28-29`); la
+     cambian `ODYSSEUS_DATA_DIR` (`src/constants.py:12`) o `DATABASE_URL`, que manda (`core/database.py:73`).
+     `DATA_DIR` se lee al importar `src.constants`, así que cualquier variable debe fijarse antes de
+     `from app import app` (`launcher.py:137`).
+  4. *Cinco defectos de modo congelado, leídos en el código y no ejecutados* (no hay ejecutable para medirlos):
+     1. **Seguridad.** `CMH_ROOT = Path(__file__).resolve().parents[2].parent` (`src/cmh_protected_areas.py:17`).
+        En el árbol de desarrollo da `Documentos\Claude`, la raíz del vault; congelado, `__file__` vive dentro del
+        bundle y la raíz pasa a ser una carpeta vecina de la distribución (cuál exactamente depende de la
+        disposición del bundle de la versión de PyInstaller: VERIFICAR). `protected_area()` compara contra
+        `CMH_ROOT / <área>` (`:37-40`), así que deja de reconocer las cuatro áreas financieras y las dos copias del
+        canon, y solo sigue atrapando `fuentes` por nombre (`:35-36` y `:42-44`). **La guarda falla abierta.** Lo
+        mismo `in_financial_area()` (`:26-29`), `INDEX_PATH` y `MANAGED_PROJECTS`
+        (`routes/cmh_control_routes.py:28-29`) y `CANON_ROOT` y `MIRROR_ROOT` (`routes/cmh_memory_routes.py:17-19`).
+     2. `BACKUP_ROOT = Path(__file__).resolve().parents[1] / "data" / "cmh_memory_backups"`
+        (`routes/cmh_memory_routes.py:20`) ignora `DATA_DIR`: congelado, la copia previa a escribir el canon cae
+        dentro del bundle; sin congelar, cae en `data/` del repo aunque `ODYSSEUS_DATA_DIR` apunte a otro lado.
+     3. El MCP integrado se lanza con `command=sys.executable` (`src/builtin_mcp.py:169-180`). Congelado,
+        `sys.executable` es `Odysseus.exe`, que vuelve a correr el lanzador entero: otra instancia que pelea el
+        puerto. Existe `ODYSSEUS_DISABLE_MCP` (`:89`, `:165-167`).
+     4. `load_dotenv(encoding="utf-8-sig")` sin ruta (`app.py:48`). Con `sys.frozen`, python-dotenv 1.2.3 (la del
+        venv) busca el `.env` desde el directorio de trabajo (`dotenv/main.py:361-363`). Un `.env` ajeno en esa
+        carpeta podría traer `AUTH_ENABLED=false` o `LOCALHOST_BYPASS=true` (`app.py:259`): inferido, no medido.
+     5. `_CONFIG = .../config/cmh_free_quotas.json` relativo al módulo (`src/cmh_provider_router.py:40`) queda
+        dentro del bundle (`config` va en las datas, `Odysseus.spec:8`): editar los límites, como pide U1, se
+        pierde al reemplazar la carpeta. Se puede cambiar con `CMH_FREE_QUOTAS` (`:83`).
+  5. *Acoplamiento (A3).* Un paso de flujo corre por `TaskScheduler._run_agent_loop` (`src/task_scheduler.py:1929-2258`,
+     330 líneas) y de ahí por `stream_agent_loop` (`src/agent_loop.py:3421` hasta el final del archivo, línea 6457:
+     3 037 líneas por `awk`; el informe del investigador dice 3 038). Según el investigador, no remedido aquí: las 4
+     herramientas de lectura suman 691 líneas de `src/agent_tools/filesystem_tools.py` (1 044 en total) y la guarda
+     de rutas 448 (`src/tool_execution.py:110-557`). El LOG (A3) da 145 584 líneas de Python: es el perímetro **sin
+     `tests/`**, 341 archivos, medido con
+     `git ls-files -z '*.py' | grep -zv '^tests/' | xargs -0 cat | wc -l`. El fork entero versionado, con `tests/`,
+     tiene 264 807 líneas en 1 204 archivos, medido con `git ls-files -z '*.py' | xargs -0 cat | wc -l`. Los dos
+     sobre el HEAD `bf2b290a`, corridos el 2026-10-04.
+- **Decisión.**
+  1. **Contenedor (A1).** PyInstaller onedir con la spec y el guion existentes, y la interfaz en una ventana de Edge
+     `--app=http://127.0.0.1:<APP_PORT>/cmh/os` con `--user-data-dir` propio bajo la carpeta de datos de la app. Si
+     no se encuentra `msedge.exe`, respaldo automático al navegador por defecto. Parámetro `CMH_DESKTOP_SHELL`.
+  2. **Datos (A2).** El lanzador fija `ODYSSEUS_DATA_DIR=%LOCALAPPDATA%\Odysseus\data` antes de importar la app; no
+     se usa el `~/.odysseus/data` de PyInstaller. Mover la base activa sigue siendo BLOQUEANTE (§22.1, §22.4) y no
+     se ejecuta: hasta que el usuario lo autorice (U8), el ejecutable solo se prueba contra una carpeta desechable.
+  3. **Alcance (A3, POLITICA PROVISIONAL).** Se empaqueta el fork actual con lo que el Agentic OS no usa apagado por
+     configuración (MCP integrado, companion). No se reescribe antes un núcleo propio: su tamaño no está medido
+     porque no existe. La extracción queda para después y solo con un prototipo medido.
+  4. **Orden (A4, POLITICA PROVISIONAL).** Fase propia, «Fase E — Aplicación de escritorio» (punto limpio 10b):
+     arranca con el punto limpio 10 cerrado y antes de la Fase 2 (D5). Absorbe del paso 5.5 la bandeja y el
+     arranque al iniciar sesión; el reinicio automático y `health.ps1` siguen en la Fase 3. **Ningún ejecutable
+     sale antes de corregir el defecto 1.**
+- **Parámetros.**
+
+  | Variable | Valores | Por defecto | Quién la lee | Estado al 2026-10-04 |
+  |---|---|---|---|---|
+  | `CMH_DESKTOP_SHELL` | `edge-app`, `browser`, `webview` | `edge-app`; `browser` si no hay `msedge.exe` | el lanzador CMH (Fase E, paso E.2) | nueva, sin código; `webview` declarado y sin implementar |
+  | `ODYSSEUS_DATA_DIR` | ruta | el lanzador fija `%LOCALAPPDATA%\Odysseus\data` | `src/constants.py:12` | existe |
+  | `DATABASE_URL` | URL SQLAlchemy | `sqlite:///<DATA_DIR>/app.db` (`core/database.py:44`) | `core/database.py:73` | existe; manda sobre la anterior |
+  | `ODYSSEUS_DISABLE_MCP` | `1` / `true` / `yes` | el lanzador la fija | `src/builtin_mcp.py:89` | existe; solo cubre el MCP integrado |
+  | `CMH_FREE_QUOTAS` | ruta | PENDIENTE: la fija E.1 | `src/cmh_provider_router.py:83` | existe |
+  | `CMH_VAULT_ROOT` | ruta | sin valor en modo congelado → la guarda falla CERRADA | E.1 | propuesta del plan; nombre provisional |
+  | `APP_BIND`, `APP_PORT` | host, puerto | `127.0.0.1`, `7000` | `launcher.py:139-140` | existen |
+
+- **Qué reemplaza de ADR-001 y D10 (reemplazo parcial).**
+  - *Se mantiene de ADR-001:* la interfaz la sirve Odysseus en `/cmh/os` con `serve_html_with_nonce`, `/cmh` se
+    conserva, y el descarte «aplicación separada en otro puerto» sigue valiendo: la aplicación de escritorio es el
+    mismo servidor en el mismo origen.
+  - *Se mantiene de D10 y ADR-002:* la interfaz es JavaScript nativo, sin framework, sin empaquetador y sin
+    dependencias.
+  - *Cambia:* (a) la entrega deja de ser «una página que el usuario abre en su navegador personal contra un servidor
+    arrancado aparte» y pasa a ser un ejecutable que arranca el servidor, abre su propia ventana y se gobierna desde
+    la bandeja; (b) «sin dependencias ni build» deja de valer para el **producto entregado**: el contenedor tiene un
+    paso de build (PyInstaller, que aporta el bootloader) y una dependencia de ejecución (pystray). La interfaz
+    sigue sin ellas.
+  - *No cambia ADR-009:* las pruebas siguen sin instalar nada. Instalar PyInstaller y pystray sirve para construir
+    y es una acción del usuario (U12 en `DESKTOP_PLAN.md`).
+  - La fila D10 del blueprint (§3, v04) pasa a «vigente, modificada por ADR-039» en la próxima versión del
+    blueprint. PENDIENTE: el blueprint v04 no se edita en este cambio.
+- **Descartado** (LOG A1; las ausencias se midieron en la máquina).
+  - *Navegador por defecto*, lo que hace hoy `launcher.py:131`: no hay ventana de aplicación y la sesión vive en el
+    perfil personal del usuario. Motivo de diseño, no una medición.
+  - *pywebview sobre WebView2:* agrega 2 dependencias de ejecución (pywebview y pythonnet, que trae .NET);
+    `private_mode` activo por defecto obliga a configurar dónde se guarda la cookie (según el LOG; la documentación
+    de pywebview no se releyó aquí: VERIFICAR al implementar `webview`); contradice ADR-002 y ADR-009. No está
+    instalado (medido arriba). Queda como valor declarado de `CMH_DESKTOP_SHELL`: cambiar después cuesta una
+    función, no un rediseño.
+  - *Tauri:* faltan Rust (`.cargo`, `.rustup`) y MSVC Build Tools (ausencia medida, LOG A1), y su sidecar sería
+    igualmente un binario PyInstaller: suma una cadena sin quitar la otra. Su origen `tauri://` deja de ser
+    `http://127.0.0.1`.
+  - *Electron:* faltan Node y npm (ADR-002; LOG A1) y choca con ADR-002. Su origen `file://` deja de ser el mismo.
+  - *Impacto, en cadenas de herramientas nuevas que instalar:* A1 = 0 (solo los paquetes pip PyInstaller y pystray,
+    que las otras opciones también exigen); pywebview = +2 paquetes de ejecución; Tauri = Rust + MSVC; Electron =
+    Node + npm.
+  - *Carpeta `~/.odysseus/data`* (A2): una tercera ruta de datos que no coincide ni con el repo ni con §22.1; con A2
+    queda 1 ruta en vez de 3 posibles.
+  - *Escribir antes un núcleo propio* (A3): apuesta sobre una cifra desconocida (ver Contexto 5).
+  - *Escritorio después de la Fase 3* (A4): la Fase 2 construiría interfaz y la Fase 3 autoarranque sobre un
+    contenedor que se va a cambiar.
+- **Consecuencias.**
+  - Mismo origen `http://127.0.0.1` en la ventana `--app`, en el navegador y en pywebview: la CSP con
+    `frame-ancestors 'none'` y `X-Frame-Options: DENY` (`core/middleware.py:134`, `:141-150`) y la cookie `httponly`
+    con `samesite=lax` (`routes/auth_routes.py:184-191`) deberían funcionar sin cambios. Inferido de los
+    encabezados, no probado contra un ejecutable: lo prueba E.5.
+  - La sesión vive en un perfil de Edge propio, separado del perfil personal.
+  - Cerrar la ventana no detiene el servidor; el ciclo de vida lo gobierna la bandeja (A1), que es lo que pide la
+    prueba de fuego de la Fase 3 (paso 5.6: interfaz cerrada). «Salir» hoy es `os._exit(0)` (`launcher.py:97`): sin
+    apagado ordenado, y una ejecución en curso queda `interrupted` en el arranque siguiente (comportamiento del
+    punto limpio 3). Un apagado ordenado: PENDIENTE.
+  - El paso 5.5 de la Fase 3 pierde la bandeja y el arranque al iniciar sesión, que pasan a la Fase E.
+  - El binario incluye `static/` y por tanto el logotipo: no puede salir de CMH
+    (`LICENSES_AND_ATTRIBUTIONS.md`, fila del logotipo).
+- **Límite declarado.**
+  - Nada de esto está construido ni medido como ejecutable. Los cinco defectos se leyeron en el código; ninguno se
+    reprodujo.
+  - Edge `--app` sigue siendo un navegador: una política corporativa de Edge podría restringir `--app` o inyectar
+    extensiones. No medido.
+  - `ODYSSEUS_DISABLE_MCP` solo apaga el MCP integrado (`src/builtin_mcp.py:165-167`); los servidores MCP que el
+    usuario haya registrado se conectan igual (`app.py:1116-1117`, `connect_all_enabled`). Con una carpeta de datos
+    desechable no hay ninguno; con la base migrada, VERIFICAR cuántos hay.
+  - Companion no tiene interruptor: `app.py:912-913` monta sus rutas sin condición. «Apagar companion» (A3) exige un
+    interruptor que hoy no existe. PENDIENTE (E.2).
+  - Tamaño del bundle, tiempo de arranque y memoria del ejecutable: no medidos.
+  - Que PyInstaller construya sobre un Python de Microsoft Store: no medido (VERIFICAR en E.3). La spec pide
+    `upx=True` (`Odysseus.spec:28`, `:42`); si UPX está presente y cómo lo trata el antivirus: VERIFICAR en E.4a
+    (exe mínimo) y otra vez en E.4b (exe del producto).
+- **Pendientes.**
+  - Smart App Control, política efectiva de AppLocker y trato de Cortex XDR a un exe PyInstaller sin firma (usuario
+    o TI; U13). Medir exige un exe: primero uno mínimo de PyInstaller, sin código del Agentic OS, construido tras U12
+    y antes del build del producto (E.4a, antes de E.3); después se repite XDR con el exe del producto (E.4b, antes
+    de E.5).
+  - Compatibilidad con AGPL-3.0 de las licencias de PyInstaller, pystray y Pillow, y de los recursos de terceros que
+    ya trae `static/` y entrarían al bundle (KaTeX, Mermaid, OpenDyslexic): no verificada. Nota en
+    `LICENSES_AND_ATTRIBUTIONS.md` (U14).
+  - Autorización para migrar `data/` (§22.1, §22.4, U8).
+  - Ubicación del `.env` del ejecutable, plantilla de cuotas en el primer arranque, nombre del interruptor de
+    companion y forma de arrancar el ejecutable sin ventana para las pruebas: se deciden al construir la Fase E
+    (nivel B) y se registran.
+  - Dos fuentes de verdad para el build (la spec y la línea de comandos del guion): E.3 elige una.
+- **Pruebas.** Ninguna: este cambio es solo documental. Cada defecto se corrige en E.1 con una prueba que falle
+  contra el código actual y un mutante versionado en el mismo commit (método de ADR-038); los criterios y umbrales
+  están en `DESKTOP_PLAN.md`.
+
+## ADR-040 · Quinta vuelta de la Fase 1: qué halló la revisión independiente de `revision-fase1-r10`, qué refutaron los refutadores y qué se corrigió (2026-10-04)
+
+- **Contexto.** La revisión independiente de `revision-fase1-r10` (`bf2b290a`, rango `06085fb5..bf2b290a`, 3 commits)
+  devolvió **DEVUELTO**: 3 P1, 3 P2 y 4 P3 (`CMH_Claude/entregables/AgenticOS_Fase1_20261004/REVISION_r10_20261004.md`).
+  Las 5 correcciones del veredicto anterior reprodujeron como cerradas. Todo lo grave venía de un solo commit,
+  `2596a2b6` («summarize restricted tool-backed tasks»), que agregó en `src/task_scheduler.py:2196-2226` una segunda
+  llamada `llm_call_async` cuando una tarea restringida terminaba sin texto propio.
+- **Lo que hallaron los refutadores** (cada P1 pasó por `refutador`, con su propia sonda):
+  1. **P1-1, confirmado, ALTA, y más ancho de lo dicho.** La síntesis no solo saltaba con herramientas: también
+     SIN herramientas en los pasos sin evidencia (revisor, revisor-cmh, documentador) cuando la última ronda solo traía
+     `<think>…</think>` o todo iba a `reasoning_content`. Con `06085fb5` esos casos daban `RuntimeError`.
+     `tests/test_cmh_restricted_loop.py` pasaba 23 de 23 con el defecto: ninguna prueba lo veía.
+  2. **P1-2, confirmado, ALTA.** La síntesis no recibía el objetivo ni los artefactos de las dependencias (system =
+     instrucciones del rol; user = aviso de rondas). Un `VEREDICTO:` se emitía sin ver lo que juzgaba. Agravante:
+     `_response_cache` (`src/llm_core.py:234`, dict de proceso sin TTL, con una clave que no incluye ni ejecución ni
+     paso) devolvió en la copia del refutador el veredicto de otra ejecución con 0 llamadas HTTP.
+  3. **P1-3, confirmado, rebajado a MEDIA.** La síntesis no emitía `model_metrics`: no cobraba cuota (de 1 a 3
+     peticiones y el 100 % de sus tokens).
+  4. El run real `012ea502` **no** pasó por la síntesis (0 de 5 pasos con su firma). Pero su paso revisor emitió
+     `## VEREDICTO: DEVUELTO` (artefacto `f4f3e719`), y aun así el run quedó `completed` y `run_report` dio
+     `TODO CUMPLIDO True`.
+- **Qué se corrigió** (commits locales sobre `dev`, sin push; cada corrección de código lleva su prueba y sus mutantes
+  en el mismo commit, y cada prueba nueva se corrió primero contra el código anterior; `test_cmh_mutant_validity`
+  quedó verde sobre una copia de cada uno de los cuatro commits de código, en `c7983ae8` todavía sin la guarda de
+  patrones repetidos que añadió `94d00c53`):
+
+  | Commit | Corrección | Hallazgos | Prueba contra `bf2b290a` → aquí | Mutantes (`round10`) |
+  |---|---|---|---|---|
+  | `2f051d37` | Se retira la síntesis forzada: una tarea restringida sin texto propio vuelve a lanzar `RuntimeError("Restricted task produced no final model output")`, como en `06085fb5` | P1-1, P1-2, P1-3, P2-4, P2-5, P3 fila 4 | `test_cmh_restricted_loop.py`: 4 fallidas y 22 aprobadas → 26 aprobadas | S01 (repone el bloque de `2596a2b6` línea por línea: el archivo mutado es idéntico al `task_scheduler.py` de `bf2b290a`), S02 |
+  | `cc24006f` | `run_report`: nuevo criterio, el artefacto del paso `revisor` debe declarar `VEREDICTO: APROBADO`; la decisión se imprime como «decision registrada por <by>» con su justificación | P2-6 y lo medido en `012ea502` | `test_cmh_run_report.py`: 13 fallidas y 45 aprobadas → 58 aprobadas | RV01–RV10 |
+  | `c7983ae8` | Arnés de mutantes: un pytest que no terminó por sí mismo es `INTERRUMPIDO`, no `INVALIDO`, y la campaña se detiene con código 3 | Z16 INVALIDO y Z17 sin veredicto en la campaña `round9` del verificador | campaign + validity: 7 fallidas y 47 aprobadas → con `test_cmh_mutant_target.py`, 87 aprobadas | H01–H06 |
+  | `33517707` | Documentación: 5 líneas en 3 archivos dejan de describir el límite de presupuesto que quitó `bf2b290a` | P3 filas 1 y 2 | solo texto | ninguno |
+  | `94d00c53` | Regresión mía en `c7983ae8`: el aviso de interrupción repetía el texto que muta T15 (`round4`), T15 mutaba esa línea y sobrevivía. El aviso usa comas; la prueba de validez rechaza un patrón que aparece más de una vez en su archivo | T15 SURVIVED en la campaña `round4` sobre `33517707` | contra `33517707`, `test_cmh_mutant_validity.py`: 1 fallida (T15) y 18 aprobadas → con campaign y target, 87 aprobadas | H07 |
+
+- **Decisiones de diseño.**
+  1. **No se rediseña la síntesis.** Rehacerla con el prompt completo, con métricas y con marca sería diseño nuevo sin
+     decisión del usuario; el canon 05 (fila del 2026-09-24) y `integrations/cmh/README.md:67` ya dicen que una tarea
+     restringida falla en vez de recurrir a una llamada sin traza. De `2596a2b6` se conserva una sola cosa, porque es
+     correcta y no es la síntesis: el comentario «Grace summarization» quedó sobre la rama de las tareas NO
+     restringidas, que es la que describe. La prueba de `2596a2b6` (que fijaba la síntesis) se retira.
+  2. **El patrón del veredicto** sale de dos fuentes leídas, no supuestas: las instrucciones del Revisor que siembra
+     `scripts/cmh_seed_agents.py` (`data/agent_workspace/revisor/_sistema/instrucciones_v1.md`, bloque «Salida»:
+     `VEREDICTO: APROBADO | DEVUELTO`) y el artefacto real `f4f3e719` (`## VEREDICTO: DEVUELTO`, leído con
+     `mode=ro`). Una línea cuenta cuando, sin sus marcas markdown (`#` y `>` al inicio; `*`, `_` y `` ` `` en
+     cualquier lugar), dice «VEREDICTO:» seguido exactamente de APROBADO o DEVUELTO, sin distinguir mayúsculas. Un
+     DEVUELTO, un artefacto ausente, la falta de esa línea, la plantilla sin llenar, «APROBADO con reservas» o dos
+     líneas que se contradicen dan `TODO CUMPLIDO = False`. Del artefacto solo se selecciona el texto del revisor;
+     de los demás, el tamaño, como antes.
+  3. **La decisión no se rotula «humana».** Se imprime «decision registrada por <by> el <at>: <outcome>» y la
+     justificación. La línea del criterio pasa a «aprobacion registrada» y aclara «con la sesion del usuario; no
+     distingue persona de proceso». Las claves JSON (`human_approval*`) no cambian de nombre: las usan las pruebas y
+     los mutantes de `round8`.
+  4. **El arnés no adivina.** «rompe la coleccion» era una conjetura que el log no podía respaldar. Ahora un pytest
+     que sale con un código que nunca devuelve (fuera de 0 a 5), sin salida, o tras atrapar un `KeyboardInterrupt`,
+     es `INTERRUMPIDO`: el archivo se restaura, la campaña se detiene y dice cuántos mutantes quedan sin veredicto.
+     `INVALIDO` e `INTERRUMPIDO` imprimen las últimas líneas de pytest.
+- **Medido.** Todo sobre exports de `git archive` (sin `.git`), nunca sobre el árbol vivo.
+  (1) **Pruebas nuevas contra el código anterior**: 4 de 4 fallan en el bucle restringido; 13 de 13 en `run_report`;
+  7 de 8 en el arnés (la octava fija que un FAILED visto antes de la interrupción sigue siendo CAUGHT, y eso ya era así);
+  la guarda de patrones repetidos, contra `33517707`, hace caer 1 de las 19 pruebas del módulo de validez.
+  (2) **Sondas de los refutadores contra `2f051d37`** (19 en total): las 11 de `refut-p1a` que solo imprimen dan
+  lo mismo que en `06085fb5` (0 llamadas de síntesis; 8 terminan con `RuntimeError` y 3 devuelven el bloque de
+  herramienta, ver más abajo); las 6 que afirmaban el defecto fallan ahora (1 de `refut-p1a`, 3 de `refut-p1b` y 2 de
+  `refut-p1c`); las 2 de `refut-p1b` que ya esperaban `RuntimeError` pasan.
+  (3) **Z16 y Z17 de `round9`**: 2 CAUGHT de 2, tres veces (sobre `bf2b290a` con `PYTHONIOENCODING=utf-8` y sin él, y
+  con el arnés corregido). La copia del verificador `r10-mut-round9` sigue con Z17 aplicado
+  (`cmh_seed_agents.py:150` dice `"basta"`): la mataron desde fuera y su `finally` no corrió. Qué la mató no se sabe.
+  (4) **`run_report` sobre `012ea502`** (`data/app.db`, `mode=ro`): `veredicto del revisor ...... False  (DEVUELTO)`,
+  `TODO CUMPLIDO .............. False`, exit 3; imprime la justificación «Aprobacion operativa delegada por /goal…».
+  (5) **Campañas sobre un export de `33517707`**: `round10` 18 CAUGHT de 18 (árbol restaurado: 43 aprobadas);
+  `round8` 41 de 41 (42 aprobadas); `round4` **88 CAUGHT y 1 SURVIVED** (T15), exit 1. Patrones que aparecen más de
+  una vez en su archivo: 0 de 353 en `bf2b290a`, 1 de 371 en `33517707` (T15). Corregido en `94d00c53`; sobre una copia
+  de `33517707` con los 3 archivos de esa corrección (el árbol de `94d00c53`): `round10` 19 CAUGHT de 19 (44
+  aprobadas al restaurar); `round4` **89 CAUGHT de 89**, exit 0 (200 aprobadas al restaurar); 0 de 372 patrones
+  repetidos. Las rondas 2, 3, 5, 6, 7 y 9 no se repitieron enteras: sus patrones siguen aplicando y compilando
+  (`test_cmh_mutant_validity`), y Z16 y Z17 de `round9` se corrieron solos (ver (3)).
+  (6) **Suite** (`tests/test_cmh_*.py`, `test_task_scheduler*`, `test_scheduler_*`, `test_model_routes`,
+  `test_agent_loop*`) sobre un export de `33517707`: **1053 aprobadas, 0 fallidas**, 4 warnings, 898 s. Por
+  recolección, contra un export de `bf2b290a` con los mismos globs: 1025 → 1053, con 29 identificadores nuevos (las
+  25 pruebas escritas: 4 + 13 + 8, y 4 parametrizaciones que `round10.py` añade a las pruebas de corredores) y 1
+  quitado (la prueba de la síntesis de `2596a2b6`). Sobre un export de la punta `94d00c53`, la misma suite:
+  **1053 aprobadas, 0 fallidas**, 4 warnings, 763 s.
+  (7) **No corrido**: la interfaz (`scripts/cmh_os/check.sh`) y la e2e; esta vuelta no toca `static/`.
+- **Declarado y NO cambiado.**
+  - El registro demo `mem-ep-3` (`static/cmh-os/js/mocks/data.js:160-161`) sigue describiendo una parada por
+    presupuesto (P3 fila 3): es el registro que encuentra la comprobación e2e F7 al buscar «presupuesto»
+    (`tests/cmh_os/e2e/run.mjs:241`). Reescribirlo exige correr la e2e, y no se corrió.
+  - No hay ADR propio de la retirada del presupuesto (`bf2b290a`); queda registrada aquí y en `IMPLEMENTATION_STATUS.md:89`.
+  - Las sondas de `refut-p1a` muestran que, con una herramienta en formato de texto, el artefacto puede ser el
+    propio bloque ```` ```ls ```` de la primera ronda. Pasa igual en `06085fb5` (las 11 sondas imprimen lo mismo):
+    no es de esta vuelta y no se toca.
+- **PENDIENTE (sin construir).**
+  1. **PENDIENTE: el motor marca `completed` un run cuyo revisor devolvió.** `run_report` ahora lo ve, pero
+     `cmh_workflow_runs.status` de `012ea502` sigue `completed` y `/cmh/os` lo muestra así. Que el motor lea el
+     veredicto (y qué hace con un DEVUELTO: detener, abrir otro ciclo) es una decisión del usuario.
+  2. **PENDIENTE: `_response_cache` (`src/llm_core.py:234`) no tiene clave de ejecución.** Dict de proceso, sin TTL
+     (solo un tope de 128 entradas, `:574`), con una clave sin ejecución ni paso. Al retirar la síntesis desaparece la vía
+     que midió el refutador. `stream_agent_loop` sigue llamando a `llm_call_async`, y con ello a la caché, en
+     `_run_verifier_subagent` (`src/agent_loop.py:3316`) y en su propia síntesis de gracia (`:5362`, que sale marcada
+     `synthetic: failure` y hace fallar el paso restringido). No se midió si `_run_verifier_subagent` corre en los pasos
+     de CMH.
+  3. **PENDIENTE: la aprobación no distingue persona de proceso.** `routes/cmh_workflow_routes.py:47-50` guarda resultado,
+     justificación, `by` (el dueño de la sesión) y hora; un agente con la sesión del usuario aprueba igual que el usuario.
+     `run_report` ya no lo llama «humana», pero no puede saberlo. Si la aprobación de `012ea502` cumple §18 y §22.5 lo
+     decide el usuario (ver `RATIFICACION_APROBACION_012ea502_20261004.md`).
+  4. **PENDIENTE: retirar la síntesis hará fallar más pasos con `cmh-local` (gemma-4-e2b).** Para eso se escribió
+     `2596a2b6`: en `580ead18` el investigador sobre `cmh-local` hizo 10 llamadas a herramientas (6 con exit 0) y terminó
+     sin texto propio: `RuntimeError: Restricted task produced no final model output` (leído con `mode=ro`). Con este
+     cambio ese caso vuelve a fallar, ahora también en revisor y documentador. Las salidas posibles (otro modelo local,
+     más rondas, una síntesis diseñada con prompt completo, métricas y marca) son decisión del usuario.
+- **Lecciones.** (1) *Un rescate que evita un fallo visible puede saltarse una regla invisible:* `2596a2b6` convirtió un
+  error honesto en un artefacto `completed` sin marca, y la prueba que lo acompañó solo cubría el camino feliz.
+  (2) *Un criterio mecánico que no lee el veredicto cierra lo que el revisor devolvió:* §18 no pedía APROBADO, la regla
+  del proyecto sí. (3) *Un arnés que pone nombre a lo que no sabe produce hallazgos falsos:* Z16 «rompe la coleccion»
+  no rompía nada. (4) *Una línea nueva en un archivo mutado puede robarle el blanco a un mutante viejo:* la campaña
+  entera de la ronda que muta ese archivo lo vio y mis pruebas no; ahora lo ve la prueba de validez en segundos.
