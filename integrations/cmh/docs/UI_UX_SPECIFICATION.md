@@ -80,7 +80,7 @@ siempre con texto visible o `aria-label`.
 | `#/` | Vista general | 5 KPI (agentes activos, ejecuciones en curso, aprobaciones pendientes, tasa de éxito 7 d, consumo estimado); estado de servicios; alertas; actividad reciente; mini-grafo en vivo |
 | `#/agentes` | Centro de agentes | búsqueda, filtros (estado, permisos, proyecto), tabla, crear |
 | `#/agentes/:id` | Detalle de agente | capacidades, modelo, herramientas, permisos, instrucciones versionadas, historial; editar, pausar/activar |
-| `#/ejecuciones` | Ejecuciones | nueva ejecución (flujo, objetivo, prioridad, agente, presupuesto, iteraciones, timeout), lista filtrable |
+| `#/ejecuciones` | Ejecuciones | nueva ejecución (flujo, objetivo, prioridad, agente, iteraciones, timeout), lista filtrable |
 | `#/ejecuciones/:id` | Detalle | pasos, herramientas, errores, respuesta final, artefactos, eventos; cancelar, reintentar |
 | `#/orquestacion` | Orquestación | núcleo supervisor + trabajadores, dependencias, estado global, ciclo PEOR, selector de ejecución, chat acoplado |
 | `#/memoria` | Memoria | pestañas trabajo/episódica/semántica, búsqueda, filtros, metadatos, relevancia, archivar con confirmación |
@@ -98,7 +98,7 @@ siempre con texto visible o `aria-label`.
   del backend (carpeta autorizada, herramientas) se muestran como error del
   campo cuando la API responde 400.
 - **Nueva ejecución**: en modo real se elige una definición de flujo existente;
-  presupuesto, iteraciones y timeout se muestran deshabilitados con el motivo.
+  iteraciones y timeout se muestran deshabilitados con el motivo.
 - **Aprobar**: botón primario; **Rechazar**: exige justificación (mín. 10
   caracteres); riesgo alto exige justificación también para aprobar.
 - **Detener**: confirmación con consecuencia («Los pasos en curso se

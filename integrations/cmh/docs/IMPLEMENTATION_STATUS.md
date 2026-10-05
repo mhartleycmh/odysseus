@@ -86,7 +86,7 @@ reprodujo cada importante con sondas propias.
 - ~~`/static/cmh-os/*` es público~~ **Cerrado el 2026-09-25** (ADR-016): la carpeta de la página sale de la exención de `/static` y devuelve 404 con la bandera apagada. El resto de `/static` no cambia.
 - El presupuesto de build está al 94 % (140,7 de 150 KB gzip). La próxima vista grande obliga a dividir `es.js` por módulo o a cargar vistas bajo demanda.
 - Demo: en las ejecuciones creadas en vivo, las duraciones de herramientas (tiempo simulado) pueden superar la del paso (tiempo real) en la cascada.
-- Límites de iteraciones, tiempo y presupuesto, y prioridad: solo se aplican en demo. El backend usa `max_steps=12` por paso y no guarda la prioridad.
+- Límites de iteraciones y tiempo, y prioridad: solo se aplican en demo (el de presupuesto se retiró en `bf2b290a`). El backend usa `max_steps=12` por paso y no guarda la prioridad.
 - ~~El rechazo de paso en modo real detiene la ejecución~~ **Cerrado el 2026-09-25** (ADR-017): `POST /runs/{id}/steps/{key}/reject` exige justificación, deja la ejecución en `rejected` de forma terminal y guarda la decisión en `cmh_workflow_steps.decision`.
 - Evaluaciones, roles y sesiones: sin backend; se sirven desde la demo con la etiqueta «Demo · sin backend».
 - ESLint no está disponible sin npm; lo sustituyen `lint.mjs` y TypeScript estricto.
@@ -96,7 +96,7 @@ reprodujo cada importante con sondas propias.
 1. Comportamiento verificado automáticamente con `scripts/cmh_os/realmode/run.sh` (12 de 12). Lo que queda es una revisión de contenido: el usuario abre `/cmh/os` con su propia sesión y mira sus proyectos, agentes y ejecuciones reales.
 2. Hecho: commit `bba01a65`.
 3. Hecho el 2026-09-25: rechazo de paso con justificación persistida (ADR-017) y `static/cmh-os` fuera de la exención de autenticación (ADR-016).
-4. Pendiente de backend: límites de iteraciones, tiempo y presupuesto por ejecución, y prioridad —hoy solo se aplican en demo; el backend usa `max_steps=12` por paso y no guarda la prioridad.
+4. Pendiente de backend: límites de iteraciones y tiempo por ejecución, y prioridad —hoy solo se aplican en demo; el backend usa `max_steps=12` por paso y no guarda la prioridad.
 
 ## 7. Punto 8 — cierre de pendientes de backend (2026-09-25)
 

@@ -72,7 +72,7 @@ flowchart LR
 | `services/source.js` | Contrato `DataSource`, detección de modo, fábrica | — |
 | `services/live.js` | Traduce `/api/*` a los contratos; descarta secretos | Inventar datos |
 | `services/demo.js` + `mocks/` | Datos deterministas, operaciones en memoria, fallos inyectables | Datos reales |
-| `services/simulator.js` | Ejecución simulada con límites (iteraciones, timeout, presupuesto) | — |
+| `services/simulator.js` | Ejecución simulada con límites (iteraciones, timeout) | — |
 | `services/chat.js` | Intérprete de comandos y puente LLM opcional | Ejecutar acciones sensibles |
 | `components/` | Piezas reutilizables sin conocimiento del backend | Llamar a la red |
 | `views/` | Composición por página; estados carga/vacío/error/éxito | Acceso directo a `fetch` |
