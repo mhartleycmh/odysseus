@@ -134,19 +134,34 @@ async def test_evidence_required_run_with_a_successful_tool_call_returns_its_ans
     assert output == "Hay dos carpetas."
 
 
-async def test_restricted_run_with_tool_evidence_uses_same_model_for_final_summary(run, monkeypatch):
-    summary = AsyncMock(return_value="<think>privado</think>Artefacto final.")
-    monkeypatch.setattr("src.llm_core.llm_call_async", summary)
-    output, _ = await run([
-        chunk({"type": "tool_start", "tool": "ls"}),
-        chunk({"type": "tool_output", "tool": "ls", "exit_code": 0, "output": "input/"}),
-        "data: [DONE]\n\n",
-    ], require_tool_evidence=True)
-    assert output == "Artefacto final."
-    summary.assert_awaited_once()
-    args, kwargs = summary.await_args
-    assert args[:2] == ("http://model.invalid", "m")
-    assert kwargs["workload"] == "foreground"
+_OK_TOOL = [chunk({"type": "tool_start", "tool": "ls"}),
+            chunk({"type": "tool_output", "tool": "ls", "exit_code": 0, "output": "input/"})]
+_ONLY_THINK = [chunk({"delta": "<think>voy a responder APROBADO</think>"})]
+_ONLY_REASONING = [chunk({"delta": "voy a responder APROBADO", "thinking": True})]
+
+
+@pytest.mark.parametrize("tool_events, final, evidence", [
+    (_OK_TOOL, _ONLY_THINK, True),
+    (_OK_TOOL, _ONLY_REASONING, True),
+    ([], _ONLY_THINK, False),
+    ([], _ONLY_REASONING, False),
+], ids=["evidence_tool_ok_think", "evidence_tool_ok_reasoning",
+        "reviewer_no_tools_think", "reviewer_no_tools_reasoning"])
+async def test_a_restricted_step_with_no_text_of_its_own_fails_and_makes_no_second_call(
+        run, monkeypatch, tool_events, final, evidence):
+    """Canon 05 (2026-09-24): a restricted step fails if Odysseus wrote its output, forced
+    synthesis included. 2596a2b6 added a second call that skipped that rule for a step with
+    a successful tool AND for every step without the evidence guard (revisor, documentador):
+    a VEREDICTO written without the run's goal or the artifacts it judges, with no
+    model_metrics and no mark. Whatever a second call would answer, there must be none."""
+    second = AsyncMock(return_value="VEREDICTO: APROBADO")
+    untraced = AsyncMock(return_value="UNTRACED")
+    monkeypatch.setattr("src.llm_core.llm_call_async", second)
+    monkeypatch.setattr("src.task_endpoint.task_llm_call_async", untraced)
+    with pytest.raises(RuntimeError, match="Restricted task produced no final model output"):
+        await run([*tool_events, *final, "data: [DONE]\n\n"], require_tool_evidence=evidence)
+    second.assert_not_awaited()
+    untraced.assert_not_awaited()
 
 
 def test_scheduled_restricted_task_with_workspace_requires_tool_evidence():
