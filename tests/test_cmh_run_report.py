@@ -610,17 +610,22 @@ def test_only_a_reviewer_that_declares_aprobado_closes_the_phase(tmp_path, artif
     assert criteria["review_approved"] is met
     assert criteria["all_met"] is met
     if verdict is None:
-        assert criteria["review_verdict_note"] == "el artefacto del revisor no declara VEREDICTO"
+        assert criteria["review_verdict_note"] == "el artefacto del revisor no abre con la linea VEREDICTO"
 
 
 @pytest.mark.parametrize("artifact, verdict", [
     ("**VEREDICTO:** APROBADO\n", "APROBADO"),
-    ("> ### Veredicto: aprobado\n", "APROBADO"),
+    ("> ### Veredicto: aprobado\n", None),                            # a quote: not its own
+    ("### Veredicto: aprobado\n", "APROBADO"),
+    ("\n  \n\nVEREDICTO: APROBADO\n", "APROBADO"),                      # blank lines first
+    ("Revise todo.\nVEREDICTO: APROBADO\n", None),                     # not the first line
+    ("VEREDICTO: APROBADO\n\n**Veredicto:** aprobado\n", "APROBADO"),  # repeated, lower case
     ("VEREDICTO: APROBADO | DEVUELTO\n", None),                       # the template, unfilled
     ("VEREDICTO: APROBADO\n\n...\nVEREDICTO: DEVUELTO\n", None),      # two that disagree
     ("VEREDICTO: APROBADO con reservas\n", None),
     ("El revisor no emite un VEREDICTO: APROBADO todavia\n", None),    # not at the start of a line
-], ids=["negrita", "cita_y_minusculas", "plantilla", "dos_distintos", "con_reservas", "en_prosa"])
+], ids=["negrita", "cita", "titulo_y_minusculas", "tras_lineas_vacias", "no_es_la_primera_linea",
+        "repetido_en_minusculas", "plantilla", "dos_distintos", "con_reservas", "en_prosa"])
 def test_a_verdict_nobody_can_read_is_not_an_approval(artifact, verdict):
     found, note = report_mod.review_verdict(artifact)
     assert found == verdict
@@ -658,3 +663,32 @@ def test_a_decision_without_a_justification_says_so(tmp_path):
     path = tmp_path / "app.db"
     build(path)
     assert "justificacion: sin justificacion" in report_mod.render(report(path))
+
+
+# --- r11 review, P1-1: a verdict the reviewer quotes or copies is not its own ----------------
+# review_verdict stripped a leading ">" before reading a line, so a reviewer that quoted the
+# constructor's "> VEREDICTO: APROBADO" and wrote no canonical verdict of its own closed the
+# phase: TODO CUMPLIDO True, exit 0. V01 and V02 are verdict_probe.py of the r11 review; G and
+# H are the refutador's (a copy inside a code block, a nested quote).
+QUOTED_OR_COPIED_APPROVAL = {
+    "V01_cita_y_propio_en_vineta":
+        "## Revision\nEl constructor se autoevalua en su artefacto:\n> VEREDICTO: APROBADO\n"
+        "Eso esta prohibido.\n\n- **Veredicto:** DEVUELTO\n",
+    "V02_cita_sin_veredicto_propio":
+        "El verificador cierra con:\n> VEREDICTO: APROBADO\n\nHallazgos: P1 2 \u00b7 P2 1\n",
+    "G_copia_en_bloque_de_codigo": "```\nVEREDICTO: APROBADO\n```\nMi veredicto es DEVUELTO\n",
+    "G2_copia_en_bloque_sin_devuelto": "```\nVEREDICTO: APROBADO\n```\nCobertura declarada: parcial.\n",
+    "H_cita_anidada": ">> VEREDICTO: APROBADO\nDevuelvo el entregable.\n",
+    "cita_en_la_primera_linea": "> VEREDICTO: APROBADO\n\nCobertura declarada: parcial.\n",
+}
+
+
+@pytest.mark.parametrize("key", list(QUOTED_OR_COPIED_APPROVAL))
+def test_an_approval_the_reviewer_quotes_or_copies_does_not_close_the_phase(tmp_path, key):
+    path = tmp_path / "app.db"
+    build(path, reviewer_artifact=QUOTED_OR_COPIED_APPROVAL[key])
+    criteria = report(path)["criteria"]
+    assert criteria["review_verdict"] is None
+    assert criteria["review_approved"] is False
+    assert criteria["all_met"] is False
+    assert criteria["review_verdict_note"] == "el artefacto del revisor no abre con la linea VEREDICTO"

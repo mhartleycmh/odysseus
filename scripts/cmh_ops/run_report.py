@@ -42,12 +42,15 @@ DEFAULT_EVIDENCE = set(EVIDENCE_ROLES)
 REVIEW_STEP = "revisor"
 
 #: The two verdicts the reviewer may write. Its instructions (seeded by
-#: scripts/cmh_seed_agents.py from data/agent_workspace/revisor/_sistema/instrucciones_v1.md)
-#: open the output with the line "VEREDICTO: APROBADO | DEVUELTO"; the reviewer of run
-#: 012ea502 wrote "## VEREDICTO: DEVUELTO". A line counts when, without its markdown marks
-#: (leading # and >, and * _ ` anywhere), it reads "VEREDICTO:" followed by exactly one of
-#: these words. Anything else on that line, the template left as it is, or two lines that
-#: disagree is a verdict nobody can read, and it does not close the phase (ADR-040).
+#: scripts/cmh_seed_agents.py from data/agent_workspace/revisor/_sistema/instrucciones_v1.md,
+#: line 76, the first line of its "Salida" template) open the output with the line
+#: "VEREDICTO: APROBADO | DEVUELTO"; the reviewer of run 012ea502 wrote "## VEREDICTO: DEVUELTO".
+#: So the verdict is the FIRST non-empty line of the artifact, read without leading # and
+#: spaces and without * _ ` anywhere, in any case: "VEREDICTO:" followed by exactly one of
+#: these words. A quoted line (>) is somebody else's verdict and never opens it, nor does a
+#: line inside a code block: the line that opens it is the fence (r11 review, P1-1). Anything
+#: else on that line, the template left as it is, or a later verdict line that disagrees is a
+#: verdict nobody can read, and it does not close the phase (ADR-040).
 VERDICTS = ("APROBADO", "DEVUELTO")
 _VERDICT_LINE = re.compile(r"VEREDICTO\s*:\s*(.*?)\s*", re.IGNORECASE)
 
@@ -56,14 +59,18 @@ def review_verdict(content):
     """``(verdict, note)``: the reviewer's APROBADO or DEVUELTO with no note, or None and why."""
     if content is None:
         return None, f"el paso {REVIEW_STEP} no tiene artefacto"
-    found = []
-    for line in content.splitlines():
+    lines = content.splitlines()
+    first = next((number for number, line in enumerate(lines) if line.strip()), None)
+    opening = None if first is None else _VERDICT_LINE.fullmatch(
+        re.sub(r"^[\s#]+", "", re.sub(r"[*_`]", "", lines[first])).strip())
+    if not opening:
+        return None, f"el artefacto del {REVIEW_STEP} no abre con la linea VEREDICTO"
+    found = [opening.group(1).upper()]
+    for line in lines[first + 1:]:
         bare = re.sub(r"^[\s#>]+", "", re.sub(r"[*_`]", "", line)).strip()
         match = _VERDICT_LINE.fullmatch(bare)
         if match:
             found.append(match.group(1).upper())
-    if not found:
-        return None, f"el artefacto del {REVIEW_STEP} no declara VEREDICTO"
     if len(set(found)) != 1 or found[0] not in VERDICTS:
         return None, "veredicto ilegible: " + " / ".join(value[:40] for value in found)
     return found[0], None
